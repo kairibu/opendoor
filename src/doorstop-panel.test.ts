@@ -1,0 +1,578 @@
+// @vitest-environment node
+//
+// Panel/controller unit tests (plan §5): DOM-free. Drive
+// `DoorstopWorkspaceController` through a fake host (`{isConnected}` — the
+// minimal `DoorstopWorkspaceHost` surface for the late-async-write guard, no
+// addController/removeController needed since the panel drives the lifecycle
+// directly) with injected fake load jobs for rejection and deferred-control
+// cases, plus one genuine end-to-end `loadDoorstopWorkspace` run over the
+// fake files adapter. Render notifications are asserted on the context
+// host's `requestRender` — the controller routes updates through the CURRENT
+// context handle, so the spy simply wraps the same `WorkspacePanelHost` it
+// would call in the panel. The element/DOM wiring is covered by a later
+// chain; these cover the controller's state logic and the load job with no
+// DOM at all.
+
+import { describe, expect, it, vi, type Mock } from "vitest";
+import type { Workspace, WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
+import type { DoorstopDocumentConfig, DoorstopIndex, ItemRecord } from "./doorstop-contract.js";
+import { buildDoorstopIndex } from "./doorstop-model.js";
+import { computeItemStates } from "./doorstop-state.js";
+import {
+  DoorstopWorkspaceController,
+  type DoorstopWorkspaceHost,
+  type DoorstopWorkspaceJob,
+} from "./doorstop-panel-controller.js";
+import {
+  DOORSTOP_WORKSPACE_STATE_LIMIT,
+  DoorstopWorkspaceRegistry,
+  isItemFile,
+  loadDoorstopWorkspace,
+  type DoorstopWorkspaceResult,
+} from "./doorstop-panel.js";
+import { createFakeFiles, dirEntry, fileEntry, text, tree, type FakeWorkspaceFiles } from "./test-support.js";
+
+const doorstopWorkspace: Workspace = {
+  id: "workspace-1",
+  projectId: "project-1",
+  path: "/repo",
+  label: "main",
+  isMain: true,
+};
+
+// --- small real-shape fixtures ---------------------------------------------------------
+
+function makeDocument(overrides: Partial<DoorstopDocumentConfig> = {}): DoorstopDocumentConfig {
+  return {
+    directoryPath: overrides.directoryPath ?? "reqs",
+    configPath: overrides.configPath ?? "reqs/.doorstop.yml",
+    prefix: overrides.prefix ?? "REQ",
+    digits: overrides.digits ?? 4,
+    separator: overrides.separator ?? "",
+    itemformat: overrides.itemformat ?? "yaml",
+    extra: overrides.extra ?? {},
+    ...(overrides.parentPrefix === undefined ? {} : { parentPrefix: overrides.parentPrefix }),
+  };
+}
+
+function makeItem(uid: string, documentPrefix: string, overrides: Partial<ItemRecord> = {}): ItemRecord {
+  return {
+    uid,
+    documentPrefix,
+    path: overrides.path ?? `${uid}.yml`,
+    level: overrides.level ?? "1.0",
+    active: overrides.active ?? true,
+    derived: overrides.derived ?? false,
+    normative: overrides.normative ?? true,
+    text: overrides.text ?? "",
+    ref: overrides.ref ?? "",
+    links: overrides.links ?? [],
+    reviewed: overrides.reviewed ?? null,
+    attributes: overrides.attributes ?? {},
+    raw: overrides.raw ?? {},
+    stateKeys: overrides.stateKeys ?? [],
+    ...(overrides.header === undefined ? {} : { header: overrides.header }),
+    ...(overrides.references === undefined ? {} : { references: overrides.references }),
+  };
+}
+
+/** A genuine index over the given items/documents (real build + state
+ *  chains), so the controller's selection/filter paths run against the real
+ *  shape instead of a stub that could drift from `DoorstopIndex`. */
+function makeResult(
+  items: ItemRecord[],
+  documents: DoorstopDocumentConfig[] = [makeDocument()],
+  diagnostics: DoorstopIndex["diagnostics"] = [],
+): DoorstopWorkspaceResult {
+  const index = buildDoorstopIndex(documents, items, diagnostics, new Set());
+  computeItemStates(index);
+  return { index };
+}
+
+describe("DoorstopWorkspaceController (fake host, no DOM)", () => {
+  it("kicks the first load on hostConnected and surfaces loading → result", async () => {
+    let resolveJob: ((result: DoorstopWorkspaceResult) => void) | undefined;
+    const job: DoorstopWorkspaceJob = () =>
+      new Promise<DoorstopWorkspaceResult>((resolve) => {
+        resolveJob = resolve;
+      });
+    const { context, requestRender } = panelContext(createFakeFiles());
+    const { host } = fakeHost();
+    const controller = new DoorstopWorkspaceController(host, context, job);
+
+    controller.hostConnected();
+    // The load begins synchronously: loading is up and the host is notified
+    // before any await.
+    expect(controller.loading).toBe(true);
+    expect(host.isConnected).toBe(true);
+    expect(requestRender).toHaveBeenCalled();
+
+    resolveJob?.(makeResult([makeItem("REQ0001", "REQ")]));
+    await settle();
+    expect(controller.loading).toBe(false);
+    expect(controller.stale).toBe(false);
+    expect(controller.error).toBeUndefined();
+    expect(controller.result?.index.byUid.has("REQ0001")).toBe(true);
+    expect(requestRender).toHaveBeenCalled();
+  });
+
+  it("reuses one in-flight job for re-entrant loads (no overlapping jobs)", async () => {
+    let resolveJob: ((result: DoorstopWorkspaceResult) => void) | undefined;
+    const job: DoorstopWorkspaceJob = () =>
+      new Promise<DoorstopWorkspaceResult>((resolve) => {
+        resolveJob = resolve;
+      });
+    const { context } = panelContext(createFakeFiles());
+    const { host } = fakeHost();
+    const controller = new DoorstopWorkspaceController(host, context, job);
+
+    controller.hostConnected();
+    expect(controller.loading).toBe(true);
+
+    // Refresh-button spam / invalidate during a run / switch-back all join
+    // the running job instead of stacking new ones.
+    const first = controller.load();
+    const second = controller.load();
+    expect(second).toBe(first);
+    controller.hostConnected();
+    expect(controller.loading).toBe(true);
+
+    resolveJob?.(makeResult([]));
+    await settle();
+    expect(controller.loading).toBe(false);
+    expect(controller.result?.index).toBeDefined();
+  });
+
+  it("marks the result stale during an invalidate load and keeps the old result until it lands", async () => {
+    let currentJob: () => Promise<DoorstopWorkspaceResult> = () =>
+      Promise.resolve(makeResult([makeItem("REQ0001", "REQ")]));
+    const job: DoorstopWorkspaceJob = () => currentJob();
+    const { context, requestRender } = panelContext(createFakeFiles());
+    const { host } = fakeHost();
+    const controller = new DoorstopWorkspaceController(host, context, job);
+    controller.hostConnected();
+    await settle();
+    const before = controller.result;
+    if (before === undefined) throw new Error("Expected the first load to land");
+    expect(controller.stale).toBe(false);
+
+    let resolveJob: ((result: DoorstopWorkspaceResult) => void) | undefined;
+    currentJob = () =>
+      new Promise<DoorstopWorkspaceResult>((resolve) => {
+        resolveJob = resolve;
+      });
+    requestRender.mockClear();
+    const pending = controller.invalidate();
+
+    expect(controller.stale).toBe(true);
+    expect(controller.loading).toBe(true);
+    // The old result stays rendered while the fresh load is in flight.
+    expect(controller.result).toBe(before);
+    expect(requestRender).toHaveBeenCalled();
+
+    resolveJob?.(makeResult([makeItem("REQ0002", "REQ")]));
+    await pending;
+    expect(controller.stale).toBe(false);
+    expect(controller.loading).toBe(false);
+    expect(controller.result?.index.byUid.has("REQ0002")).toBe(true);
+  });
+
+  it("surfaces a rejected load as the formatted error message", async () => {
+    const { context } = panelContext(createFakeFiles());
+    const { host } = fakeHost();
+    const controller = new DoorstopWorkspaceController(host, context, async () => {
+      throw new Error("Load crashed");
+    });
+    controller.hostConnected();
+    await settle();
+    expect(controller.error).toBe("Load crashed");
+    expect(controller.loading).toBe(false);
+    expect(controller.result).toBeUndefined();
+  });
+
+  it("drops late async writes after hostDisconnected and after the eviction release", async () => {
+    const resolvers: Array<(result: DoorstopWorkspaceResult) => void> = [];
+    const job: DoorstopWorkspaceJob = () =>
+      new Promise<DoorstopWorkspaceResult>((resolve) => {
+        resolvers.push(resolve);
+      });
+    const { context, requestRender } = panelContext(createFakeFiles());
+    const { host } = fakeHost();
+    const controller = new DoorstopWorkspaceController(host, context, job);
+
+    controller.hostConnected();
+    controller.hostDisconnected();
+    requestRender.mockClear();
+    resolvers[0]?.(makeResult([]));
+    await settle();
+    expect(controller.result).toBeUndefined();
+    expect(controller.loading).toBe(false);
+    // The host is no longer connected: no state mutation reached it.
+    expect(requestRender).not.toHaveBeenCalled();
+
+    // The LRU eviction release drops writes the same way — even while the
+    // element itself stayed connected.
+    controller.hostConnected();
+    controller.release();
+    requestRender.mockClear();
+    resolvers[1]?.(makeResult([]));
+    await settle();
+    expect(controller.result).toBeUndefined();
+    expect(controller.loading).toBe(false);
+    expect(requestRender).not.toHaveBeenCalled();
+  });
+
+  it("skips requestRender while disconnected and restores it on reconnect", async () => {
+    const { context, requestRender } = panelContext(createFakeFiles());
+    const { host } = fakeHost();
+    const controller = new DoorstopWorkspaceController(host, context, () =>
+      Promise.resolve(makeResult([])),
+    );
+    controller.hostConnected();
+    await settle();
+    requestRender.mockClear();
+
+    controller.selectUid("REQ0001");
+    expect(requestRender).toHaveBeenCalledTimes(1);
+
+    controller.hostDisconnected();
+    controller.selectUid("REQ0002");
+    expect(requestRender).toHaveBeenCalledTimes(1);
+
+    // Reconnecting restores updates (the cached result is reused, no re-load).
+    controller.hostConnected();
+    controller.selectUid("REQ0003");
+    expect(requestRender).toHaveBeenCalledTimes(2);
+  });
+
+  it("selection/navigation setters write their fields and notify the host", async () => {
+    const { context, requestRender } = panelContext(createFakeFiles());
+    const { host } = fakeHost();
+    const controller = new DoorstopWorkspaceController(
+      host,
+      context,
+      () => Promise.resolve(makeResult([makeItem("REQ0001", "REQ")])),
+    );
+    controller.hostConnected();
+    await settle();
+    requestRender.mockClear();
+
+    controller.selectUid("REQ0001");
+    expect(controller.selectedUid).toBe("REQ0001");
+    controller.selectDocument("REQ");
+    expect(controller.selectedDocumentPrefix).toBe("REQ");
+    controller.setStateFilter("unreviewed");
+    expect(controller.stateFilter).toBe("unreviewed");
+    controller.setSearch("allocated");
+    expect(controller.search).toBe("allocated");
+    expect(requestRender).toHaveBeenCalledTimes(4);
+  });
+
+  it("drops a selection hidden by the state filter and on a vanished re-load", async () => {
+    const req001 = makeItem("REQ0001", "REQ");
+    const { context } = panelContext(createFakeFiles());
+    const { host } = fakeHost();
+    let currentJob: () => Promise<DoorstopWorkspaceResult> = () => Promise.resolve(makeResult([req001]));
+    const controller = new DoorstopWorkspaceController(host, context, () => currentJob());
+    controller.hostConnected();
+    await settle();
+
+    controller.selectUid("REQ0001");
+    expect(controller.selectedUid).toBe("REQ0001");
+
+    // Filtering to "reviewed" hides the never-reviewed REQ0001 → dangling
+    // selection dropped (a filtered-out detail pane would dangle).
+    controller.setStateFilter("reviewed");
+    expect(controller.stateFilter).toBe("reviewed");
+    expect(controller.selectedUid).toBeUndefined();
+
+    // Switching the filter back keeps a (now visible) selection.
+    controller.selectUid("REQ0001");
+    controller.setStateFilter(undefined);
+    expect(controller.selectedUid).toBe("REQ0001");
+
+    // A re-load that drops the item clears the selection.
+    currentJob = () => Promise.resolve(makeResult([]));
+    await controller.load();
+    expect(controller.selectedUid).toBeUndefined();
+  });
+
+  it("keeps one controller per workspace in the LRU and evicts the oldest", async () => {
+    const registry = new DoorstopWorkspaceRegistry();
+    const contexts: WorkspacePanelContext[] = [];
+    const controllers: DoorstopWorkspaceController[] = [];
+    for (let i = 0; i < DOORSTOP_WORKSPACE_STATE_LIMIT; i += 1) {
+      const { context } = panelContext(createFakeFiles(), makeWorkspace(i));
+      contexts.push(context);
+      const controller = registry.for(context);
+      controller.hostConnected();
+      controllers.push(controller);
+    }
+    // Touching workspace 0 bumps it to the LRU tail (same instance reused).
+    expect(registry.for(contexts[0]!)).toBe(controllers[0]);
+
+    // Adding one more past the limit evicts the least-recently-used — now
+    // workspace 1 (workspace 0 was bumped to the tail).
+    const { context: nextContext } = panelContext(createFakeFiles(), makeWorkspace(99));
+    const next = registry.for(nextContext);
+    next.hostConnected();
+    expect(controllers[1]!.host.isConnected).toBe(false); // evicted
+    expect(controllers[0]!.host.isConnected).toBe(true); // bumped tail survives
+
+    // The evicted workspace's old controller is gone; a fresh get creates a new one.
+    const { context: freshContext } = panelContext(createFakeFiles(), makeWorkspace(1));
+    const fresh = registry.for(freshContext);
+    expect(fresh).not.toBe(controllers[1]);
+  });
+});
+
+describe("isItemFile (the document item-name matching obligation)", () => {
+  const base = { prefix: "REQ", digits: 4, separator: "" };
+  const sep = { prefix: "REQ", digits: 4, separator: "-" };
+
+  it("matches the exact configured name shape (prefix + zero-padded digits + extension)", () => {
+    expect(isItemFile("REQ0001.yml", makeDocument())).toBe(true);
+    expect(isItemFile("REQ0001.md", makeDocument())).toBe(true);
+    expect(isItemFile("REQ0001.yml", makeDocument({ ...base, separator: "-" }))).toBe(false);
+    expect(isItemFile("REQ-0001.yml", makeDocument(sep))).toBe(true);
+    expect(isItemFile("REQ0001.yml", makeDocument(sep))).toBe(false);
+  });
+
+  it("rejects wrong-width numeric parts", () => {
+    expect(isItemFile("REQ001.yml", makeDocument(base))).toBe(false); // 3 < digits 4
+    expect(isItemFile("REQ00001.yml", makeDocument(base))).toBe(false); // 5 > digits 4
+    expect(isItemFile("TST001.yml", makeDocument({ prefix: "TST", digits: 3 }))).toBe(true);
+    expect(isItemFile("REQ001.yml", makeDocument({ prefix: "TST", digits: 3 }))).toBe(false); // wrong prefix
+  });
+
+  it("rejects a trailing free-form name part after the number", () => {
+    expect(isItemFile("REQ0001-anything.yml", makeDocument(base))).toBe(false);
+    expect(isItemFile("REQ0001-name.yml", makeDocument(sep))).toBe(false);
+    expect(isItemFile("REQ-0001.yml", makeDocument(sep))).toBe(true);
+  });
+
+  it("never treats dotfiles as items, even when the prefix itself starts with a dot", () => {
+    expect(isItemFile(".doorstop.yml", makeDocument(base))).toBe(false);
+    expect(isItemFile(".hidden.yml", makeDocument(base))).toBe(false);
+    expect(isItemFile(".123.yml", makeDocument({ prefix: ".", digits: 3 }))).toBe(false);
+  });
+
+  it("degenerates `digits: 0` to never matching (no bare-prefix or empty-name files)", () => {
+    expect(isItemFile("REQ.yml", makeDocument({ ...base, digits: 0 }))).toBe(false);
+    expect(isItemFile("REQ0000.yml", makeDocument({ ...base, digits: 0 }))).toBe(false);
+    expect(isItemFile("REQ-foo.yml", makeDocument({ ...sep, digits: 0 }))).toBe(false);
+  });
+
+  it("clamps an absurd `digits` instead of constructing an oversized quantifier", () => {
+    expect(isItemFile("REQ0001.yml", makeDocument({ ...base, digits: 100000 }))).toBe(false);
+    // Clamped to MAX_ITEM_DIGITS width: a file with exactly that many digits
+    // still matches rather than the constructor throwing.
+    const wide = "REQ" + "0".repeat(24) + ".yml";
+    expect(isItemFile(wide, makeDocument({ ...base, digits: 100000 }))).toBe(true);
+  });
+});
+
+describe("loadDoorstopWorkspace (end-to-end over the fake files adapter)", () => {
+  it("loads a two-document fixture into the correct index and computed states", async () => {
+    const { files, readCalls } = createFakeFiles({
+      trees: {
+        "": tree([dirEntry("reqs", "reqs"), dirEntry("tests", "tests")]),
+        "reqs": tree([
+          fileEntry(".doorstop.yml", "reqs/.doorstop.yml"),
+          fileEntry("REQ0001.yml", "reqs/REQ0001.yml"),
+          fileEntry("REQ0002.yml", "reqs/REQ0002.yml"),
+        ]),
+        "tests": tree([
+          fileEntry(".doorstop.yml", "tests/.doorstop.yml"),
+          fileEntry("TST001.md", "tests/TST001.md"),
+        ]),
+      },
+      reads: {
+        "reqs/.doorstop.yml": text("settings:\n  prefix: REQ\n  digits: 4\n  sep: ''\n  parent: ''"),
+        "tests/.doorstop.yml": text(
+          "settings:\n  prefix: TST\n  digits: 3\n  sep: ''\n  parent: REQ\n  itemformat: markdown",
+        ),
+        "reqs/REQ0001.yml": text("text: The system shall do X."),
+        "reqs/REQ0002.yml": text("text: The system shall do Y."),
+        "tests/TST001.md": text(
+          ["---", "text: Verify X.", "links:", "  - REQ0001", "---", "", "# Verification", "", "Verify X end-to-end."].join(
+            "\n",
+          ),
+        ),
+      },
+    });
+
+    const result = await loadDoorstopWorkspace(files);
+
+    // Correct index shape: two documents, three items, lookups populated.
+    expect(result.index.documents.map((d) => d.prefix)).toEqual(["REQ", "TST"]);
+    expect(result.index.items).toHaveLength(3);
+    expect(result.index.byUid.get("REQ0001")?.text).toBe("The system shall do X.");
+    expect(result.index.byUid.get("REQ0002")?.text).toBe("The system shall do Y.");
+    expect(result.index.byUid.get("TST001")?.links.map((l) => l.uid)).toEqual(["REQ0001"]);
+    expect(result.index.counts.items).toBe(3);
+    expect(result.index.counts.documents).toBe(2);
+
+    // The item reads touched only the three item files + two configs — a
+    // `.doorstop.yml` is never read/parsed as an item.
+    expect(new Set(readCalls)).toEqual(
+      new Set([
+        "reqs/.doorstop.yml",
+        "tests/.doorstop.yml",
+        "reqs/REQ0001.yml",
+        "reqs/REQ0002.yml",
+        "tests/TST001.md",
+      ]),
+    );
+    expect(result.index.byUid.has(".doorstop.yml")).toBe(false);
+
+    // computeItemStates ran: every item carries its chips and the counters
+    // are filled.
+    expect(result.index.byUid.get("REQ0001")!.stateKeys).toContain("normative");
+    expect(result.index.byUid.get("REQ0001")!.stateKeys).toContain("unreviewed");
+    expect(result.index.byUid.get("TST001")!.stateKeys).toContain("normative");
+    expect(result.index.byUid.get("TST001")!.stateKeys).toContain("unreviewed");
+    expect(result.index.byUid.get("TST001")!.stateKeys).not.toContain("suspect-link");
+    expect(result.index.counts.unreviewedChanges).toBe(3);
+    expect(result.index.ok).toBe(true);
+  });
+
+  it("surfaces a no-match warning for every stray file and still builds the matching items", async () => {
+    const { files, readCalls } = createFakeFiles({
+      trees: {
+        "": tree([dirEntry("reqs", "reqs")]),
+        "reqs": tree([
+          fileEntry(".doorstop.yml", "reqs/.doorstop.yml"),
+          fileEntry("REQ0001.yml", "reqs/REQ0001.yml"),
+          fileEntry("REQ0002.yml", "reqs/REQ0002.yml"),
+          fileEntry("notes.txt", "reqs/notes.txt"), // stray
+          fileEntry("REQ0001.yml.bak", "reqs/REQ0001.yml.bak"), // editor backup
+          fileEntry("REQ001.yml", "reqs/REQ001.yml"), // wrong digit width (3 < 4)
+          fileEntry("REQ0001-extra.yml", "reqs/REQ0001-extra.yml"), // trailing name part
+        ]),
+      },
+      reads: {
+        "reqs/.doorstop.yml": text("settings:\n  prefix: REQ\n  digits: 4"),
+        "reqs/REQ0001.yml": text("text: The system shall do X."),
+        "reqs/REQ0002.yml": text("text: The system shall do Y."),
+      },
+    });
+
+    const result = await loadDoorstopWorkspace(files);
+
+    // The two real items still parse.
+    expect(result.index.items).toHaveLength(2);
+    expect(result.index.byUid.has("REQ0001")).toBe(true);
+    expect(result.index.byUid.has("REQ0002")).toBe(true);
+
+    // Every non-item file except the document's own `.doorstop.yml` got a
+    // warning diagnostic — nothing dropped silently.
+    expect(result.index.diagnostics.map((d) => d.path).sort()).toEqual([
+      "reqs/REQ0001-extra.yml",
+      "reqs/REQ0001.yml.bak",
+      "reqs/REQ001.yml",
+      "reqs/notes.txt",
+    ]);
+    expect(result.index.diagnostics.every((d) => d.severity === "warning")).toBe(true);
+    // The config file was never flagged as a stranger, and only the two real
+    // item files + the config were read.
+    expect(result.index.diagnostics.some((d) => d.path === "reqs/.doorstop.yml")).toBe(false);
+    expect(new Set(readCalls)).toEqual(
+      new Set(["reqs/.doorstop.yml", "reqs/REQ0001.yml", "reqs/REQ0002.yml"]),
+    );
+  });
+
+  it("calls out an item file whose extension contradicts the document itemformat", async () => {
+    const { files } = createFakeFiles({
+      trees: {
+        "": tree([dirEntry("reqs", "reqs")]),
+        "reqs": tree([
+          fileEntry(".doorstop.yml", "reqs/.doorstop.yml"),
+          fileEntry("REQ0001.md", "reqs/REQ0001.md"), // .md inside a yaml document
+        ]),
+      },
+      reads: {
+        "reqs/.doorstop.yml": text("settings:\n  prefix: REQ\n  digits: 4"),
+        "reqs/REQ0001.md": text("text: The system shall do X."),
+      },
+    });
+
+    const result = await loadDoorstopWorkspace(files);
+
+    expect(
+      result.index.diagnostics.some(
+        (d) => d.path === "reqs/REQ0001.md" && d.message.includes("itemformat"),
+      ),
+    ).toBe(true);
+  });
+
+  it("skips binary/truncated item files with warnings and still builds the rest", async () => {
+    const { files } = createFakeFiles({
+      trees: {
+        "": tree([dirEntry("reqs", "reqs")]),
+        "reqs": tree([
+          fileEntry(".doorstop.yml", "reqs/.doorstop.yml"),
+          fileEntry("REQ0001.yml", "reqs/REQ0001.yml"),
+          fileEntry("REQ0002.yml", "reqs/REQ0002.yml"),
+        ]),
+      },
+      reads: {
+        "reqs/.doorstop.yml": text("settings:\n  prefix: REQ\n  digits: 4"),
+        "reqs/REQ0001.yml": { ...text("text: good"), truncated: true },
+        "reqs/REQ0002.yml": { ...text(""), binary: true },
+      },
+    });
+
+    const result = await loadDoorstopWorkspace(files);
+
+    expect(result.index.items).toHaveLength(0);
+    expect(result.index.byUid.size).toBe(0);
+    expect(result.index.diagnostics).toEqual([
+      { severity: "warning", path: "reqs/REQ0001.yml", message: "File content truncated by the workspace API and skipped" },
+      { severity: "warning", path: "reqs/REQ0002.yml", message: "Binary file skipped; not parsed as a Doorstop item" },
+    ]);
+  });
+});
+
+// --- test helpers ------------------------------------------------------------------------
+
+function fakeHost(): { host: DoorstopWorkspaceHost } {
+  return { host: { isConnected: false } };
+}
+
+function makeWorkspace(id: number): Workspace {
+  return { ...doorstopWorkspace, id: `workspace-${String(id)}` };
+}
+
+/** Build one panel context wrapping the fake files adapter plus a
+ *  `requestRender` spy — the controller's render path fires this (via the
+ *  context host). */
+function panelContext(
+  fake: FakeWorkspaceFiles,
+  workspace: Workspace = doorstopWorkspace,
+): { context: WorkspacePanelContext; requestRender: Mock } {
+  const requestRender = vi.fn();
+  const context: WorkspacePanelContext = {
+    machine: { id: "local", name: "local", kind: "local" },
+    workspace,
+    state: {
+      selectedWorkspace: workspace,
+      workspaceTool: "opendoor:workspace.doorstop",
+      mainView: "opendoor:workspace.doorstop",
+    },
+    files: fake.files,
+    host: { requestRender },
+    prompt: { insertText: () => undefined, getText: () => "", getSelection: () => null },
+    terminal: { open: () => undefined, runCommand: () => Promise.reject(new Error("not implemented")) },
+  };
+  return { context, requestRender };
+}
+
+/** How many microtask turns a bare `await settle()` waits for a resolved
+ *  promise chain to flush. A magic number, but named and shared so every
+ *  test's timing assumption is uniform. */
+const SETTLE_TICKS = 10;
+
+async function settle(): Promise<void> {
+  for (let index = 0; index < SETTLE_TICKS; index += 1) await Promise.resolve();
+}

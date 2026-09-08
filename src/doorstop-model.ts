@@ -35,7 +35,9 @@
 //     `Level` component normalization (with the documented YAML float gotcha
 //     `level: 1.10` → 1.1), `Text` load_text for text/header, `to_bool` for
 //     active/normative/derived, `ref` stripping, and Stamp semantics for
-//     links/reviewed (`- REQ001` / `- REQ001: null` → fingerprint null).
+//     links/reviewed (`- REQ001` / `- REQ001: null` → fingerprint null; a
+//     legacy boolean `reviewed: true` — the `Stamp(True)` placeholder —
+//     becomes null with a warning, see `reviewedFrom`).
 //
 // Conventions (contract idiom, notes/opense-recon.md fact 12): optional
 // fields are OMITTED — never set to `undefined` (`exactOptionalPropertyTypes`
@@ -286,6 +288,46 @@ function stampFrom(value: unknown): string | null {
     return value;
   }
   return null;
+}
+
+/** Doorstop's `Stamp(True)` placeholder — "manually-confirmed matching hash,
+ *  to be replaced later" (types.py `Stamp.__init__`): a bare boolean where a
+ *  fingerprint belongs. Old Doorstop items stored the review status that way,
+ *  and any YAML-1.1-truthy scalar (to_bool: `yes`/`true`/`enabled`/`1`,
+ *  booleans, non-zero numbers) still normalizes to it today. The modern
+ *  `reviewed` property (item.py) lazily replaces a stored `Stamp(True)` with
+ *  the item's CURRENT stamp, so upstream a legacy `reviewed: true` reads as
+ *  reviewed-at-current-stamp. The model chain cannot compute stamps (that is
+ *  computeItemStamp's job), so a legacy placeholder is normalized to
+ *  `reviewed: null` with a warning — the state chain flags the item
+ *  unreviewed until `doorstop review` rewrites the file, and `item.raw`
+ *  keeps the legacy value verbatim. */
+function isLegacyReviewPlaceholder(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") {
+    const lowered = value.toLowerCase().trim();
+    return lowered === "yes" || lowered === "true" || lowered === "enabled" || lowered === "1";
+  }
+  return false;
+}
+
+/** `reviewed` normalization (buildItemRecord): Stamp semantics for the item's
+ *  own review fingerprint — a fingerprint string is kept, `Stamp(None)` forms
+ *  (null/false/0/'') are silent null (never reviewed, exactly like
+ *  `stampFrom`), and a `Stamp(True)` legacy placeholder becomes null WITH a
+ *  warning (see {@link isLegacyReviewPlaceholder}). Links keep their own
+ *  silent placeholder→null mapping — the contract documents `null` as
+ *  covering `Stamp()`/`Stamp(True)` there. */
+function reviewedFrom(value: unknown, path: string, diagnostics: DiscoveryDiagnostic[]): string | null {
+  if (isLegacyReviewPlaceholder(value)) {
+    diagnostics.push({
+      severity: "warning",
+      path,
+      message: "legacy boolean reviewed attribute; treat as unreviewed until next doorstop review",
+    });
+  }
+  return stampFrom(value);
 }
 
 /** Doorstop `ref` handling: `str(value) if value else ""`, stripped.
@@ -632,7 +674,7 @@ function buildItemRecord(
     if (references !== undefined) item.references = references; // OMITTED when none
   }
   if (hasOwn(parsed, "links")) item.links = normalizeLinks(parsed["links"], diagnostics, path);
-  if (hasOwn(parsed, "reviewed")) item.reviewed = stampFrom(parsed["reviewed"]);
+  if (hasOwn(parsed, "reviewed")) item.reviewed = reviewedFrom(parsed["reviewed"], path, diagnostics);
 
   const attributes: Record<string, unknown> = {};
   for (const key of Object.keys(parsed)) {

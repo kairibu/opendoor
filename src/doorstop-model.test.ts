@@ -205,9 +205,48 @@ describe("parseDoorstopItem (yaml format)", () => {
 
   it("maps reviewed placeholders to null and keeps real stamps", () => {
     expect(parse("reqs/REQ/A.yml", "reviewed: null").item.reviewed).toBeNull();
-    expect(parse("reqs/REQ/A.yml", "reviewed: true").item.reviewed).toBeNull(); // Stamp(True) placeholder
+    expect(parse("reqs/REQ/A.yml", "reviewed: false").item.reviewed).toBeNull(); // Stamp(None) — never reviewed
     expect(parse("reqs/REQ/A.yml", "reviewed: ''").item.reviewed).toBeNull();
     expect(parse("reqs/REQ/A.yml", "reviewed: abc").item.reviewed).toBe("abc");
+  });
+
+  it("flags a legacy boolean `reviewed: true` (Stamp(True) placeholder) as unreviewed with a warning (yaml)", () => {
+    // Doorstop's reviewed getter (item.py) lazily replaces a stored Stamp(True)
+    // with the item's CURRENT stamp, so upstream this reads as
+    // reviewed-at-current-stamp. The model chain cannot compute stamps, so the
+    // faithful model-level representation is null + warning + raw preserved.
+    const { item, diagnostics } = parse("reqs/REQ/REQ001.yml", "reviewed: true");
+    expect(item.reviewed).toBeNull();
+    expect(item.raw["reviewed"]).toBe(true); // legacy value never lost
+    expect(diagnostics).toEqual([
+      {
+        severity: "warning",
+        path: "reqs/REQ/REQ001.yml",
+        message: "legacy boolean reviewed attribute; treat as unreviewed until next doorstop review",
+      },
+    ]);
+  });
+
+  it("flags every Stamp(True) scalar form (yes/true/enabled/1/non-zero numbers) the same way", () => {
+    const warning = {
+      severity: "warning" as const,
+      path: "reqs/REQ/REQ001.yml",
+      message: "legacy boolean reviewed attribute; treat as unreviewed until next doorstop review",
+    };
+    // js-yaml keeps YAML-1.1 truthy scalars as strings (`yes`, `enabled`,
+    // quoted `'true'`) and parses `1`/`5` as numbers; Doorstop's `Stamp()`
+    // normalizes all of them to the Stamp(True) placeholder via to_bool.
+    for (const line of ["reviewed: yes", "reviewed: 'true'", "reviewed: enabled", "reviewed: 1", "reviewed: 5"]) {
+      const { item, diagnostics } = parse("reqs/REQ/REQ001.yml", line);
+      expect(item.reviewed).toBeNull();
+      expect(diagnostics).toEqual([warning]);
+    }
+    // Stamp(None) forms — genuinely never reviewed — stay silent, no warning.
+    for (const line of ["reviewed: false", "reviewed: 0", "reviewed: ''"]) {
+      const { item, diagnostics } = parse("reqs/REQ/REQ001.yml", line);
+      expect(item.reviewed).toBeNull();
+      expect(diagnostics).toEqual([]);
+    }
   });
 
   it("deduplicates links (set semantics, first occurrence keeps its stamp)", () => {
@@ -337,6 +376,20 @@ describe("parseDoorstopItem (markdown format)", () => {
     expect(item.reviewed).toBe("9TcFUzsQWUHhoh5wsqnhL7VRtSqMaIhrCXg7mfIkxKM=");
     expect(item.links).toEqual([{ uid: "REQ001", fingerprint: "abc123=" }]);
     expect(item.attributes).toEqual({ "invented-by": "jane@example.com" });
+  });
+
+  it("flags a legacy boolean `reviewed: true` in markdown frontmatter the same way", () => {
+    const content = ["---", "reviewed: true", "---", "", "# Legacy", "", "Reviewed once, long ago."].join("\n");
+    const { item, diagnostics } = parse("reqs/REQ/REQ001.md", content, { itemformat: "markdown" });
+    expect(item.reviewed).toBeNull(); // Stamp(True) placeholder — model cannot mint a stamp
+    expect(item.raw["reviewed"]).toBe(true); // legacy value kept verbatim in raw
+    expect(diagnostics).toEqual([
+      {
+        severity: "warning",
+        path: "reqs/REQ/REQ001.md",
+        message: "legacy boolean reviewed attribute; treat as unreviewed until next doorstop review",
+      },
+    ]);
   });
 
   it("lets body-derived header/text override frontmatter copies", () => {

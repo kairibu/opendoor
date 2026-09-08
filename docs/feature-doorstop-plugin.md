@@ -218,8 +218,9 @@ attributed and non-fatal, mirroring OpenSE's diagnostics discipline.
 
 A toggle in the tab (or sub-view) shows **Findings**: the plugin's locally
 computed findings list (item, severity, message) with a prominent
-**Run `doorstop` validation** button. That button runs `doorstop --strict`
-in a workspace terminal; the authoritative CLI output remains in the terminal
+**Run `doorstop` validation** button. That button runs plain `doorstop`
+(matching the action table in §8; a `--strict` variant can be a later
+option) in a workspace terminal; the authoritative CLI output remains in the terminal
 (v1 does not scrape it), and the plugin's own findings re-compute afterwards.
 Severity coloring follows Doorstop: INFO / WARNING / ERROR.
 
