@@ -30,7 +30,7 @@ import {
   loadDoorstopWorkspace,
   type DoorstopWorkspaceResult,
 } from "./doorstop-panel.js";
-import { DEFAULT_OPENDORR_SETTINGS } from "./doorstop-settings.js";
+import { DEFAULT_OPENDOOR_SETTINGS } from "./doorstop-settings.js";
 import { createFakeFiles, dirEntry, fileEntry, text, tree, type FakeWorkspaceFiles } from "./test-support.js";
 
 const doorstopWorkspace: Workspace = {
@@ -87,7 +87,7 @@ function makeResult(
 ): DoorstopWorkspaceResult {
   const index = buildDoorstopIndex(documents, items, diagnostics, new Set());
   computeItemStates(index);
-  return { index, settings: DEFAULT_OPENDORR_SETTINGS };
+  return { index, settings: DEFAULT_OPENDOOR_SETTINGS };
 }
 
 describe("DoorstopWorkspaceController (fake host, no DOM)", () => {
@@ -417,7 +417,7 @@ describe("loadDoorstopWorkspace (end-to-end over the fake files adapter)", () =>
     // The item reads touched only the three item files + two configs + the
     // settings file (read first, missing → defaults, no diagnostic) — a
     // `.doorstop.yml` is never read/parsed as an item.
-    expect(result.settings).toEqual(DEFAULT_OPENDORR_SETTINGS);
+    expect(result.settings).toEqual(DEFAULT_OPENDOOR_SETTINGS);
     expect(result.index.diagnostics).toEqual([]);
     expect(new Set(readCalls)).toEqual(
       new Set([
@@ -596,7 +596,7 @@ describe("loadDoorstopWorkspace (end-to-end over the fake files adapter)", () =>
 
     const result = await loadDoorstopWorkspace(files);
 
-    expect(result.settings).toEqual(DEFAULT_OPENDORR_SETTINGS);
+    expect(result.settings).toEqual(DEFAULT_OPENDOOR_SETTINGS);
     expect(result.index.diagnostics).toEqual([
       {
         severity: "warning",
