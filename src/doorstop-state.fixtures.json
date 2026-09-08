@@ -1,0 +1,598 @@
+{
+  "generator": {
+    "tool": "notes/fixture-generator.py",
+    "doorstopVersion": "3.2",
+    "doorstopSource": "doorstop-dev/doorstop commit 1f5756390bdeeff58fc22e30d5c5a56bb1a81c16 (force-reinstalled into the venv)",
+    "createdWith": "doorstop installed in a python3 venv (see header)"
+  },
+  "documents": [
+    {
+      "directoryPath": "",
+      "configPath": ".doorstop.yml",
+      "prefix": "REQ",
+      "digits": 4,
+      "separator": "",
+      "parentPrefix": null,
+      "itemformat": "yaml",
+      "reviewedAttributes": [
+        "type",
+        "verification-method"
+      ]
+    },
+    {
+      "directoryPath": "tests",
+      "configPath": "tests/.doorstop.yml",
+      "prefix": "TST",
+      "digits": 4,
+      "separator": "",
+      "parentPrefix": "REQ",
+      "itemformat": "yaml",
+      "reviewedAttributes": []
+    }
+  ],
+  "items": [
+    {
+      "uid": "REQ001",
+      "documentPrefix": "REQ",
+      "path": "REQ001.yml",
+      "level": "1.0",
+      "active": true,
+      "derived": false,
+      "normative": true,
+      "header": "",
+      "text": "The system shall flash.\nIt shall use the light.",
+      "ref": "",
+      "references": null,
+      "links": [],
+      "attributes": {},
+      "reviewed": "af9hXN-XDryfoK21NASzkdhmCM3NM4XzKtWOiwvd2U0=",
+      "stamp": "3_AhFIVQEgWmzWC9egw3076-oWEmSZl004Ccl5orHZk=",
+      "reviewStamp": "3_AhFIVQEgWmzWC9egw3076-oWEmSZl004Ccl5orHZk=",
+      "yaml": "active: true\nderived: false\nheader: ''\nlevel: 1.0\nlinks: []\nnormative: true\nref: ''\nreviewed: af9hXN-XDryfoK21NASzkdhmCM3NM4XzKtWOiwvd2U0=\ntext: |\n  The system shall flash.\n  It shall use the light.\n",
+      "issues": [
+        {
+          "severity": "WARNING",
+          "message": "unreviewed changes"
+        }
+      ]
+    },
+    {
+      "uid": "REQ002",
+      "documentPrefix": "REQ",
+      "path": "REQ002.yml",
+      "level": "1.0",
+      "active": true,
+      "derived": false,
+      "normative": true,
+      "header": "",
+      "text": "The system shall beep.",
+      "ref": "docs/refs/spec.txt",
+      "references": null,
+      "links": [],
+      "attributes": {},
+      "reviewed": "ZkDDr4wLjwyHPxUdyj0Kt6coUETVWbURIuTMt7mRd_A=",
+      "stamp": "ZkDDr4wLjwyHPxUdyj0Kt6coUETVWbURIuTMt7mRd_A=",
+      "reviewStamp": "ZkDDr4wLjwyHPxUdyj0Kt6coUETVWbURIuTMt7mRd_A=",
+      "yaml": "active: true\nderived: false\nheader: ''\nlevel: 1.0\nlinks: []\nnormative: true\nref: docs/refs/spec.txt\nreviewed: ZkDDr4wLjwyHPxUdyj0Kt6coUETVWbURIuTMt7mRd_A=\ntext: |\n  The system shall beep.\n",
+      "issues": [
+        {
+          "severity": "WARNING",
+          "message": "no links from child document: TST"
+        }
+      ]
+    },
+    {
+      "uid": "TST001",
+      "documentPrefix": "TST",
+      "path": "tests/TST001.yml",
+      "level": "1.0",
+      "active": true,
+      "derived": false,
+      "normative": true,
+      "header": "",
+      "text": "Verify blinking.",
+      "ref": "",
+      "references": null,
+      "links": [
+        {
+          "uid": "REQ001",
+          "fingerprint": "af9hXN-XDryfoK21NASzkdhmCM3NM4XzKtWOiwvd2U0="
+        }
+      ],
+      "attributes": {},
+      "reviewed": null,
+      "stamp": "y-U8qgdiPHUwp_QZvVSuHOiFyEYsvQKYVyW2Jurcx2A=",
+      "reviewStamp": "M0Gxrxn-0P5bdeKvmgU2iT-ognMJSqViHlJnBL0JFvQ=",
+      "yaml": "active: true\nderived: false\nheader: ''\nlevel: 1.0\nlinks:\n- REQ001: af9hXN-XDryfoK21NASzkdhmCM3NM4XzKtWOiwvd2U0=\nnormative: true\nref: ''\nreviewed: null\ntext: |\n  Verify blinking.\n",
+      "issues": [
+        {
+          "severity": "WARNING",
+          "message": "suspect link: REQ001"
+        },
+        {
+          "severity": "INFO",
+          "message": "needs initial review"
+        }
+      ]
+    },
+    {
+      "uid": "TST002",
+      "documentPrefix": "TST",
+      "path": "tests/TST002.yml",
+      "level": "1.0",
+      "active": true,
+      "derived": false,
+      "normative": true,
+      "header": "",
+      "text": "Verify beeping.",
+      "ref": "",
+      "references": null,
+      "links": [],
+      "attributes": {},
+      "reviewed": null,
+      "stamp": "Pl-FF_trhwbalWdLa5ahXpV91jlm_cy8SGl3LnQQigc=",
+      "reviewStamp": "Pl-FF_trhwbalWdLa5ahXpV91jlm_cy8SGl3LnQQigc=",
+      "yaml": "active: true\nderived: false\nheader: ''\nlevel: 1.0\nlinks: []\nnormative: true\nref: ''\ntext: |\n  Verify beeping.\n",
+      "issues": [
+        {
+          "severity": "WARNING",
+          "message": "no links to parent document: REQ"
+        },
+        {
+          "severity": "INFO",
+          "message": "needs initial review"
+        }
+      ]
+    },
+    {
+      "uid": "REQ003",
+      "documentPrefix": "REQ",
+      "path": "REQ003.yml",
+      "level": "1.1",
+      "active": true,
+      "derived": false,
+      "normative": true,
+      "header": "",
+      "text": "The system shall track all signals.",
+      "ref": "",
+      "references": null,
+      "links": [
+        {
+          "uid": "REQ001",
+          "fingerprint": "af9hXN-XDryfoK21NASzkdhmCM3NM4XzKtWOiwvd2U0="
+        },
+        {
+          "uid": "REQ002",
+          "fingerprint": "ZkDDr4wLjwyHPxUdyj0Kt6coUETVWbURIuTMt7mRd_A="
+        }
+      ],
+      "attributes": {},
+      "reviewed": null,
+      "stamp": "fqDms2J418rQmgnMoT9YieOjgGutuZGxQUgAM1TKDkE=",
+      "reviewStamp": "-AUKzb2VshEwt6ruf67ekmJX5QtY9653avNzjbiKDGQ=",
+      "yaml": "active: true\nderived: false\nheader: ''\nlevel: 1.1\nlinks:\n- REQ001: af9hXN-XDryfoK21NASzkdhmCM3NM4XzKtWOiwvd2U0=\n- REQ002: ZkDDr4wLjwyHPxUdyj0Kt6coUETVWbURIuTMt7mRd_A=\nnormative: true\nref: ''\nreviewed: null\ntext: |\n  The system shall track all signals.\n",
+      "issues": [
+        {
+          "severity": "WARNING",
+          "message": "suspect link: REQ001"
+        },
+        {
+          "severity": "WARNING",
+          "message": "no links from child document: TST"
+        },
+        {
+          "severity": "INFO",
+          "message": "needs initial review"
+        }
+      ]
+    },
+    {
+      "uid": "REQ004",
+      "documentPrefix": "REQ",
+      "path": "REQ004.yml",
+      "level": "1.1",
+      "active": true,
+      "derived": false,
+      "normative": true,
+      "header": "",
+      "text": "The system shall verify itself.",
+      "ref": "",
+      "references": [
+        {
+          "type": "file",
+          "path": "docs/refs/check.txt",
+          "keyword": "CALIBRATE",
+          "sha": "0123456789abcdef0123456789abcdef"
+        },
+        {
+          "type": "file",
+          "path": "docs/refs/missing.md"
+        }
+      ],
+      "links": [],
+      "attributes": {
+        "owner": "ops"
+      },
+      "reviewed": null,
+      "stamp": "PRIogpMOU66sxOE5OY0q50aDMRzWFnmtk9Ixo09CADs=",
+      "reviewStamp": "PRIogpMOU66sxOE5OY0q50aDMRzWFnmtk9Ixo09CADs=",
+      "yaml": "active: true\nderived: false\nheader: ''\nlevel: 1.1\nlinks: []\nnormative: true\nref: ''\ntext: |\n  The system shall verify itself.\nreferences:\n- type: file\n  path: docs/refs/check.txt\n  keyword: CALIBRATE\n  sha: 0123456789abcdef0123456789abcdef\n- type: file\n  path: docs/refs/missing.md\nowner: ops\n",
+      "issues": [
+        {
+          "severity": "ERROR",
+          "message": "external reference not found: docs/refs/missing.md"
+        },
+        {
+          "severity": "WARNING",
+          "message": "no links from child document: TST"
+        },
+        {
+          "severity": "INFO",
+          "message": "needs initial review"
+        }
+      ]
+    },
+    {
+      "uid": "TST003",
+      "documentPrefix": "TST",
+      "path": "tests/TST003.yml",
+      "level": "1.1",
+      "active": true,
+      "derived": true,
+      "normative": true,
+      "header": "",
+      "text": "Verify tracking.",
+      "ref": "",
+      "references": null,
+      "links": [],
+      "attributes": {},
+      "reviewed": null,
+      "stamp": "_fbS9moi-Qc1IE8mfqLSoegusHvDwXMAZzG3yl2qBgY=",
+      "reviewStamp": "_fbS9moi-Qc1IE8mfqLSoegusHvDwXMAZzG3yl2qBgY=",
+      "yaml": "active: true\nderived: true\nheader: ''\nlevel: 1.1\nlinks: []\nnormative: true\nref: ''\ntext: |\n  Verify tracking.\n",
+      "issues": [
+        {
+          "severity": "INFO",
+          "message": "needs initial review"
+        }
+      ]
+    },
+    {
+      "uid": "TST004",
+      "documentPrefix": "TST",
+      "path": "tests/TST004.yml",
+      "level": "1.1",
+      "active": true,
+      "derived": false,
+      "normative": true,
+      "header": "",
+      "text": "Verify unknown parent.",
+      "ref": "",
+      "references": null,
+      "links": [
+        {
+          "uid": "REQ999",
+          "fingerprint": null
+        }
+      ],
+      "attributes": {},
+      "reviewed": null,
+      "stamp": "YmjOG_Y08qEvsVPDWJp67Lbc7Twe-GkxaH4SI3iYVqk=",
+      "reviewStamp": "kpEuBeYxCybM8zlYm1t6hxqccZpjU02Y8_yZ6ZR7I_E=",
+      "yaml": "active: true\nderived: false\nheader: ''\nlevel: 1.1\nlinks: ['REQ999']\nnormative: true\nref: ''\ntext: |\n  Verify unknown parent.\n",
+      "issues": [
+        {
+          "severity": "ERROR",
+          "message": "linked to unknown item: REQ999"
+        },
+        {
+          "severity": "INFO",
+          "message": "needs initial review"
+        }
+      ]
+    },
+    {
+      "uid": "REQ005",
+      "documentPrefix": "REQ",
+      "path": "REQ005.yml",
+      "level": "1.2",
+      "active": true,
+      "derived": false,
+      "normative": true,
+      "header": "",
+      "text": "The system shall log events.",
+      "ref": "",
+      "references": null,
+      "links": [
+        {
+          "uid": "REQ002",
+          "fingerprint": "ZkDDr4wLjwyHPxUdyj0Kt6coUETVWbURIuTMt7mRd_A="
+        }
+      ],
+      "attributes": {
+        "type": "functional",
+        "verification-method": "test"
+      },
+      "reviewed": "Xi7_jQNm5Uixw3owAw8PRjmi1E6rqorzuXC39jcj9hU=",
+      "stamp": "uq0HUFRwyhKTZ6Du2DbhNu5qhHiKBcWssWQScrDvFBo=",
+      "reviewStamp": "Xi7_jQNm5Uixw3owAw8PRjmi1E6rqorzuXC39jcj9hU=",
+      "yaml": "active: true\nderived: false\nheader: ''\nlevel: 1.2\nlinks:\n- REQ002: ZkDDr4wLjwyHPxUdyj0Kt6coUETVWbURIuTMt7mRd_A=\nnormative: true\nref: ''\nreviewed: Xi7_jQNm5Uixw3owAw8PRjmi1E6rqorzuXC39jcj9hU=\ntext: |\n  The system shall log events.\ntype: functional\nverification-method: test\n",
+      "issues": [
+        {
+          "severity": "WARNING",
+          "message": "no links from child document: TST"
+        }
+      ]
+    },
+    {
+      "uid": "REQ006",
+      "documentPrefix": "REQ",
+      "path": "REQ006.yml",
+      "level": "1.2",
+      "active": true,
+      "derived": false,
+      "normative": true,
+      "header": "",
+      "text": "The system shall report status.",
+      "ref": "",
+      "references": null,
+      "links": [
+        {
+          "uid": "REQ005",
+          "fingerprint": "uq0HUFRwyhKTZ6Du2DbhNu5qhHiKBcWssWQScrDvFBo="
+        },
+        {
+          "uid": "TST001",
+          "fingerprint": "y-U8qgdiPHUwp_QZvVSuHOiFyEYsvQKYVyW2Jurcx2A="
+        }
+      ],
+      "attributes": {},
+      "reviewed": null,
+      "stamp": "WJE5UDSHbqBilYKdqS9JL7RWdxbR5qU5t2Rl9NfLRbI=",
+      "reviewStamp": "ZrMD7_n0VnmRb3wtVxu-mdTzu_wzsJgSv2vGBxMAsGs=",
+      "yaml": "active: true\nderived: false\nheader: ''\nlevel: 1.2\nlinks:\n- REQ005: uq0HUFRwyhKTZ6Du2DbhNu5qhHiKBcWssWQScrDvFBo=\n- TST001: y-U8qgdiPHUwp_QZvVSuHOiFyEYsvQKYVyW2Jurcx2A=\nnormative: true\nref: ''\nreviewed: null\ntext: |\n  The system shall report status.\n",
+      "issues": [
+        {
+          "severity": "WARNING",
+          "message": "no links from child document: TST"
+        },
+        {
+          "severity": "INFO",
+          "message": "needs initial review"
+        }
+      ]
+    },
+    {
+      "uid": "TST005",
+      "documentPrefix": "TST",
+      "path": "tests/TST005.yml",
+      "level": "1.2",
+      "active": true,
+      "derived": false,
+      "normative": true,
+      "header": "",
+      "text": "Verify inactive target.",
+      "ref": "",
+      "references": null,
+      "links": [
+        {
+          "uid": "REQ008",
+          "fingerprint": null
+        }
+      ],
+      "attributes": {},
+      "reviewed": null,
+      "stamp": "u43lkMj3pvIHob_RIur90Sd4dx_xJ6klgIiAUsiaS9E=",
+      "reviewStamp": "8ajDUsGYfv8mf-vAmxq_rMCAqy8CH0BzhtmY4DzzOeQ=",
+      "yaml": "active: true\nderived: false\nheader: ''\nlevel: 1.2\nlinks: ['REQ008']\nnormative: true\nref: ''\ntext: |\n  Verify inactive target.\n",
+      "issues": [
+        {
+          "severity": "INFO",
+          "message": "linked to inactive item: REQ008"
+        },
+        {
+          "severity": "INFO",
+          "message": "needs initial review"
+        }
+      ]
+    },
+    {
+      "uid": "TST006",
+      "documentPrefix": "TST",
+      "path": "tests/TST006.yml",
+      "level": "1.2",
+      "active": true,
+      "derived": false,
+      "normative": true,
+      "header": "",
+      "text": "Verify heading target.",
+      "ref": "",
+      "references": null,
+      "links": [
+        {
+          "uid": "REQ007",
+          "fingerprint": null
+        }
+      ],
+      "attributes": {},
+      "reviewed": null,
+      "stamp": "cNleTLlfS1ZVhI2r6Dewu1CMB2A6ryQfUxergJXFrTU=",
+      "reviewStamp": "lHf80Vxzd6_zRCsNTohqJqickwaIGrsMYczrFPXA1UM=",
+      "yaml": "active: true\nderived: false\nheader: ''\nlevel: 1.2\nlinks: ['REQ007']\nnormative: true\nref: ''\ntext: |\n  Verify heading target.\n",
+      "issues": [
+        {
+          "severity": "WARNING",
+          "message": "linked to non-normative item: REQ007"
+        },
+        {
+          "severity": "INFO",
+          "message": "needs initial review"
+        }
+      ]
+    },
+    {
+      "uid": "REQ007",
+      "documentPrefix": "REQ",
+      "path": "REQ007.yml",
+      "level": "2.0",
+      "active": true,
+      "derived": false,
+      "normative": false,
+      "header": "",
+      "text": "",
+      "ref": "",
+      "references": null,
+      "links": [
+        {
+          "uid": "REQ001",
+          "fingerprint": null
+        }
+      ],
+      "attributes": {},
+      "reviewed": null,
+      "stamp": "rVPrWc1bTEckqXZeLZo_VAAp6cDXV8GU84TGcxtt3zE=",
+      "reviewStamp": "yN2hXbJsRqVRUWDrbjOLJCPxR31jeu-S0g5CopD9t7I=",
+      "yaml": "active: true\nderived: false\nheader: ''\nlevel: 2.0\nlinks: ['REQ001']\nnormative: false\nref: ''\ntext: ''\n",
+      "issues": [
+        {
+          "severity": "WARNING",
+          "message": "no text"
+        },
+        {
+          "severity": "WARNING",
+          "message": "non-normative, but has links"
+        },
+        {
+          "severity": "INFO",
+          "message": "needs initial review"
+        }
+      ]
+    },
+    {
+      "uid": "REQ008",
+      "documentPrefix": "REQ",
+      "path": "REQ008.yml",
+      "level": "3.0",
+      "active": false,
+      "derived": false,
+      "normative": true,
+      "header": "",
+      "text": "Temporarily disabled.",
+      "ref": "",
+      "references": null,
+      "links": [],
+      "attributes": {},
+      "reviewed": null,
+      "stamp": "n4kv4eLFKgYieqvdPYLg_VkrlHnxcF91dt17ArnlVB4=",
+      "reviewStamp": "n4kv4eLFKgYieqvdPYLg_VkrlHnxcF91dt17ArnlVB4=",
+      "yaml": "active: false\nderived: false\nheader: ''\nlevel: 3.0\nlinks: []\nnormative: true\nref: ''\ntext: |\n  Temporarily disabled.\n",
+      "issues": []
+    }
+  ],
+  "schemaGap": [
+    {
+      "key": "int-5",
+      "scalar": "YAML `5` (int)",
+      "parity": "equal",
+      "doorstopConvert": "\\T<class 'int'>\\V5",
+      "doorstopStamp": "mRIor-S-2b36s8-22eZkrjUEcJMb-8vznRGWzzKYxqI="
+    },
+    {
+      "key": "float-5.0",
+      "scalar": "YAML `5.0` \u2014 PyYAML float, but js-yaml yields the JS number 5",
+      "parity": "divergent",
+      "doorstopConvert": "\\T<class 'float'>\\V5.0",
+      "doorstopStamp": "tP7-I6FW_YdEZtdIoZoWrj8KB40RQZHFafUaPTT8354="
+    },
+    {
+      "key": "float-1e2",
+      "scalar": "YAML `1e2` \u2014 PyYAML float 100.0, js-yaml yields the JS number 100",
+      "parity": "divergent",
+      "doorstopConvert": "\\T<class 'float'>\\V100.0",
+      "doorstopStamp": "J0VEVYCQ5h5fg1XubBdMdCNtNWiEuTY-7cNSbGyxe3U="
+    },
+    {
+      "key": "bool-yes",
+      "scalar": "YAML `yes` \u2014 PyYAML bool True, js-yaml keeps the string 'yes'",
+      "parity": "divergent",
+      "doorstopConvert": "\\T<class 'bool'>\\VTrue",
+      "doorstopStamp": "5ULOyUQAsNP5PCUbyw2vkvUFmmfPytYI-TDixotgLmM="
+    },
+    {
+      "key": "str-date",
+      "scalar": "quoted string '2024-01-01' \u2014 str on both sides",
+      "parity": "equal",
+      "doorstopConvert": "\\T<class 'str'>\\V2024-01-01",
+      "doorstopStamp": "aicMmDwLryYTaR4-TebhpCNbATtTa21ntWECikzq9iU="
+    },
+    {
+      "key": "date",
+      "scalar": "YAML `2024-01-01` \u2014 PyYAML datetime.date; the port renders midnight-UTC JS Dates as date",
+      "parity": "equal",
+      "doorstopConvert": "\\T<class 'datetime.date'>\\V2024-01-01",
+      "doorstopStamp": "7F2rsDg3Jt_lY9ydPsWYPnl_twnICWD4yxSBSKbF2uU="
+    },
+    {
+      "key": "datetime",
+      "scalar": "YAML `2024-01-01 12:34:56Z` \u2014 PyYAML datetime(utc); the port renders UTC datetimes with '+00:00'",
+      "parity": "equal",
+      "doorstopConvert": "\\T<class 'datetime.datetime'>\\V2024-01-01 12:34:56+00:00",
+      "doorstopStamp": "3VqxfGWaintNxWtjcKVc8bOAVfTxUvvRO32_KQ_YX1Q="
+    },
+    {
+      "key": "datetime-ms",
+      "scalar": "YAML `2024-01-01 12:34:56.123Z` \u2014 fractional seconds become microseconds",
+      "parity": "equal",
+      "doorstopConvert": "\\T<class 'datetime.datetime'>\\V2024-01-01 12:34:56.123000+00:00",
+      "doorstopStamp": "nMtLA3YrDJcLlPDM3_voFVpdLVWgNBaAqvdoG-bir0s="
+    },
+    {
+      "key": "datetime-tz",
+      "scalar": "YAML `2024-01-01 12:34:56+02:00` \u2014 js-yaml normalizes to a UTC Date; the offset is lost",
+      "parity": "divergent",
+      "doorstopConvert": "\\T<class 'datetime.datetime'>\\V2024-01-01 12:34:56+02:00",
+      "doorstopStamp": "NyazuHaERztl_hohCpw2eZMlJ9claJQNJF2zsfS8_gQ="
+    },
+    {
+      "key": "nan",
+      "scalar": "YAML `.nan` \u2014 PyYAML float nan; the port emits 'nan'",
+      "parity": "equal",
+      "doorstopConvert": "\\T<class 'float'>\\Vnan",
+      "doorstopStamp": "CZVveAFLdTTserXY3xP5hP_y790crCwBreB37_aetCU="
+    },
+    {
+      "key": "inf",
+      "scalar": "YAML `.inf` \u2014 PyYAML float inf; the port emits 'inf'",
+      "parity": "equal",
+      "doorstopConvert": "\\T<class 'float'>\\Vinf",
+      "doorstopStamp": "7U-fxVE7QdY88E5urYC1gg69uKyZAXuVw4434kuujDY="
+    },
+    {
+      "key": "neg-inf",
+      "scalar": "YAML `-.inf` \u2014 PyYAML float -inf; the port emits '-inf'",
+      "parity": "equal",
+      "doorstopConvert": "\\T<class 'float'>\\V-inf",
+      "doorstopStamp": "_CGzAXBFRo9Ihxy6Sm_HzHab-jSbGK-sYx4OXMKrEb0="
+    }
+  ],
+  "knownFilePaths": [
+    ".doorstop.yml",
+    "REQ001.yml",
+    "REQ002.yml",
+    "REQ003.yml",
+    "REQ004.yml",
+    "REQ005.yml",
+    "REQ006.yml",
+    "REQ007.yml",
+    "REQ008.yml",
+    "docs/refs/check.txt",
+    "docs/refs/spec.txt",
+    "tests/.doorstop.yml",
+    "tests/TST001.yml",
+    "tests/TST002.yml",
+    "tests/TST003.yml",
+    "tests/TST004.yml",
+    "tests/TST005.yml",
+    "tests/TST006.yml"
+  ]
+}
