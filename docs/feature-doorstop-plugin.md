@@ -258,8 +258,11 @@ documented label pattern (synchronous `items()` + `host.requestRender()`).
 | --- | --- | --- | --- |
 | `view.doorstop` | Go to Requirements | `mod+7` (collision-checked at implementation time, like OpenSE did) | open the panel |
 | `workspace.refresh-doorstop` | Refresh Requirements | `mod+shift+d` | re-run discovery + parse |
-| `workspace.doorstop-validate` | Doorstop: Validate | — | terminal: `doorstop` (whole tree) |
-| `workspace.doorstop-publish` | Doorstop: Publish HTML | — | terminal: `doorstop publish all ./public` (target configurable via plugin settings later) |
+
+Validate and Publish are **panel toolbar buttons**, not palette actions:
+palette actions receive `PluginRuntimeContext`, which has no terminal helper,
+so they cannot run `doorstop` commands; the panel's `WorkspacePanelContext`
+can (and does, via `terminal.runCommand()`).
 
 Item-scoped operations live in the panel (they need a selected item), not the
 palette: *Add item* (`doorstop add <PREFIX>`), *Link…* (two-UID picker →
