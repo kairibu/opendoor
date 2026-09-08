@@ -29,6 +29,10 @@
 //   skipped rather than yielding a silently wrong directory path.
 // - Discovery is total: listFiles/readFile rejections become diagnostics, so
 //   this module never throws on adapter failures.
+// - Skip set: the built-in `.git`/`node_modules` (exact leaf names, any
+//   depth) plus the caller's optional `excludedDirectories` names merged in
+//   (workspace settings, src/doorstop-settings.ts) — merged behind a
+//   defensive cap so an unbounded caller list cannot blow up the set.
 // - Symlink entries are neither expanded nor collected, and never recorded
 //   into the file index (a browser walk has no symlink-escape protection).
 // - Determinism: traverses listFiles responses in returned order, a
@@ -104,6 +108,14 @@ export const MAX_CONCURRENT_READS = 8;
 
 /** Directories never expanded, at any depth (matched by exact leaf name). */
 const SKIPPED_DIRECTORIES: ReadonlySet<string> = new Set([".git", "node_modules"]);
+
+/** Defensive cap on the merged skip set (built-ins + caller exclusions). The
+ *  settings module already caps its own `excludedDirectories` at
+ *  MAX_EXCLUDED_DIRECTORIES (16); this guards the walk against ANY caller
+ *  passing an unbounded list, mirroring the discovery caps idiom. Exported
+ *  for the boundary test that pins exactly how many caller names fit beside
+ *  the two built-ins (128 − 2 = 126). */
+export const MAX_SKIPPED_DIRECTORIES = 128;
 
 const ENTRIES_CAP_MESSAGE = `Discovery stopped after ${String(MAX_DISCOVERY_ENTRIES)} entries; remaining files were not scanned`;
 const FILES_CAP_MESSAGE = `Discovery stopped after ${String(MAX_DISCOVERY_FILES)} .doorstop.yml files; remaining files were not scanned`;
@@ -574,6 +586,19 @@ function isDoorstopConfigName(name: string): boolean {
   return name === DOORSTOP_CONFIG_NAME;
 }
 
+/** The skip set the walk consults: the built-in `.git`/`node_modules` plus
+ *  the caller's extra plain directory names (validated by the settings
+ *  module, but the walk is defensive and caps the merged set regardless). */
+function effectiveSkippedDirectories(excludedDirectories?: readonly string[]): ReadonlySet<string> {
+  if (excludedDirectories === undefined || excludedDirectories.length === 0) return SKIPPED_DIRECTORIES;
+  const set = new Set(SKIPPED_DIRECTORIES);
+  for (const name of excludedDirectories) {
+    if (set.size >= MAX_SKIPPED_DIRECTORIES) break;
+    if (typeof name === "string" && name !== "") set.add(name);
+  }
+  return set;
+}
+
 /**
  * Discover every `.doorstop.yml` under the workspace root through the injected
  * `files` adapter, read each document config, and return the normalized
@@ -581,12 +606,20 @@ function isDoorstopConfigName(name: string): boolean {
  * inaccessible content and the workspace-root-relative paths of every file the
  * walk enumerated (`knownFilePaths` — the discovery file index of feature spec
  * §6). Never throws: adapter failures and invalid configs are diagnosed.
+ *
+ * `options.excludedDirectories` adds extra plain directory NAMES (never
+ * paths) to the built-in `.git`/`node_modules` skip set; the merged set is
+ * capped defensively (see {@link MAX_SKIPPED_DIRECTORIES}).
  */
-export async function discoverDoorstopDocuments(files: DoorstopFiles): Promise<DoorstopDiscoveryResult> {
+export async function discoverDoorstopDocuments(
+  files: DoorstopFiles,
+  options?: { excludedDirectories?: readonly string[] },
+): Promise<DoorstopDiscoveryResult> {
   const documents: DoorstopDocumentConfig[] = [];
   const diagnostics: DiscoveryDiagnostic[] = [];
   const knownFilePaths = new Set<string>();
   const visitedDirectories = new Set<string>([WORKSPACE_ROOT]);
+  const skippedDirectories = effectiveSkippedDirectories(options?.excludedDirectories);
 
   let entriesVisited = 0;
   let filesAdmitted = 0;
@@ -612,7 +645,7 @@ export async function discoverDoorstopDocuments(files: DoorstopFiles): Promise<D
     for (const entry of tree.entries) {
       // Skipped directories cost nothing toward the entries cap — the cap
       // bounds work actually examined, not entries short-circuited first.
-      if (SKIPPED_DIRECTORIES.has(entry.name)) continue;
+      if (skippedDirectories.has(entry.name)) continue;
 
       entriesVisited += 1;
       if (entriesVisited > MAX_DISCOVERY_ENTRIES) {

@@ -30,6 +30,7 @@ import {
   loadDoorstopWorkspace,
   type DoorstopWorkspaceResult,
 } from "./doorstop-panel.js";
+import { DEFAULT_OPENDORR_SETTINGS } from "./doorstop-settings.js";
 import { createFakeFiles, dirEntry, fileEntry, text, tree, type FakeWorkspaceFiles } from "./test-support.js";
 
 const doorstopWorkspace: Workspace = {
@@ -86,7 +87,7 @@ function makeResult(
 ): DoorstopWorkspaceResult {
   const index = buildDoorstopIndex(documents, items, diagnostics, new Set());
   computeItemStates(index);
-  return { index };
+  return { index, settings: DEFAULT_OPENDORR_SETTINGS };
 }
 
 describe("DoorstopWorkspaceController (fake host, no DOM)", () => {
@@ -413,10 +414,14 @@ describe("loadDoorstopWorkspace (end-to-end over the fake files adapter)", () =>
     expect(result.index.counts.items).toBe(3);
     expect(result.index.counts.documents).toBe(2);
 
-    // The item reads touched only the three item files + two configs — a
+    // The item reads touched only the three item files + two configs + the
+    // settings file (read first, missing → defaults, no diagnostic) — a
     // `.doorstop.yml` is never read/parsed as an item.
+    expect(result.settings).toEqual(DEFAULT_OPENDORR_SETTINGS);
+    expect(result.index.diagnostics).toEqual([]);
     expect(new Set(readCalls)).toEqual(
       new Set([
+        ".pi-web/opendoor.json",
         "reqs/.doorstop.yml",
         "tests/.doorstop.yml",
         "reqs/REQ0001.yml",
@@ -478,7 +483,7 @@ describe("loadDoorstopWorkspace (end-to-end over the fake files adapter)", () =>
     // item files + the config were read.
     expect(result.index.diagnostics.some((d) => d.path === "reqs/.doorstop.yml")).toBe(false);
     expect(new Set(readCalls)).toEqual(
-      new Set(["reqs/.doorstop.yml", "reqs/REQ0001.yml", "reqs/REQ0002.yml"]),
+      new Set([".pi-web/opendoor.json", "reqs/.doorstop.yml", "reqs/REQ0001.yml", "reqs/REQ0002.yml"]),
     );
   });
 
@@ -531,6 +536,138 @@ describe("loadDoorstopWorkspace (end-to-end over the fake files adapter)", () =>
       { severity: "warning", path: "reqs/REQ0001.yml", message: "File content truncated by the workspace API and skipped" },
       { severity: "warning", path: "reqs/REQ0002.yml", message: "Binary file skipped; not parsed as a Doorstop item" },
     ]);
+  });
+
+  it("reads the workspace settings file first: exclusions shape discovery and settings surface on the result", async () => {
+    const { files, listCalls, readCalls } = createFakeFiles({
+      trees: {
+        "": tree([dirEntry("reqs", "reqs"), dirEntry("dist", "dist")]),
+        "reqs": tree([
+          fileEntry(".doorstop.yml", "reqs/.doorstop.yml"),
+          fileEntry("REQ0001.yml", "reqs/REQ0001.yml"),
+        ]),
+        // dist is excluded by the settings file — the walk must never list it.
+        "dist": tree([
+          fileEntry(".doorstop.yml", "dist/.doorstop.yml"),
+          fileEntry("OUT001.yml", "dist/OUT001.yml"),
+        ]),
+      },
+      reads: {
+        ".pi-web/opendoor.json": text(
+          ["{", "  \"version\": 1,", "  \"publishTarget\": \"./site\",", "  \"excludedDirectories\": [\"dist\"]", "}"].join("\n"),
+        ),
+        "reqs/.doorstop.yml": text("settings:\n  prefix: REQ\n  digits: 4"),
+        "reqs/REQ0001.yml": text("text: The system shall do X."),
+      },
+    });
+
+    const result = await loadDoorstopWorkspace(files);
+
+    // Settings surfaced on the result (the elements chain wires the publish
+    // command to settings.publishTarget from here).
+    expect(result.settings).toEqual({ publishTarget: "./site", excludedDirectories: ["dist"] });
+    // The excluded document and its items were never discovered.
+    expect(result.index.documents.map((d) => d.prefix)).toEqual(["REQ"]);
+    expect(result.index.counts.documents).toBe(1);
+    expect(result.index.counts.items).toBe(1);
+    expect(result.index.byUid.has("REQ0001")).toBe(true);
+    expect(result.index.byUid.has("OUT001")).toBe(false);
+    expect(Array.from(result.index.knownFilePaths).some((p) => p.startsWith("dist/"))).toBe(false);
+    // The walk never listed or read anything under dist (the discovery walk
+    // lists "reqs" once and the load job's item-directory listing lists it
+    // again), and the settings file was read exactly once, before the configs.
+    expect(listCalls).not.toContain("dist");
+    expect(readCalls).toEqual([".pi-web/opendoor.json", "reqs/.doorstop.yml", "reqs/REQ0001.yml"]);
+    expect(result.index.diagnostics).toEqual([]);
+    expect(result.index.ok).toBe(true);
+  });
+
+  it("flows settings-file diagnostics into the result (falling back to defaults)", async () => {
+    const { files } = createFakeFiles({
+      trees: {
+        "": tree([dirEntry("reqs", "reqs")]),
+        "reqs": tree([fileEntry(".doorstop.yml", "reqs/.doorstop.yml")]),
+      },
+      reads: {
+        ".pi-web/opendoor.json": text("{\"version\": 2}"), // unsupported version → warning + defaults
+        "reqs/.doorstop.yml": text("settings:\n  prefix: REQ\n  digits: 4"),
+      },
+    });
+
+    const result = await loadDoorstopWorkspace(files);
+
+    expect(result.settings).toEqual(DEFAULT_OPENDORR_SETTINGS);
+    expect(result.index.diagnostics).toEqual([
+      {
+        severity: "warning",
+        path: ".pi-web/opendoor.json",
+        message: expect.stringContaining('unsupported "version"'),
+      },
+    ]);
+    expect(result.index.ok).toBe(true); // warnings alone leave ok true
+  });
+
+  it("drives a markdown-itemformat document end-to-end: discovery → parse → index → states", async () => {
+    const { files, readCalls } = createFakeFiles({
+      trees: {
+        "": tree([dirEntry("specs", "specs")]),
+        "specs": tree([
+          fileEntry(".doorstop.yml", "specs/.doorstop.yml"),
+          fileEntry("SPC001.md", "specs/SPC001.md"),
+          fileEntry("SPC002.md", "specs/SPC002.md"),
+        ]),
+      },
+      reads: {
+        "specs/.doorstop.yml": text(
+          "settings:\n  prefix: SPC\n  digits: 3\n  sep: ''\n  parent: ''\n  itemformat: markdown",
+        ),
+        // Frontmatter `text:` is overridden by the body (Doorstop's
+        // update_data_from_markdown_content), and `header` is derived from
+        // the first level-1 body heading — pinned here at the full-job level.
+        "specs/SPC001.md": text(
+          ["---", "text: ignored frontmatter copy", "---", "", "# Login flow", "", "The system shall allow login."].join("\n"),
+        ),
+        "specs/SPC002.md": text(
+          ["---", "text: ignored frontmatter copy", "links:", "  - SPC001", "---", "", "# Session expiry", "", "The system shall expire sessions."].join(
+            "\n",
+          ),
+        ),
+      },
+    });
+
+    const result = await loadDoorstopWorkspace(files);
+
+    // Parse: markdown frontmatter + body-derived header/text.
+    const spc001 = result.index.byUid.get("SPC001");
+    const spc002 = result.index.byUid.get("SPC002");
+    expect(spc001?.header).toBe("Login flow");
+    expect(spc001?.text).toBe("The system shall allow login.");
+    expect(spc002?.header).toBe("Session expiry");
+    expect(spc002?.text).toBe("The system shall expire sessions.");
+    expect(spc002?.links.map((l) => l.uid)).toEqual(["SPC001"]);
+
+    // Index: the markdown document configured with itemformat markdown, two
+    // items, full lookups.
+    expect(result.index.documents.map((d) => d.prefix)).toEqual(["SPC"]);
+    expect(result.index.documents[0]?.itemformat).toBe("markdown");
+    expect(result.index.counts.documents).toBe(1);
+    expect(result.index.counts.items).toBe(2);
+    expect(result.index.byPrefix.get("SPC")?.itemformat).toBe("markdown");
+
+    // States: computeItemStates ran over the markdown items — both are
+    // normative, never reviewed → unreviewed chips, counters filled.
+    expect(spc001?.stateKeys).toContain("normative");
+    expect(spc001?.stateKeys).toContain("unreviewed");
+    expect(spc002?.stateKeys).toContain("normative");
+    expect(spc002?.stateKeys).toContain("unreviewed");
+    expect(result.index.counts.unreviewedChanges).toBe(2);
+    expect(result.index.diagnostics).toEqual([]);
+    expect(result.index.ok).toBe(true);
+
+    // Only the two item files + config (+ the missing settings read) were read.
+    expect(new Set(readCalls)).toEqual(
+      new Set([".pi-web/opendoor.json", "specs/.doorstop.yml", "specs/SPC001.md", "specs/SPC002.md"]),
+    );
   });
 });
 

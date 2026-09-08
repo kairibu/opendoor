@@ -11,10 +11,13 @@
 // NOT implemented here — the chains implement the functions declared (as
 // types) at the bottom:
 //
-//   doorstop-discovery.ts → discoverDoorstopDocuments   (module to be built)
+//   doorstop-discovery.ts → discoverDoorstopDocuments
 //   doorstop-model.ts     → parseDoorstopItem, buildDoorstopIndex
 //   doorstop-state.ts     → computeItemStamp, computeItemStates,
 //                           stampFromFingerprintParts
+//   doorstop-settings.ts  → readOpendoorSettings (workspace config reader;
+//                           no typed chain here, consumed by the panel chain
+//                           which feeds its exclusions to discovery)
 //
 // Shapes mirror Doorstop itself (doorstop-dev/doorstop, doorstop/core):
 //
@@ -353,9 +356,16 @@ export type DoorstopStampableItem = Pick<
  * warning diagnostics instead, so truncated/binary content never reaches
  * an item parser. Feature spec §5/§6/§10 and notes/opense-recon.md fact
  * 10.
+ *
+ * The optional `options` adds an EXTRA skip list merged with the built-in
+ * `.git`/`node_modules` skip set (from the workspace settings file,
+ * src/doorstop-settings.ts): `excludedDirectories` are plain directory NAMES
+ * (never paths) the walk must not expand, at any depth. The discovery chain
+ * caps the merged set defensively regardless of what the caller passes.
  */
 export type DiscoverDoorstopDocuments = (
   files: DoorstopFiles,
+  options?: { excludedDirectories?: readonly string[] },
 ) => Promise<DoorstopDiscoveryResult>;
 
 /**

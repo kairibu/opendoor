@@ -6,7 +6,7 @@
 // Coverage mirrors opense-discovery.test.ts and adds the config-parse cases.
 // ---------------------------------------------------------------------------
 
-import type { FileTreeEntry } from "@jmfederico/pi-web/plugin-api";
+import type { FileTreeEntry, FileTreeResponse } from "@jmfederico/pi-web/plugin-api";
 import { describe, expect, it, vi } from "vitest";
 import type { DoorstopFileContent, DoorstopFiles } from "./doorstop-contract.js";
 import {
@@ -14,6 +14,7 @@ import {
   MAX_DISCOVERY_DEPTH,
   MAX_DISCOVERY_ENTRIES,
   MAX_DISCOVERY_FILES,
+  MAX_SKIPPED_DIRECTORIES,
   discoverDoorstopDocuments,
 } from "./doorstop-discovery.js";
 import { createFakeFiles, dirEntry, fileEntry, symlinkEntry, text, tree } from "./test-support.js";
@@ -671,5 +672,113 @@ describe("doorstop discovery", () => {
     ]);
     // The malformed path still joined the walk's file index.
     expect(new Set(result.knownFilePaths)).toEqual(new Set(["oddball"]));
+  });
+
+  it("skips caller-declared excluded directories at any depth, merged with the built-in skip set", async () => {
+    const { files, listCalls, readCalls } = createFakeFiles({
+      trees: {
+        "": tree([
+          dirEntry(".git", ".git"), // built-in skip
+          dirEntry("node_modules", "node_modules"), // built-in skip
+          dirEntry("dist", "dist"), // caller exclusion, root level
+          dirEntry("reqs", "reqs"),
+          dirEntry("src", "src"),
+        ]),
+        ".git": tree([fileEntry(".doorstop.yml", ".git/.doorstop.yml")]),
+        "node_modules": tree([fileEntry(".doorstop.yml", "node_modules/.doorstop.yml")]),
+        "dist": tree([fileEntry(".doorstop.yml", "dist/.doorstop.yml")]),
+        "reqs": tree([fileEntry(".doorstop.yml", "reqs/.doorstop.yml")]),
+        "src": tree([dirEntry("out", "src/out"), fileEntry(".doorstop.yml", "src/.doorstop.yml")]), // exclusion at depth 1
+        "src/out": tree([fileEntry(".doorstop.yml", "src/out/.doorstop.yml")]),
+      },
+      reads: {
+        "reqs/.doorstop.yml": text("settings:\n  prefix: REQ"),
+        "src/.doorstop.yml": text("settings:\n  prefix: SRC"),
+      },
+    });
+
+    const result = await discoverDoorstopDocuments(files, { excludedDirectories: ["dist", "out"] });
+
+    // Only reqs and src documents survive; dist (root) and src/out (nested)
+    // were never expanded, exactly like .git/node_modules.
+    expect(result.documents.map((d) => d.prefix)).toEqual(["REQ", "SRC"]);
+    expect(result.diagnostics).toEqual([]);
+    expect(new Set(result.knownFilePaths)).toEqual(new Set(["reqs/.doorstop.yml", "src/.doorstop.yml"]));
+    expect(listCalls).toEqual(["", "reqs", "src"]);
+    expect(readCalls).toEqual(["reqs/.doorstop.yml", "src/.doorstop.yml"]);
+  });
+
+  it("caps the merged skip set defensively against an unbounded exclusion list", async () => {
+    const { files } = createFakeFiles({
+      trees: {
+        "": tree([dirEntry("reqs", "reqs")]),
+        "reqs": tree([fileEntry(".doorstop.yml", "reqs/.doorstop.yml")]),
+      },
+      reads: { "reqs/.doorstop.yml": text("settings:\n  prefix: REQ") },
+    });
+
+    // An absurd caller list can never blow up the walk: the merged skip set is
+    // capped, discovery still runs, and the cap never fires a diagnostic
+    // (it is purely defensive).
+    const hugeList = Array.from({ length: 5000 }, (_, index) => `dir${String(index)}`);
+    const result = await discoverDoorstopDocuments(files, { excludedDirectories: hugeList });
+
+    expect(result.documents.map((d) => d.prefix)).toEqual(["REQ"]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it("accepts exactly 126 caller names beside the 2 built-ins before the merged skip-set cap fires", async () => {
+    // The merged skip set = {.git, node_modules} (2) + caller names, capped at
+    // MAX_SKIPPED_DIRECTORIES = 128 → exactly 126 caller names fit; the 127th
+    // is dropped. A dropped name is an ORDINARY directory: the walk expands
+    // it (listFiles is called), which listCalls makes observable — pinning
+    // the cap arithmetic at the exact boundary rather than only "never breaks".
+    const names = Array.from({ length: MAX_SKIPPED_DIRECTORIES + 2 }, (_, index) => `skip${String(index)}`);
+    const rootEntries: FileTreeEntry[] = names.map((name) => dirEntry(name, name));
+    rootEntries.push(dirEntry("reqs", "reqs"));
+    const trees: Record<string, FileTreeResponse> = {
+      "": tree(rootEntries),
+      "reqs": tree([fileEntry(".doorstop.yml", "reqs/.doorstop.yml")]),
+    };
+    for (const name of names) trees[name] = tree([]); // expandable but empty
+
+    const { files, listCalls } = createFakeFiles({
+      trees,
+      reads: { "reqs/.doorstop.yml": text("settings:\n  prefix: REQ") },
+    });
+
+    const result = await discoverDoorstopDocuments(files, { excludedDirectories: names });
+
+    expect(result.documents.map((d) => d.prefix)).toEqual(["REQ"]);
+    expect(result.diagnostics).toEqual([]);
+    // skip0..skip125 (126 names) fit inside the cap and are never listed;
+    // skip126 — the 127th caller name — fell off the cap and was expanded
+    // like any ordinary directory.
+    expect(listCalls).toEqual(["", "skip126", "skip127", "skip128", "skip129", "reqs"]);
+  });
+
+  it("does not count caller-excluded directories toward the entries cap either", async () => {
+    // 64 honored exclusion names + 1936 filler FILES + 1 config = 2001
+    // listing entries. Counted entries (filler files + config = 1937) stay
+    // under the cap ONLY because the excluded dirs short-circuit first — had
+    // they counted, the cap would have fired mid-listing and stopped the walk
+    // before the config. Filler files are files, so they count toward the cap
+    // without being expanded (only directories are).
+    const entries: FileTreeEntry[] = [];
+    for (let i = 0; i < 64; i += 1) entries.push(dirEntry(`skip${String(i)}`, `skip${String(i)}`));
+    for (let i = 0; i < MAX_DISCOVERY_ENTRIES - 64; i += 1) entries.push(fileEntry(`g${String(i)}.txt`, `g${String(i)}.txt`));
+    entries.push(fileEntry(".doorstop.yml", "reqs/.doorstop.yml"));
+
+    const { files, readCalls } = createFakeFiles({
+      trees: { "": tree(entries) },
+      reads: { "reqs/.doorstop.yml": text("settings:\n  prefix: REQ") },
+    });
+
+    const exclusions = Array.from({ length: 64 }, (_, index) => `skip${String(index)}`);
+    const result = await discoverDoorstopDocuments(files, { excludedDirectories: exclusions });
+
+    expect(result.documents.map((d) => d.prefix)).toEqual(["REQ"]);
+    expect(result.diagnostics).toEqual([]);
+    expect(readCalls).toEqual(["reqs/.doorstop.yml"]);
   });
 });

@@ -34,6 +34,7 @@ import type {
 import type { DoorstopCounts, DoorstopDocumentConfig } from "./doorstop-contract.js";
 import { buildDoorstopIndex } from "./doorstop-model.js";
 import type { DoorstopWorkspaceResult } from "./doorstop-panel.js";
+import { DEFAULT_OPENDOOR_SETTINGS } from "./doorstop-settings.js";
 import { loadDoorstopWorkspace } from "./doorstop-panel.js";
 import type { DoorstopWorkspaceController } from "./doorstop-panel-controller.js";
 import { createOpendoorBrowserContributions } from "./doorstop-contributions.js";
@@ -121,7 +122,7 @@ function emptyFiles(): FakeWorkspaceFiles {
  *  (those are covered by doorstop-state.test.ts). */
 function makeResult(counts: Partial<DoorstopCounts> = {}): DoorstopWorkspaceResult {
   const index = buildDoorstopIndex([makeDocument()], [], [], new Set());
-  return { index: { ...index, counts: { ...index.counts, ...counts } } };
+  return { index: { ...index, counts: { ...index.counts, ...counts } }, settings: DEFAULT_OPENDOOR_SETTINGS };
 }
 
 function makeWorkspace(id: string): Workspace {

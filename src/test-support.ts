@@ -38,7 +38,10 @@ export interface FakeWorkspaceFiles {
 
 /**
  * In-memory workspace files adapter. Paths absent from `trees`/`reads`
- * reject with "Path does not exist", like the real workspace API.
+ * reject with exactly "Path does not exist" — the real workspace API's
+ * missing-file error message (matching it matters: the settings module
+ * treats a read rejection with that exact message as a missing-optional-file
+ * default state, not a failure).
  */
 export function createFakeFiles(options: FakeFilesOptions = {}): FakeWorkspaceFiles {
   const listCalls: string[] = [];
@@ -48,13 +51,13 @@ export function createFakeFiles(options: FakeFilesOptions = {}): FakeWorkspaceFi
     const error = options.listErrors?.[path];
     if (error !== undefined) return Promise.reject(new Error(error));
     const tree = options.trees?.[path];
-    if (tree === undefined) return Promise.reject(new Error(`Path does not exist: ${path}`));
+    if (tree === undefined) return Promise.reject(new Error("Path does not exist"));
     return Promise.resolve(tree);
   });
   const readFile = vi.fn<WorkspaceFiles["readFile"]>((path: string) => {
     readCalls.push(path);
     const read = options.reads?.[path];
-    if (read === undefined) return Promise.reject(new Error(`Path does not exist: ${path}`));
+    if (read === undefined) return Promise.reject(new Error("Path does not exist"));
     if (read instanceof Error) return Promise.reject(read);
     return Promise.resolve(read);
   });

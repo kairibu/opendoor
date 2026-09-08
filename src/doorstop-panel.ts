@@ -10,7 +10,9 @@
 //
 // Browser-only adaptation of the git panel's controller/activity idiom
 // (mirrors opense-panel.ts): what git does as a `context.backend`
-// round-trip becomes one in-browser job here — discovery walk
+// round-trip becomes one in-browser job here — workspace settings
+// (doorstop-settings, `.pi-web/opendoor.json`; its exclusions shape the
+// walk and its diagnostics join the result) → discovery walk
 // (doorstop-discovery) → per-document item-file reads (bounded concurrent) →
 // parse (doorstop-model) → index assembly (buildDoorstopIndex) → state
 // computation (computeItemStates). `context.files` is the only boundary;
@@ -51,6 +53,7 @@ import type {
 } from "./doorstop-contract.js";
 import { formatUnknownError } from "./doorstop-contract.js";
 import { discoverDoorstopDocuments, MAX_CONCURRENT_READS } from "./doorstop-discovery.js";
+import { readOpendoorSettings, type OpendoorSettings } from "./doorstop-settings.js";
 import { buildDoorstopIndex, parseDoorstopItem } from "./doorstop-model.js";
 import { computeItemStates } from "./doorstop-state.js";
 import {
@@ -78,6 +81,11 @@ export interface DoorstopWorkspaceResult {
   /** The frozen model index (documents, items, lookups, findings, counts)
    *  after buildDoorstopIndex + computeItemStates. */
   index: DoorstopIndex;
+  /** Normalized workspace settings (`.pi-web/opendoor.json`), surfaced on
+   *  the result so the elements chain can wire the publish command to
+   *  `settings.publishTarget` (M5). Always present — defaults when no
+   *  settings file exists. */
+  settings: OpendoorSettings;
   /** Wall-clock duration of the load job, in milliseconds. */
   loadingMs?: number;
 }
@@ -92,10 +100,16 @@ export interface DoorstopWorkspaceResult {
  */
 export async function loadDoorstopWorkspace(files: DoorstopFiles): Promise<DoorstopWorkspaceResult> {
   const started = Date.now();
-  const discovery = await discoverDoorstopDocuments(files);
+  // Workspace settings first: their exclusions shape the discovery walk, and
+  // their diagnostics flow into the result's diagnostics (a missing settings
+  // file is the normal default state — no diagnostic).
+  const settingsResult = await readOpendoorSettings(files);
+  const discovery = await discoverDoorstopDocuments(files, {
+    excludedDirectories: settingsResult.settings.excludedDirectories,
+  });
 
   const items: ItemRecord[] = [];
-  const diagnostics: DiscoveryDiagnostic[] = [...discovery.diagnostics];
+  const diagnostics: DiscoveryDiagnostic[] = [...settingsResult.diagnostics, ...discovery.diagnostics];
 
   for (const document of discovery.documents) {
     const listing = await listItemFiles(files, document);
@@ -109,7 +123,7 @@ export async function loadDoorstopWorkspace(files: DoorstopFiles): Promise<Doors
 
   const index = buildDoorstopIndex(discovery.documents, items, diagnostics, discovery.knownFilePaths);
   computeItemStates(index);
-  return { index, loadingMs: Date.now() - started };
+  return { index, settings: settingsResult.settings, loadingMs: Date.now() - started };
 }
 
 /** List one document's item directory and select the item files. Listing

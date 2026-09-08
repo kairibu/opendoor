@@ -26,6 +26,7 @@ import {
   type DoorstopWorkspaceJob,
 } from "./doorstop-panel-controller.js";
 import type { DoorstopWorkspaceResult } from "./doorstop-panel.js";
+import { DEFAULT_OPENDOOR_SETTINGS } from "./doorstop-settings.js";
 import {
   draftChildRequirementPrompt,
   explainItemPrompt,
@@ -116,7 +117,7 @@ function makeResult(
 ): DoorstopWorkspaceResult {
   const index = buildDoorstopIndex(documents, items, diagnostics, knownFilePaths);
   computeItemStates(index);
-  return { index };
+  return { index, settings: DEFAULT_OPENDOOR_SETTINGS };
 }
 
 /** The standard tree the panel tests render: REQ ← [TST], with one suspect
