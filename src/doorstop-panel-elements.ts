@@ -55,6 +55,7 @@ import type {
 import { computeItemStamp } from "./doorstop-state.js";
 import type { DoorstopWorkspaceController } from "./doorstop-panel-controller.js";
 import type { DoorstopWorkspaceResult } from "./doorstop-panel.js";
+import { DEFAULT_OPENDOOR_SETTINGS } from "./doorstop-settings.js";
 import {
   draftChildRequirementPrompt,
   explainItemPrompt,
@@ -179,6 +180,140 @@ export function filteredItems(
  *  Doorstop has not stamped yet) renders as "none". */
 export function shortFingerprint(fingerprint: string | null): string {
   return fingerprint === null ? "none" : `${fingerprint.slice(0, 8)}…`;
+}
+
+// --- findings view (feature spec §7.2) ---------------------------------------
+
+/** Panel sub-views of the toolbar toggle (spec §7.2): "items" renders the
+ *  document-tree / item-list / detail layout; "findings" renders the
+ *  workspace-wide validation-findings list. Element-local state — the
+ *  controller has no view concept (its render inputs drive the item view
+ *  only), so the toggle is intentionally not mirrored by the host render. */
+export type DoorstopPanelView = "items" | "findings";
+
+/** Findings-view empty-state copy: every index finding + diagnostic is
+ *  plugin-computed and none fired (spec §7.2). */
+export const FINDINGS_EMPTY_MESSAGE = "No findings — the tree is clean.";
+
+/** Empty-state hint — the plugin's local checks are not Doorstop's own
+ *  validation; the CLI in the workspace terminal remains authoritative. */
+export const FINDINGS_EMPTY_HINT =
+  "Findings are plugin-local; run `doorstop` validation in the terminal for the authoritative check.";
+
+/** Header note shown above the findings list (spec §7.2 "clearly labeled"). */
+export const FINDINGS_PLUGIN_LOCAL_NOTE =
+  "plugin-local findings — `doorstop` validation in the terminal is authoritative";
+
+/**
+ * One row of the findings view — the merged shape over the index's findings
+ * (`Finding`) and its discovery/settings diagnostics (`DiscoveryDiagnostic`),
+ * which already carry exactly these fields structurally. Each row renders a
+ * severity chip, an item UID when the finding names one, a path when the
+ * finding names one, and the message.
+ */
+export interface FindingsViewRow {
+  severity: "error" | "warning" | "info";
+  uid?: string;
+  path?: string;
+  message: string;
+}
+
+/** Findings-view severity ordering, error first (Doorstop's ERROR > WARNING
+ *  > INFO), used by the stable sort below. */
+const FINDING_SEVERITY_RANK: Record<FindingsViewRow["severity"], number> = {
+  error: 0,
+  warning: 1,
+  info: 2,
+};
+
+/**
+ * Every finding the findings view lists (spec §7.2): the index's findings
+ * (structural findings from the model chain + per-item state findings) merged
+ * with the discovery/settings diagnostics, sorted by severity — errors first,
+ * warnings second, info last — with a STABLE sort so input order is preserved
+ * within one severity. `Finding` and `DiscoveryDiagnostic` are structurally
+ * assignable to {@link FindingsViewRow}, so the merge never loses a field and
+ * never fabricates one.
+ */
+export function findingsViewRows(index: DoorstopIndex): FindingsViewRow[] {
+  const rows: FindingsViewRow[] = [...index.findings, ...index.diagnostics];
+  return rows.sort((a, b) => FINDING_SEVERITY_RANK[a.severity] - FINDING_SEVERITY_RANK[b.severity]);
+}
+
+/** Grouped severity counts of the findings view (the header's
+ *  "n errors · n warnings · n info"). */
+export interface FindingsViewCounts {
+  errors: number;
+  warnings: number;
+  info: number;
+}
+
+/** Count the findings-view rows by severity. */
+export function findingsViewCounts(rows: readonly FindingsViewRow[]): FindingsViewCounts {
+  const counts: FindingsViewCounts = { errors: 0, warnings: 0, info: 0 };
+  for (const row of rows) {
+    if (row.severity === "error") counts.errors += 1;
+    else if (row.severity === "warning") counts.warnings += 1;
+    else counts.info += 1;
+  }
+  return counts;
+}
+
+/** The header's count line, e.g. "2 errors · 1 warning · 3 info" (singulars
+ *  for 1; "info" is count-invariant). */
+export function findingsCountText(counts: FindingsViewCounts): string {
+  const errors = counts.errors === 1 ? "1 error" : `${String(counts.errors)} errors`;
+  const warnings = counts.warnings === 1 ? "1 warning" : `${String(counts.warnings)} warnings`;
+  return `${errors} · ${warnings} · ${String(counts.info)} info`;
+}
+
+/** The publish target of a load result — `result.settings.publishTarget`
+ *  (slice 1: always present after a load), falling back to the frozen
+ *  `DEFAULT_OPENDOOR_SETTINGS.publishTarget` when the result or its settings
+ *  are missing (a not-yet-landed load, or a result built by an older caller).
+ *  Exported so the exact fallback is testable independent of the toolbar. */
+export function doorstopPublishTarget(result: DoorstopWorkspaceResult | undefined): string {
+  return result?.settings?.publishTarget ?? DEFAULT_OPENDOOR_SETTINGS.publishTarget;
+}
+
+/** Characters a publish target may contain and stay inert in any shell: the
+ *  same `[\w.-]` token alphabet as the UID guard below plus `/` for path
+ *  separators (the default `./public` is such a token). A target containing
+ *  anything else — whitespace, quotes, `;`, `|`, `&`, `$`, backticks — is
+ *  emitted shell-quoted by {@link doorstopPublishCommand}. */
+const PUBLISH_TARGET_SAFE_TOKEN = /^[\w./-]+$/;
+
+/** Quote one string as a single POSIX-shell argument (single quotes, embedded
+ *  quotes escaped as `'\''`) — the exact idiom the host's terminal service
+ *  uses when it echoes each runCommand through `$SHELL -lc`, so a quoted
+ *  argument survives whatever login shell the workspace runs. */
+function quoteShellArgument(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+/** The exact publish command line: `doorstop publish all <publishTarget>` —
+ *  the toolbar's publish action runs this in the workspace terminal (M5: the
+ *  target now comes from the workspace settings instead of being hardcoded).
+ *
+ *  The settings validator only guarantees the target is a workspace-relative
+ *  PATH (no `..` segment, not absolute); it does NOT guarantee the target is
+ *  a shell-inert ARGUMENT — spaces and every shell metacharacter pass its
+ *  check, and the host runs the command through a login shell, so an unquoted
+ *  metacharacter target from a committed `.pi-web/opendoor.json` would
+ *  execute in the workspace terminal on Publish. Targets outside the inert
+ *  {@link PUBLISH_TARGET_SAFE_TOKEN} alphabet are therefore single-quoted
+ *  here, at the command boundary (the UID-token guard idiom above, applied
+ *  at the one place the value becomes a command).
+ *
+ *  `target` may be passed explicitly so a caller that already computed it
+ *  (the publish confirm path) keeps the confirm message and the command
+ *  provably consistent; it defaults to the result's target. */
+export function doorstopPublishCommand(
+  result: DoorstopWorkspaceResult | undefined,
+  target: string = doorstopPublishTarget(result),
+): string {
+  const argument = PUBLISH_TARGET_SAFE_TOKEN.test(target) ? target : quoteShellArgument(target);
+  return `doorstop publish all ${argument}`;
 }
 
 /**
@@ -370,6 +505,14 @@ function defineDoorstopPanelBodyElement(): void {
       @state()
       private confirmSkipped = false;
 
+      /** Active sub-view of the toolbar toggle (spec §7.2): "items" is the
+       *  default tree/list/detail layout, "findings" the workspace-wide
+       *  findings list. Element-local state — the controller has no view
+       *  concept, and the toggle is deliberately not mirrored by the host
+       *  render (module-level type comment documents this). */
+      @state()
+      private view: DoorstopPanelView = "items";
+
       /** Inline target inputs of the Link/Unlink actions. Values stay
        *  uncontrolled (typed by the user; cleared after a run). */
       private readonly unlinkInputRef: Ref<HTMLInputElement> = createRef<HTMLInputElement>();
@@ -506,6 +649,36 @@ function defineDoorstopPanelBodyElement(): void {
           color: var(--pi-warning);
           padding: 1px 8px;
           font-size: 12px;
+        }
+
+        /* --- Items / Findings view toggle (spec §7.2) --- */
+        .doorstop-view-toggle {
+          display: inline-flex;
+          border: 1px solid var(--pi-border);
+          border-radius: 7px;
+          overflow: hidden;
+          flex: 0 0 auto;
+        }
+
+        .doorstop-view-tab {
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          border: 0;
+          border-radius: 0;
+          background: transparent;
+          color: var(--pi-muted);
+          padding: 3px 10px;
+          font-size: 12px;
+        }
+
+        .doorstop-view-tab + .doorstop-view-tab {
+          border-left: 1px solid var(--pi-border);
+        }
+
+        .doorstop-view-tab.is-selected {
+          background: var(--pi-selection-bg);
+          color: var(--pi-accent);
         }
 
         /* --- viewer (region 2 + 3) --- */
@@ -885,6 +1058,93 @@ function defineDoorstopPanelBodyElement(): void {
           background: var(--pi-selection-bg);
         }
 
+        /* --- findings view (spec §7.2) --- */
+        .doorstop-findings-view {
+          padding: 10px 12px;
+          display: grid;
+          gap: 8px;
+          align-content: start;
+        }
+
+        .doorstop-findings-head {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: baseline;
+          gap: 6px 10px;
+        }
+
+        .doorstop-findings-counts {
+          font-size: 12px;
+          font-weight: 600;
+        }
+
+        .doorstop-findings-note {
+          font-size: 11px;
+        }
+
+        .doorstop-findings-list {
+          display: grid;
+          gap: 3px;
+        }
+
+        .doorstop-finding-row {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: baseline;
+          gap: 6px;
+          border-radius: 6px;
+          padding: 5px 8px;
+        }
+
+        .doorstop-finding-row.doorstop-error {
+          border: 1px solid var(--pi-danger);
+          background: color-mix(in srgb, var(--pi-danger) 9%, transparent);
+        }
+
+        .doorstop-finding-row.doorstop-warning {
+          border: 1px solid var(--pi-warning-border);
+          background: color-mix(in srgb, var(--pi-warning) 9%, transparent);
+        }
+
+        .doorstop-finding-row.doorstop-info {
+          border: 1px solid var(--pi-border-muted);
+          color: var(--pi-muted);
+        }
+
+        .doorstop-finding-row .doorstop-severity {
+          background: var(--pi-border-muted);
+          color: var(--pi-muted);
+        }
+
+        .doorstop-finding-row.doorstop-error .doorstop-severity {
+          background: var(--pi-danger);
+          color: var(--pi-bg);
+        }
+
+        .doorstop-finding-row.doorstop-warning .doorstop-severity {
+          background: var(--pi-warning);
+          color: var(--pi-bg);
+        }
+
+        .doorstop-finding-uid {
+          border: 0;
+          border-radius: 5px;
+          background: transparent;
+          color: inherit;
+          padding: 0;
+          font-weight: 600;
+        }
+
+        .doorstop-finding-uid:hover {
+          text-decoration: underline;
+          cursor: pointer;
+        }
+
+        .doorstop-finding-message {
+          min-width: 0;
+          overflow-wrap: anywhere;
+        }
+
         /* --- empty states --- */
         .doorstop-empty {
           margin: 10px 12px;
@@ -959,40 +1219,83 @@ function defineDoorstopPanelBodyElement(): void {
 
       private renderToolbar(): TemplateResult {
         const result = this.result;
+        const publishTarget = doorstopPublishTarget(result);
         return html`
           <section class="doorstop-toolbar">
             <strong class="doorstop-title">${doorstopIconSvg}Doorstop</strong>
-            <div class="doorstop-docs" role="list" aria-label="Doorstop documents">
-              ${result === undefined
-                ? html`<span class="doorstop-muted">documents…</span>`
-                : html`
-                    ${this.renderDocumentChip(undefined, result)}
-                    ${result.index.documents.map((document) => this.renderDocumentChip(document, result))}
-                  `}
-            </div>
+            ${this.renderViewToggle()}
+            ${this.view === "items"
+              ? html`<div class="doorstop-docs" role="list" aria-label="Doorstop documents">
+                  ${result === undefined
+                    ? html`<span class="doorstop-muted">documents…</span>`
+                    : html`
+                        ${this.renderDocumentChip(undefined, result)}
+                        ${result.index.documents.map((document) => this.renderDocumentChip(document, result))}
+                      `}
+                </div>`
+              : nothing}
             <div class="doorstop-toolbar-actions">
               ${this.stale ? html`<button type="button" class="doorstop-stale" title="Doorstop ran or files changed behind the panel — click to rescan" @click=${this.onRefreshClick}>stale — refresh</button>` : nothing}
               ${this.confirmSkipped ? html`<span class="doorstop-muted doorstop-confirm-skipped" title="No confirmation dialog is available in this environment — publishing proceeded without one">confirmation skipped — publishing</span>` : nothing}
-              <select class="doorstop-state-filter" aria-label="Filter by state" @change=${this.onStateFilterChange}>
-                <option value="" .selected=${this.stateFilter === undefined}>All states</option>
-                ${Object.entries(STATE_CHIP_LABELS).map(
-                  ([key, label]) =>
-                    html`<option value=${key} .selected=${this.stateFilter === key}>${label}</option>`,
-                )}
-              </select>
-              <input
-                class="doorstop-search"
-                type="search"
-                aria-label="Search items"
-                placeholder="Search UID or text"
-                .value=${this.search}
-                @input=${this.onSearchInput}
-              />
+              ${this.view === "items"
+                ? html`
+                    <select class="doorstop-state-filter" aria-label="Filter by state" @change=${this.onStateFilterChange}>
+                      <option value="" .selected=${this.stateFilter === undefined}>All states</option>
+                      ${Object.entries(STATE_CHIP_LABELS).map(
+                        ([key, label]) =>
+                          html`<option value=${key} .selected=${this.stateFilter === key}>${label}</option>`,
+                      )}
+                    </select>
+                    <input
+                      class="doorstop-search"
+                      type="search"
+                      aria-label="Search items"
+                      placeholder="Search UID or text"
+                      .value=${this.search}
+                      @input=${this.onSearchInput}
+                    />
+                  `
+                : nothing}
               <button type="button" class="doorstop-refresh" title="Re-read the workspace" @click=${this.onRefreshClick}>${refreshIconSvg}Refresh</button>
               <button type="button" class="doorstop-validate" title="Run \`doorstop\` in the workspace terminal" @click=${this.onValidateClick}>${validateIconSvg}Run validation</button>
-              <button type="button" class="doorstop-publish" title="Publish the tree to ./public" @click=${this.onPublishClick}>${publishIconSvg}Publish HTML</button>
+              <button type="button" class="doorstop-publish" title=${`Publish the tree to ${publishTarget}`} @click=${this.onPublishClick}>${publishIconSvg}Publish HTML</button>
             </div>
           </section>
+        `;
+      }
+
+      /** The Items / Findings view toggle (spec §7.2): a tab-like switch
+       *  between the item list/detail layout and the workspace-wide findings
+       *  list. The terminal actions (Refresh / Run validation / Publish) sit
+       *  outside the switch and stay reachable in both views. */
+      private renderViewToggle(): TemplateResult {
+        return html`
+          <div class="doorstop-view-toggle" role="tablist" aria-label="Requirements panel view">
+            <button
+              type="button"
+              role="tab"
+              class=${classMap({
+                "doorstop-view-tab": true,
+                "doorstop-view-items": true,
+                "is-selected": this.view === "items",
+              })}
+              aria-selected=${this.view === "items" ? "true" : "false"}
+              title="Item list and detail"
+              @click=${() => { this.view = "items"; }}
+            >Items</button>
+            <button
+              type="button"
+              role="tab"
+              class=${classMap({
+                "doorstop-view-tab": true,
+                "doorstop-view-findings": true,
+                "is-selected": this.view === "findings",
+              })}
+              aria-selected=${this.view === "findings" ? "true" : "false"}
+              title="Validation findings"
+              @click=${() => { this.view = "findings"; }}
+            >Findings</button>
+          </div>
         `;
       }
 
@@ -1041,6 +1344,12 @@ function defineDoorstopPanelBodyElement(): void {
         if (result === undefined) {
           return html`<p class="doorstop-muted doorstop-standalone">${this.loading ? "Loading workspace…" : "Run Refresh to scan for Doorstop documents."}</p>`;
         }
+        // Findings view (spec §7.2) replaces the whole viewer with the
+        // findings list; the discovery diagnostics are listed THERE as rows,
+        // so the items-view inline warning strip is not duplicated.
+        if (this.view === "findings") {
+          return this.renderFindingsView(result);
+        }
         return html`
           ${this.renderDiagnostics(result)}
           ${result.index.documents.length === 0
@@ -1052,6 +1361,73 @@ function defineDoorstopPanelBodyElement(): void {
                 </section>
               `}
         `;
+      }
+
+      /** The findings view (spec §7.2): every finding of the index — the
+       *  structural + state findings and the discovery/settings diagnostics —
+       *  normalized to rows and sorted error → warning → info, with grouped
+       *  counts and the plugin-local label in the header. A workspace with
+       *  nothing to flag renders the muted clean-tree empty state instead of
+       *  an empty list. */
+      private renderFindingsView(result: DoorstopWorkspaceResult): TemplateResult {
+        const rows = findingsViewRows(result.index);
+        const counts = findingsViewCounts(rows);
+        return html`
+          <section class="doorstop-findings-view" aria-label="Doorstop findings">
+            <header class="doorstop-findings-head">
+              <span class="doorstop-findings-counts" role="status" aria-label="Finding counts">${findingsCountText(counts)}</span>
+              <span class="doorstop-findings-note doorstop-muted">${FINDINGS_PLUGIN_LOCAL_NOTE}</span>
+            </header>
+            ${rows.length === 0
+              ? html`
+                  <section class="doorstop-empty">
+                    <p>${FINDINGS_EMPTY_MESSAGE}</p>
+                    <p class="doorstop-muted">${FINDINGS_EMPTY_HINT}</p>
+                  </section>
+                `
+              : html`<div class="doorstop-findings-list" role="list" aria-label="Validation findings">
+                  ${rows.map((row) => this.renderFindingRow(row, result.index))}
+                </div>`}
+          </section>
+        `;
+      }
+
+      /** One findings-view row: severity chip, the finding's item UID (when
+       *  it names one AND that item still exists in the index — clickable,
+       *  navigating back to the Items view with the item selected), the path
+       *  (when the finding names one), and the message. All text is escaped
+       *  by lit; nothing here is ever markup. */
+      private renderFindingRow(row: FindingsViewRow, index: DoorstopIndex): TemplateResult {
+        const kind =
+          row.severity === "error" ? "doorstop-error" : row.severity === "warning" ? "doorstop-warning" : "doorstop-info";
+        const uid = row.uid;
+        const navigable = uid !== undefined && index.byUid.has(uid);
+        return html`
+          <div class=${`doorstop-finding-row ${kind}`} role="listitem">
+            <span class="doorstop-severity">${row.severity}</span>
+            ${uid === undefined
+              ? nothing
+              : navigable
+                ? html`<button type="button" class="doorstop-finding-uid" data-uid=${uid} title=${`Show ${uid} in the item list`} @click=${() => { this.selectFindingTarget(uid); }}><code>${uid}</code></button>`
+                : html`<code class="doorstop-finding-uid">${uid}</code>`}
+            ${row.path === undefined ? nothing : html`<code class="doorstop-finding-path">${row.path}</code>`}
+            <span class="doorstop-finding-message">${row.message}</span>
+          </div>
+        `;
+      }
+
+      /** Navigate from a findings row's UID to the item: clear the
+       *  document/state/search filters (the finding may belong to a document
+       *  or state the current filters hide), select the item, and switch
+       *  back to the Items view so the target is actually visible. */
+      private selectFindingTarget(uid: string): void {
+        const controller = this.controller;
+        if (controller === undefined) return;
+        controller.selectDocument("");
+        controller.setStateFilter(undefined);
+        controller.setSearch("");
+        controller.selectUid(uid);
+        this.view = "items";
       }
 
       /** Inline warning strip: every discovery + parse diagnostic (truncated
@@ -1404,19 +1780,25 @@ function defineDoorstopPanelBodyElement(): void {
       };
 
       private onPublishClick = (): void => {
-        // Publishing writes HTML artifacts across the workspace — confirm
-        // before running when the host exposes a confirm dialog. Sandboxed
-        // plugin hosts may not define window.confirm (it silently evaluates
-        // false/undefined there), so feature-detect: when unavailable, run
-        // publish anyway and surface a muted notice that the confirmation
-        // was skipped rather than dropping the action.
+        // M5: the publish target comes from the workspace settings
+        // (`result.settings.publishTarget`), falling back to the default
+        // target when the result/settings are missing — never a hardcoded
+        // directory. Publishing writes HTML artifacts across the workspace,
+        // so confirm before running when the host exposes a confirm dialog.
+        // Sandboxed plugin hosts may not define window.confirm (it silently
+        // evaluates false/undefined there), so feature-detect: when
+        // unavailable, run publish anyway and surface a muted notice that
+        // the confirmation was skipped rather than dropping the action.
+        const target = doorstopPublishTarget(this.result);
         if (typeof window.confirm === "function") {
-          if (!window.confirm("Publish the Doorstop tree as HTML to ./public in the workspace terminal?")) return;
+          if (!window.confirm(`Publish the Doorstop tree as HTML to ${target} in the workspace terminal?`)) return;
           this.confirmSkipped = false;
         } else {
           this.confirmSkipped = true;
         }
-        this.runDoorstop("publish", "Doorstop: publish", "doorstop publish all ./public", false);
+        // The already-computed `target` is passed through so the confirm
+        // message and the executed command can never disagree.
+        this.runDoorstop("publish", "Doorstop: publish", doorstopPublishCommand(this.result, target), false);
       };
 
       private onStateFilterChange = (event: Event): void => {

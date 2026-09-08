@@ -329,6 +329,8 @@ Mirror `opense-package` exactly:
 
 ## 11. Milestones
 
+Status: **M1–M5 shipped** (265 unit tests green; see the repository README
+for what shipped). M6 remains optional future work.
 1. **M1 — Skeleton + discovery + tree view.** Plugin loads; documents and
    items listed read-only; empty/error states.
 2. **M2 — State engine.** Fingerprints (with fixtures), suspect links,
