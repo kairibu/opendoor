@@ -32,11 +32,14 @@
 //
 // Validation:
 //
-//   - publishTarget: a safe RELATIVE path (no `..` segment, not absolute,
-//     no Windows drive-letter prefix, no backslash, trimmed; duplicate and
-//     trailing separators are normalized away). Default "./public". An
-//     invalid value is warned about and replaced with the default — never
-//     used to write outside the workspace.
+//   - publishTarget: a safe RELATIVE path (the shared contract grammar
+//     `isValidPublishTarget`, src/doorstop-backend-contract.ts — no `..`
+//     segment, not absolute, no Windows drive-letter prefix, no backslash;
+//     trimmed; duplicate and trailing separators are normalized away).
+//     Default "./public". An invalid value is warned about and replaced
+//     with the default — never used to write outside the workspace.
+//     The same rule validates backend publish requests (Phase B), so both
+//     sides agree on what a publish target may be.
 //   - excludedDirectories: plain directory NAMES (no `/` or `\`
 //     separators, no `..`, trimmed), each ≤ 64 chars, deduplicated, capped
 //     at 16 entries. Invalid entries are warned about and dropped; the
@@ -44,6 +47,7 @@
 //     chain merges these with its built-in `.git`/`node_modules` skip set.
 // ---------------------------------------------------------------------------
 
+import { isValidPublishTarget } from "./doorstop-backend-contract.js";
 import { formatUnknownError, isRecord } from "./doorstop-contract.js";
 import type {
   DiscoveryDiagnostic,
@@ -199,12 +203,13 @@ export function parseOpendoorSettings(value: unknown): OpendoorSettingsResult {
     return { settings: DEFAULT_OPENDOOR_SETTINGS, diagnostics };
   }
 
-  // publishTarget: a safe relative path, else the default.
+  // publishTarget: a safe relative path (shared contract grammar
+  // `isValidPublishTarget`), else the default.
   let publishTarget = DEFAULT_PUBLISH_TARGET;
   const rawTarget = value["publishTarget"];
   if (rawTarget !== undefined) {
     const candidate = typeof rawTarget === "string" ? rawTarget.trim() : "";
-    if (!isSafeRelativePath(candidate)) {
+    if (!isValidPublishTarget(candidate)) {
       diagnostics.push({
         severity: "warning",
         path: OPENDOOR_SETTINGS_PATH,
@@ -265,24 +270,11 @@ function parseExcludedDirectories(entries: unknown[], diagnostics: DiscoveryDiag
   return result;
 }
 
-/** A publish target is safe when it is a non-empty RELATIVE path: no leading
- *  `/` (absolute), no Windows drive-letter prefix (`C:/x` — ambiguous on
- *  Windows, never a workspace-relative path), no backslash, and no `..`
- *  segment (path traversal). The default `./public` is such a path. */
-function isSafeRelativePath(value: string): boolean {
-  if (value === "") return false;
-  if (value.startsWith("/")) return false;
-  if (/^[A-Za-z]:/.test(value)) return false;
-  if (value.includes("\\")) return false;
-  for (const segment of value.split("/")) {
-    if (segment === "..") return false;
-  }
-  return true;
-}
-
 /** Normalize an accepted publish target so a later join stays predictable:
  *  duplicate separators collapse and a trailing separator drops (a leading
- *  `./` is preserved — the default spelling). */
+ *  `./` is preserved — the default spelling). The acceptance rule itself
+ *  lives in the shared contract (`isValidPublishTarget`, imported above) so
+ *  the settings chain and the server bundle validate identically. */
 function normalizeRelativePath(value: string): string {
   const collapsed = value.replace(/\/{2,}/g, "/");
   return collapsed.length > 1 && collapsed.endsWith("/") ? collapsed.slice(0, -1) : collapsed;

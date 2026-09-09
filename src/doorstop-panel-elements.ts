@@ -54,6 +54,7 @@ import type {
   ItemStateKey,
   LinkRecord,
 } from "./doorstop-contract.js";
+import { isValidDoorstopUid } from "./doorstop-backend-contract.js";
 import { computeItemStamp } from "./doorstop-state.js";
 import type { DoorstopWorkspaceController } from "./doorstop-panel-controller.js";
 import type { DoorstopWorkspaceResult } from "./doorstop-panel.js";
@@ -319,29 +320,16 @@ export function doorstopPublishCommand(
 }
 
 /**
- * Whether `value` is a syntactically valid Doorstop target UID for the
- * Link/Unlink inline inputs — the model chain's `split_uid` grammar (prefix
- * [+sep] + digits [+sep+name]), ANCHORED to the whole string and restricted
- * to the UID alphabet. The unanchored model splitter intentionally ignores
- * trailing junk ("REQ001;echo" parses as REQ/1, matching Python `re.match`),
- * so reusing it directly as a validator would let shell syntax survive
- * interpolation into `doorstop ${op} ${item.uid} ${target}`. Here the entire
- * string must be one bare UID token: the explicit `[\w.-]` alphabet guard
- * rejects whitespace, quotes, and every shell metacharacter by construction
- * (a stray space can never slip in as a `\D`), and the structural checks
- * require a prefix + separator + digits|name, or a prefix + digits.
+ * The Link/Unlink inline inputs' target-UID guard — the shared contract
+ * grammar `isValidDoorstopUid` (src/doorstop-backend-contract.ts), aliased
+ * here by identity so the browser and the server bundle validate
+ * identically: an accepted target is always a safe bare token for
+ * `doorstop ${op} ${item.uid} ${target}` — whitespace, quotes, and every
+ * shell metacharacter are rejected by construction. Exported for the
+ * contract parity test; the Link/Unlink inputs are its only in-panel
+ * consumer.
  */
-function isValidTargetUid(value: string): boolean {
-  if (value === "") return false;
-  // UID alphabet guard — this alone rejects whitespace, quotes, and all
-  // shell metacharacters, so an accepted target is always a safe bare token.
-  if (!/^[\w.-]+$/.test(value)) return false;
-  // prefix + separator + digits|name   (e.g. "REQ-001", "REQ_001", "REQ-ALPHA")
-  if (/^[\w.-]+[-_.][\w]+$/.test(value)) return true;
-  // prefix ending in a non-digit + digits, no separator (e.g. "REQ0001")
-  if (/^[\w.-]*\D\d+$/.test(value)) return true;
-  return false;
-}
+export const isValidTargetUid = isValidDoorstopUid;
 
 /** Config of an item's own document, or an inert fallback when the index is
  *  missing it — the state chain's own configForItem idiom, exported so the
