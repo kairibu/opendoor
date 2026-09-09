@@ -8,22 +8,24 @@
 // Layout follows docs/feature-doorstop-plugin.md §7.1 — three regions in
 // host-chrome classes (the git/opense panel conventions — toolbar/viewer/
 // empty/muted), all `doorstop-*`-prefixed like git's `git-*`/opense's
-// `opense-*`:
+// `opense-*`. Regions 2–3 stack vertically like the opense split
+// (item list above, detail below):
 //
 //   1. Toolbar — the document tree as chips (`REQ ← [TST, LLT]` via each
 //      config's `parentPrefix`; item count + aggregate state dots; the
 //      "All" chip clears the document filter), state-filter dropdown, search
 //      input, Refresh (controller.invalidate), Run validation and Publish
 //      HTML (terminal), and the stale notice.
-//   2. Item list — level/uid/header-excerpt rows with per-ItemStateKey
-//      chips; click selects the item. Diagnostics (truncated/binary/parse
-//      errors) surface as an inline warning strip above the list.
-//   3. Detail pane — uid/level/header, the item text as ESCAPED text (v1
-//      deliberately renders no markdown — injection-safe by construction),
-//      flags, links out (suspect/ok + recorded vs current fingerprint
-//      shorts), links in, references, extended attributes as JSON-ish text,
-//      local findings, and the action row: Review / Clear suspect links /
-//      Edit / Unlink / Link / Ask-agent menu.
+//   2. Item list (top pane) — level/uid/header-excerpt rows with
+//      per-ItemStateKey chips; click selects the item. Diagnostics
+//      (truncated/binary/parse errors) surface as an inline warning strip
+//      at the top of the list pane.
+//   3. Detail pane (below) — uid/level/header, the item text as ESCAPED
+//      text (v1 deliberately renders no markdown — injection-safe by
+//      construction), flags, links out (suspect/ok + recorded vs current
+//      fingerprint shorts), links in, references, extended attributes as
+//      JSON-ish text, local findings, and the action row: Review / Clear
+//      suspect links / Edit / Unlink / Link / Ask-agent menu.
 //
 // Every terminal command goes through `context.terminal.runCommand({ title,
 // command, metadata: { "opendoor.op": … }, open })`. `TerminalCommandRunHandle`
@@ -701,6 +703,10 @@ function defineDoorstopPanelBodyElement(): void {
         }
 
         .doorstop-diagnostics {
+          position: sticky;
+          top: 0;
+          z-index: 1;
+          background: var(--pi-bg);
           border-bottom: 1px solid var(--pi-border);
           padding: 6px;
           display: grid;
@@ -752,20 +758,37 @@ function defineDoorstopPanelBodyElement(): void {
         }
 
         .doorstop-split {
-          min-height: 100%;
+          height: 100%;
           display: grid;
-          grid-template-columns: minmax(280px, 2fr) minmax(0, 3fr);
+          grid-template-rows: minmax(110px, 40%) minmax(0, 1fr);
+        }
+
+        .doorstop-list,
+        .doorstop-detail-pane {
+          min-height: 0;
         }
 
         .doorstop-list {
-          min-width: 0;
-          border-right: 1px solid var(--pi-border-muted);
+          border-bottom: 1px solid var(--pi-border-muted);
+          overflow: auto;
           display: flex;
           flex-direction: column;
         }
 
         .doorstop-detail-pane {
-          min-width: 0;
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+        }
+
+        .doorstop-detail-pane .doorstop-detail {
+          flex: 1 1 auto;
+          min-height: 0;
+          overflow: auto;
+        }
+
+        .doorstop-detail-pane .doorstop-actions {
+          flex: 0 0 auto;
         }
 
         .doorstop-items {
@@ -1346,17 +1369,28 @@ function defineDoorstopPanelBodyElement(): void {
         }
         // Findings view (spec §7.2) replaces the whole viewer with the
         // findings list; the discovery diagnostics are listed THERE as rows,
-        // so the items-view inline warning strip is not duplicated.
+        // so the items-view inline warning strip is not duplicated. In the
+        // items view the strip sits at the top of the stacked list pane
+        // (list above, detail below — mirroring the opense split). It is
+        // rendered in BOTH branches: diagnostics must never be silently
+        // dropped, so a workspace whose only document failed to parse
+        // (documents.length === 0 with non-empty diagnostics) still shows
+        // the strip above the empty state.
         if (this.view === "findings") {
           return this.renderFindingsView(result);
         }
         return html`
-          ${this.renderDiagnostics(result)}
           ${result.index.documents.length === 0
-            ? html`<section class="doorstop-empty"><p>${EMPTY_WORKSPACE_MESSAGE}</p></section>`
+            ? html`
+                ${this.renderDiagnostics(result)}
+                <section class="doorstop-empty"><p>${EMPTY_WORKSPACE_MESSAGE}</p></section>
+              `
             : html`
                 <section class="doorstop-split">
-                  <section class="doorstop-list">${this.renderItemList(result)}</section>
+                  <section class="doorstop-list">
+                    ${this.renderDiagnostics(result)}
+                    ${this.renderItemList(result)}
+                  </section>
                   <section class="doorstop-detail-pane">${this.renderDetail(result)}</section>
                 </section>
               `}

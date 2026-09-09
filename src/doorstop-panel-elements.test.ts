@@ -432,6 +432,62 @@ describe("DoorstopPanelBodyElement (toolbar + empty/loading/error/stale states)"
     expect(strip?.querySelector(".doorstop-diagnostic.doorstop-error")).not.toBeNull();
     expect(strip?.querySelector(".doorstop-diagnostic.doorstop-warning")).not.toBeNull();
   });
+
+  it("renders the diagnostics strip inside the stacked list, above the items, within the split", async () => {
+    const reqConfig = makeDocument({ directoryPath: "reqs", configPath: "reqs/.doorstop.yml", prefix: "REQ", digits: 4 });
+    const item = makeItem("REQ0001", "REQ", { path: "reqs/REQ0001.yml", level: "1.0", text: "The system shall do X." });
+    const { body } = await mountBody(() =>
+      Promise.resolve(
+        makeResult(
+          [item],
+          [reqConfig],
+          [{ severity: "warning", path: "reqs/REQ0001.yml", message: "binary file skipped" }],
+          new Set(["reqs/REQ0001.yml"]),
+        ),
+      ),
+    );
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+
+    // Stacked order (list above, detail below): the list pane precedes the
+    // detail pane as direct children of the split.
+    const split = root.querySelector(".doorstop-split");
+    const list = split?.querySelector(".doorstop-list");
+    const detailPane = split?.querySelector(".doorstop-detail-pane");
+    expect(split).not.toBeNull();
+    if (split == null || list == null || detailPane == null) throw new Error("panes");
+    const splitChildren = [...split.children];
+    expect(splitChildren.indexOf(list)).toBeLessThan(splitChildren.indexOf(detailPane));
+
+    // The strip renders inside the scrolling list, above the items.
+    const strip = list.querySelector(".doorstop-diagnostics");
+    const items = list.querySelector(".doorstop-items");
+    expect(strip).not.toBeNull();
+    expect(items).not.toBeNull();
+    if (strip == null || items == null) throw new Error("strip/items");
+    const listChildren = [...list.children];
+    expect(listChildren.indexOf(strip)).toBeGreaterThan(-1);
+    expect(listChildren.indexOf(items)).toBeGreaterThan(-1);
+    expect(listChildren.indexOf(strip)).toBeLessThan(listChildren.indexOf(items));
+  });
+
+  it("still renders the diagnostics strip when the workspace has diagnostics but zero documents", async () => {
+    const { body } = await mountBody(() =>
+      Promise.resolve(
+        makeResult([], [], [
+          { severity: "error", path: "reqs/REQ0001.yml", message: "invalid contents: reqs/REQ0001.yml: YAML error" },
+        ]),
+      ),
+    );
+    const root = body.shadowRoot;
+    // The strip must not be silently dropped just because no document parsed
+    // (the exact case the strip exists for): it renders above the empty state.
+    const strip = root?.querySelector(".doorstop-diagnostics");
+    expect(strip).not.toBeNull();
+    expect(strip?.textContent).toContain("YAML error");
+    expect(strip?.textContent).toContain("reqs/REQ0001.yml");
+    expect(root?.querySelector(".doorstop-empty")?.textContent).toContain(EMPTY_WORKSPACE_MESSAGE);
+  });
 });
 
 describe("DoorstopPanelBodyElement (item list + selection)", () => {

@@ -188,17 +188,18 @@ stamp, exactly what `doorstop`'s "suspect link" warning does.
 ### 7.1 Workspace tab: **Requirements** (`<runtimePluginId>:workspace.doorstop`)
 
 Layout follows OpenSE/git-panel conventions (`toolbar`, `viewer`, `empty`,
-`muted` classes), three regions:
+`muted` classes), three regions. Regions 2–3 stack vertically, mirroring the
+OpenSE split (item list above, detail below):
 
 1. **Document tree strip** — `REQ ← [TST, LLT]` rendered as chips/breadcrumb;
    selecting a document filters the item list. Document chips show count and
    aggregate state dots (green / suspect / unreviewed).
-2. **Item list** — items of the selected document in `level` order:
+2. **Item list (top pane)** — items of the selected document in `level` order:
    `level  UID  header/text-excerpt  [state chips]`. Rows are clickable.
    A filter row offers state filters (suspect only, unreviewed only, search
    over UID/text). `badge` on the tab shows the workspace-wide suspect +
    unreviewed counts.
-3. **Item detail pane** — for the selected item:
+3. **Item detail pane (bottom)** — for the selected item:
    - UID, level, header, full `text` (rendered as sanitized markdown), active/
      normative/derived flags, extended attributes table.
    - **Links out** (parents): UID + suspect/ok state + link fingerprint
@@ -212,7 +213,10 @@ Layout follows OpenSE/git-panel conventions (`toolbar`, `viewer`, `empty`,
 
 Empty states: no `.doorstop.yml` found ("this workspace has no Doorstop
 documents — `doorstop create REQ ./reqs` to start"), parse errors per file
-attributed and non-fatal, mirroring OpenSE's diagnostics discipline.
+attributed and non-fatal, mirroring OpenSE's diagnostics discipline. When a
+workspace has no parsed documents but diagnostics exist (e.g. a lone document
+whose config fails to parse), the warning strip still renders above the empty
+state — diagnostics are never silently dropped.
 
 ### 7.2 Validation view
 
