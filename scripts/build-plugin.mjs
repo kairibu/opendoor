@@ -1,21 +1,34 @@
 #!/usr/bin/env node
 // ---------------------------------------------------------------------------
-// Build the opendoor pi-web plugin: esbuild-bundle the TypeScript entry from
-// src/ into a single dist/pi-web-plugin.js and copy non-TS assets (package.json
-// manifest) verbatim.
+// Build the opendoor pi-web plugin: esbuild-bundle the browser entry from
+// src/pi-web-plugin.ts into dist/browser/pi-web-plugin.js and the paired
+// server entry from src/server-plugin.ts into dist/server-plugin.js, then
+// copy non-TS assets (package.json manifest) verbatim.
 //
 // Adapted from pi-web's scripts/build-plugins.mjs: pi-web bundles each plugin
 // entry with esbuild (`bundle: true`, browser/ESM/es2022 — see its buildFile),
 // so plugin modules may import npm dependencies (e.g. `lit`) directly: they
 // are inlined into the bundle and no host import map is required. This script
-// applies the identical esbuild options to this repository's single entry.
+// applies the identical esbuild options to this repository's two entries
+// (browser bundle: browser platform; server bundle: node platform — the
+// type-only `@jmfederico/pi-web/server-plugin-api` imports erase at build
+// time, so the server bundle is self-contained).
 //
-// Output layout (dist/):
+// Output layout (dist/) — the dist directory IS the installed plugin package
+// (`ln -s …/dist ~/.pi-web/plugins/opendoor`), so the manifest paths below
+// are package-relative to dist/:
 //   package.json            — verbatim copy from the repository root; carries
 //                             the piWeb.plugins manifest the pi-web catalog
 //                             discovers
-//   pi-web-plugin.js        — bundled entry ("// Generated from …"): wiring +
-//                             all plugin modules + inlined npm deps
+//   browser/pi-web-plugin.js — bundled browser entry ("// Generated from …"):
+//                             wiring + all plugin modules + inlined npm deps
+//   server-plugin.js        — bundled Node ESM server entry (workspace
+//                             provider + doorstop.run backend); sits OUTSIDE
+//                             browser/ so it is never browser-public
+//
+// The narrow `browserRoot: "browser"` keeps the server module, source, and
+// package metadata out of the plugin asset routes (pi-web docs: "a sibling
+// server module … return[s] not found through plugin asset routes").
 //
 // Test files (*.test.ts), the shared test-support module, and .d.ts
 // declarations are excluded, exactly like pi-web's build: types are checked
@@ -36,8 +49,10 @@ const outDir = resolve(rootDir, "dist");
 const watchMode = process.argv.includes("--watch");
 const cwd = process.cwd();
 
-const entrySource = resolve(srcDir, "pi-web-plugin.ts");
-const entryOutput = resolve(outDir, "pi-web-plugin.js");
+const browserEntrySource = resolve(srcDir, "pi-web-plugin.ts");
+const browserEntryOutput = resolve(outDir, "browser", "pi-web-plugin.js");
+const serverEntrySource = resolve(srcDir, "server-plugin.ts");
+const serverEntryOutput = resolve(outDir, "server-plugin.js");
 
 if (isDirectExecution()) {
   if (watchMode) {
@@ -49,21 +64,34 @@ if (isDirectExecution()) {
 
 async function buildAll() {
   await rm(outDir, { recursive: true, force: true });
-  await buildEntry();
+  // The browser module must live under its declared `browserRoot` ("browser")
+  // as a real package directory the catalog can traverse; ensure it exists
+  // before esbuild writes the bundle into it.
+  await mkdir(dirname(browserEntryOutput), { recursive: true });
+  await buildBrowserEntry();
+  await buildServerEntry();
   // The plugin manifest lives at the repository root; dist/ needs it verbatim
-  // so the pi-web catalog can discover the piWeb.plugins entry.
+  // so the pi-web catalog can discover the piWeb.plugins entry. Known quirk of
+  // the verbatim copy: the root manifest's `main` ("dist/browser/pi-web-plugin.js")
+  // stays untouched, so relative to the INSTALLED package root (dist/) it points
+  // at dist/dist/browser/… — nonexistent. The host never reads `main`, so this is
+  // harmless today; do not "fix" it here without also diverging the two manifests.
+  // Keep dist/ minimal (only these three files): the host's plugin revision scan
+  // budgets the whole installed package (docs/plugins.md: 4096 entries / 16 MiB),
+  // so no sourcemaps, caches, or other build artifacts may land here.
   await mkdir(outDir, { recursive: true });
   await copyFile(resolve(rootDir, "package.json"), resolve(outDir, "package.json"));
-  console.log(`[opendoor] bundled ${relative(cwd, entrySource)} into ${relative(cwd, entryOutput)}`);
+  console.log(`[opendoor] bundled ${relative(cwd, browserEntrySource)} into ${relative(cwd, browserEntryOutput)}`);
+  console.log(`[opendoor] bundled ${relative(cwd, serverEntrySource)} into ${relative(cwd, serverEntryOutput)}`);
 }
 
-async function buildEntry() {
+async function buildBrowserEntry() {
   // esbuild options byte-identical to pi-web's buildFile. npm deps (lit, and
   // any vendored bundle the model chain later inlines) are bundled, never
   // external: no host import map is required.
   await build({
-    entryPoints: [entrySource],
-    outfile: entryOutput,
+    entryPoints: [browserEntrySource],
+    outfile: browserEntryOutput,
     bundle: true,
     format: "esm",
     platform: "browser",
@@ -71,7 +99,27 @@ async function buildEntry() {
     sourcemap: false,
     absWorkingDir: cwd,
     logLevel: "silent",
-    banner: { js: `// Generated from ${relative(cwd, entrySource)}. Do not edit directly.` },
+    banner: { js: `// Generated from ${relative(cwd, browserEntrySource)}. Do not edit directly.` },
+  });
+}
+
+async function buildServerEntry() {
+  // Node ESM bundle (pi-web's dist/pi-web-plugins/git/server-plugin.js shape):
+  // the catalog imports server modules as Node ES modules, so the package's
+  // "type": "module" applies (docs: do not rely on typeless-module reparsing).
+  // `node:` builtins stay external; everything else (incl. the shared
+  // contract and backend) is inlined.
+  await build({
+    entryPoints: [serverEntrySource],
+    outfile: serverEntryOutput,
+    bundle: true,
+    format: "esm",
+    platform: "node",
+    target: "es2022",
+    sourcemap: false,
+    absWorkingDir: cwd,
+    logLevel: "silent",
+    banner: { js: `// Generated from ${relative(cwd, serverEntrySource)}. Do not edit directly.` },
   });
 }
 
