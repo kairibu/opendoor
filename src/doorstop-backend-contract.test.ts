@@ -160,8 +160,8 @@ describe("parseDoorstopRunRequest", () => {
     }
   });
 
-  it("rejects absolute, drive-letter, backslash, traversal, and empty publish targets", () => {
-    for (const target of ["/abs", "/../abs", "C:/win", "c:\\win", "out\\dir", "a/../b", "../escape", ""]) {
+  it("rejects absolute, drive-letter, backslash, traversal, leading-dash, and empty publish targets", () => {
+    for (const target of ["/abs", "/../abs", "C:/win", "c:\\win", "out\\dir", "a/../b", "../escape", "-x", "-public", ""]) {
       expect(() => parseDoorstopRunRequest({ op: "publish", target })).toThrow(/Invalid publish target/);
     }
   });
@@ -196,19 +196,16 @@ describe("parseDoorstopRunRequest", () => {
     expect(() => parseDoorstopRunRequest({ op: "unlink", uid: "REQ0001" })).toThrow(/Expected string field: target/);
   });
 
-  it("validates clear parents as a string array of UIDs (empty allowed)", () => {
+  it("validates clear parents as a non-empty string array of UIDs", () => {
     // Missing or non-array parents is junk (the server argv needs the field).
     expect(() => parseDoorstopRunRequest({ op: "clear", uid: "REQ0001" })).toThrow(/must be an array/);
     expect(() => parseDoorstopRunRequest({ op: "clear", uid: "REQ0001", parents: "TST001" })).toThrow(/must be an array/);
     expect(() => parseDoorstopRunRequest({ op: "clear", uid: "REQ0001", parents: [42] })).toThrow(/Expected string array field: parents/);
     expect(() => parseDoorstopRunRequest({ op: "clear", uid: "REQ0001", parents: ["bad uid"] })).toThrow(/Invalid doorstop UID in field: parents/);
-    // An empty parent list is structurally valid (re-records with no explicit
-    // parents); the panel never sends it, but the grammar allows it.
-    expect(parseDoorstopRunRequest({ op: "clear", uid: "REQ0001", parents: [] })).toEqual({
-      op: "clear",
-      uid: "REQ0001",
-      parents: [],
-    });
+    // An empty parents list is rejected for strict parity with the element
+    // guard: the Clear button is disabled at zero suspects, so a clear
+    // request with no parents is a contradiction the browser never emits.
+    expect(() => parseDoorstopRunRequest({ op: "clear", uid: "REQ0001", parents: [] })).toThrow(/at least one parent/);
   });
 });
 
@@ -259,8 +256,8 @@ describe("UID grammar (isValidDoorstopUid, shared with the element guard)", () =
 });
 
 describe("publish-target rule (isValidPublishTarget, shared with the settings chain)", () => {
-  it("rejects absolute, drive-letter, backslash, traversal, and empty targets", () => {
-    for (const target of ["/abs", "/x", "C:/win", "c:\\win", "out\\dir", "a/../b", "..", "../escape", ""]) {
+  it("rejects absolute, drive-letter, backslash, traversal, leading-dash, and empty targets", () => {
+    for (const target of ["/abs", "/x", "C:/win", "c:\\win", "out\\dir", "a/../b", "..", "../escape", "-x", "-public", ""]) {
       expect(isValidPublishTarget(target), target).toBe(false);
     }
   });
@@ -272,7 +269,7 @@ describe("publish-target rule (isValidPublishTarget, shared with the settings ch
   });
 
   it("agrees with the settings chain: parseOpendoorSettings accepts exactly the same targets (parity)", () => {
-    for (const target of ["/abs", "C:/win", "out\\dir", "a/../b", ""]) {
+    for (const target of ["/abs", "C:/win", "out\\dir", "a/../b", "-x", ""]) {
       expect(isValidPublishTarget(target), target).toBe(false);
       const result = parseOpendoorSettings({ publishTarget: target });
       expect(result.settings.publishTarget).toBe(DEFAULT_OPENDOOR_SETTINGS.publishTarget);

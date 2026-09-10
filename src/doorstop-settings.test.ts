@@ -163,8 +163,8 @@ describe("parseOpendoorSettings (validation)", () => {
       expect(parseOpendoorSettings({ publishTarget: "./public" }).settings.publishTarget).toBe("./public");
     });
 
-    it("rejects traversal, absolute, backslashed, empty, and non-string targets with a warning + default", () => {
-      for (const bad of ["../outside", "a/../b", "/abs", "\\evil", "site\\out", "C:/site", "c:site", "", "   "]) {
+    it("rejects traversal, absolute, backslashed, leading-dash, empty, and non-string targets with a warning + default", () => {
+      for (const bad of ["../outside", "a/../b", "/abs", "\\evil", "site\\out", "C:/site", "c:site", "-x", "-public", "", "   "]) {
         const result = parseOpendoorSettings({ publishTarget: bad });
         expect(result.settings.publishTarget).toBe(DEFAULT_PUBLISH_TARGET);
         expect(result.diagnostics).toEqual([

@@ -78,6 +78,11 @@ export const DOORSTOP_RUN_OPERATION = "doorstop.run";
  * value, already trimmed/normalized). The `uid` and link/unlink `target`
  * fields are item UIDs (validated by {@link isValidDoorstopUid} — the same
  * grammar the Link/Unlink inputs guard with).
+ *
+ * `clear.parents` is never empty: the panel disables the Clear button at
+ * zero suspect links (and `clearSuspects` early-returns), so a clear
+ * request with no parents is a contradiction the browser never emits — the
+ * request parser rejects an empty list for strict parity with that guard.
  */
 export type DoorstopRunRequest =
   | { op: "validate" }
@@ -142,18 +147,22 @@ export function isValidDoorstopUid(value: string): boolean {
 
 /**
  * Whether `value` is a safe workspace-relative publish target PATH — the
- * exact rule of the settings chain's safe-relative-path validator
- * (doorstop-settings.ts `isSafeRelativePath`, which now delegates here):
- * non-empty, never absolute (no leading `/`), never a Windows drive-letter
- * prefix (`C:/x`), never a backslash, and no `..` segment (path traversal).
- * Anything the settings validator would reject is rejected here, so the
- * backend can never be asked to write outside the workspace. (This is a
- * structural PATH check; how the value is shell-QUOTED for the terminal
- * fallback is the separate `PUBLISH_TARGET_SAFE_TOKEN` concern of
- * doorstop-panel-elements.ts `doorstopPublishCommand`.)
+ * exact rule of the settings chain's publish-target validation
+ * (doorstop-settings.ts `parseOpendoorSettings`, which now delegates
+ * here): non-empty, never absolute (no leading `/`), never a Windows
+ * drive-letter prefix (`C:/x`), never a backslash, never a leading `-`
+ * (doorstop's own argparse would misread a dash-prefixed target as a
+ * flag), and no `..` segment (path traversal). Anything the settings
+ * validator would reject is rejected here, so the backend can never be
+ * asked to write outside the workspace. (This is a structural PATH check;
+ * how the value is shell-QUOTED for the terminal fallback is the separate
+ * `PUBLISH_TARGET_SAFE_TOKEN` concern of doorstop-panel-elements.ts
+ * `doorstopPublishCommand`.)
  */
 export function isValidPublishTarget(value: string): boolean {
   if (value === "") return false;
+  // Leading dash: doorstop's own argparse would consume `-…` as a flag.
+  if (value.startsWith("-")) return false;
   if (value.startsWith("/")) return false;
   if (/^[A-Za-z]:/.test(value)) return false;
   if (value.includes("\\")) return false;
@@ -235,6 +244,14 @@ export function parseDoorstopRunRequest(value: unknown): DoorstopRunRequest {
     case "clear": {
       const uid = requireUid(record, "uid");
       const parents = requireStringArray(record, "parents");
+      // Strict parity with the element-level guard: the Clear button is
+      // disabled at zero suspects (and `clearSuspects` early-returns), so a
+      // clear request with no parents is a contradiction the browser can
+      // never emit — surface it instead of running a bare
+      // `doorstop clear <uid>`.
+      if (parents.length === 0) {
+        throw new Error("Invalid doorstop.run clear request: at least one parent UID is required");
+      }
       for (const parent of parents) {
         if (!isValidDoorstopUid(parent)) throw new Error(`Invalid doorstop UID in field: parents`);
       }

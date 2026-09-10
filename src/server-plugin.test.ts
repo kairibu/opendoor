@@ -1,0 +1,119 @@
+// @vitest-environment node
+//
+// Layer 2 (node env): server plugin factory tests (plan Phase F step 13).
+// Real fs via `fs.mkdtemp` — no mocking needed: probe claims a temp dir that
+// contains `.doorstop.yml` and passes everything else (never rejecting), list
+// returns exactly one main workspace with a stable key and the absolute
+// project path, the returned provider is frozen and exposes the `request`
+// seam, and the default export has the paired server-plugin shape.
+
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { isAbsolute, join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import type {
+  ProjectInput,
+  ServerPluginActivationContext,
+  WorkspaceProvider,
+} from "@jmfederico/pi-web/server-plugin-api";
+import plugin, { createDoorstopWorkspaceProvider } from "./server-plugin.js";
+
+const tempRoots: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(tempRoots.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+});
+
+/** One fresh temp root per fixture: a labeled subdirectory for the project,
+ *  only the root is registered for cleanup. */
+async function fixtureDirectory(label: string): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), "opendoor-server-plugin-"));
+  const dir = join(root, label);
+  await mkdir(dir);
+  tempRoots.push(root);
+  return dir;
+}
+
+function projectFor(path: string): ProjectInput {
+  return { id: "project-demo", name: "demo", path };
+}
+
+/** Minimal activation context — probe/list/request never touch execFile here. */
+function contextFor(): ServerPluginActivationContext {
+  return {
+    apiVersion: 1,
+    pluginId: "opendoor",
+    packageRoot: "/fake/package-root",
+    logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+    settings: {},
+    signal: new AbortController().signal,
+    execFile: async () => {
+      throw new Error("server-plugin tests must never exec the CLI");
+    },
+  };
+}
+
+describe("createDoorstopWorkspaceProvider", () => {
+  it("claims a project with .doorstop.yml and passes without one (never rejects)", async () => {
+    const claimed = await fixtureDirectory("doorstop project");
+    await writeFile(join(claimed, ".doorstop.yml"), "settings:\n  digits: 4\n");
+    const passed = await fixtureDirectory("plain project");
+    // A nonexistent project path (access ENOENT) must also pass, not reject.
+    const gone = join(claimed, "does-not-exist");
+
+    const provider = createDoorstopWorkspaceProvider(contextFor());
+    const signal = new AbortController().signal;
+    await expect(provider.probe(projectFor(claimed), signal)).resolves.toBe("claim");
+    await expect(provider.probe(projectFor(passed), signal)).resolves.toBe("pass");
+    await expect(provider.probe(projectFor(gone), signal)).resolves.toBe("pass");
+  });
+
+  it("lists exactly one main workspace with a stable key and the absolute project path", async () => {
+    const dir = await fixtureDirectory("demo project");
+    const provider = createDoorstopWorkspaceProvider(contextFor());
+    const signal = new AbortController().signal;
+
+    const workspaces = await provider.list(projectFor(dir), signal);
+    expect(workspaces).toHaveLength(1);
+    const [workspace] = workspaces;
+    if (workspace === undefined) throw new Error("list must return exactly one workspace");
+    expect(workspace).toEqual({
+      key: dir,
+      path: dir,
+      label: "demo",
+      isMain: true,
+      publicMetadata: { doorstop: true },
+    });
+    expect(isAbsolute(workspace.path)).toBe(true);
+    expect(isAbsolute(workspace.key)).toBe(true);
+
+    // Stable key across calls (the host derives the public workspace id).
+    const again = await provider.list(projectFor(dir), signal);
+    expect(again[0]?.key).toBe(dir);
+    expect(again[0]?.key).toBe(workspace.key);
+  });
+
+  it("returns a frozen primary-tier provider exposing the request seam", () => {
+    const provider: WorkspaceProvider = createDoorstopWorkspaceProvider(contextFor());
+    expect(Object.isFrozen(provider)).toBe(true);
+    expect(typeof provider.request).toBe("function");
+    // Primary tier: `fallback` unset (git is the fallback provider).
+    expect(provider.fallback).toBeUndefined();
+    // Main-only workspaces are not removable: no prepareRemove in v1.
+    expect(provider.prepareRemove).toBeUndefined();
+  });
+});
+
+describe("default export", () => {
+  it("is the paired server plugin shape (apiVersion 1, name, activate)", async () => {
+    expect(plugin.apiVersion).toBe(1);
+    expect(plugin.name).toBe("Opendoor");
+    const activation = await plugin.activate(contextFor());
+    const provider = activation.workspaceProvider;
+    expect(provider).toBeDefined();
+    expect(typeof provider?.probe).toBe("function");
+    expect(typeof provider?.list).toBe("function");
+    expect(typeof provider?.request).toBe("function");
+    expect(Object.isFrozen(provider)).toBe(true);
+  });
+});
