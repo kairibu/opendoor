@@ -67,6 +67,12 @@ needs:
 - `context.terminal.runCommand()` — run `doorstop` CLI commands in a workspace
   terminal with visible output (the same pattern the bundled
   **Workspace Tasks** plugin uses for `npm run dev`-style commands).
+- **Paired server module** (added post-v1, “Option 2”): a workspace provider
+  whose `probe` claims only projects with a root `.doorstop.yml`, serving a
+  `doorstop.run` backend operation. The host runs it inside sessiond via its
+  bounded `execFile()` helper (`cwd` = the workspace path, output/timeout
+  bounded); the browser reaches it through `context.backend.request()`.
+  Server APIs are imported type-only from `@jmfederico/pi-web/server-plugin-api`.
 - `context.prompt.insertText()` — push requirement context into the agent
   prompt editor.
 - `host.requestRender()`, `onInvalidate`, `badge` — async loading and
@@ -105,8 +111,10 @@ architecture with different discovery/parsing:
    visible and auditable.
 4. Support the agent workflow: insert item text, UID, links, and findings into
    the prompt editor with ready-made task prompts.
-5. Be a browser-only plugin: no server entry, no workspace-provider claim, no
-   session-daemon restart to install or update.
+5. Run the CLI through a **paired server module** when available (plan:
+   `docs/plan-opendoor-server-plugin.md`): headless execution with captured
+   output shown in the panel's Last run section, no focus theft, no shell —
+   with the workspace terminal as the always-available fallback.
 
 ## 4. Non-goals (v1)
 
@@ -115,16 +123,16 @@ architecture with different discovery/parsing:
   formatting) or to the agent via prompts; the panel itself is read-only.
 - **No re-implementation of full Doorstop validation.** The plugin computes
   the cheap, display-relevant state (reviewed/suspect) itself for instant UI,
-  but *authoritative* validation is `doorstop` run in the terminal. The
-  findings view renders CLI output plus plugin-local checks, clearly labeled.
-- **No server entry / `backend.request()` backend.** That contract requires
-  claiming the workspace as its workspace provider, which would compete with
-  bundled Git and change workspace semantics for every project. Not worth it
-  for v1 (see §9 Risks).
+  but *authoritative* validation is `doorstop` run via the backend (paired)
+  or the terminal (unpaired). The findings view renders CLI output plus
+  plugin-local checks, clearly labeled.
 - **No editing of published output, no ReqIF import/export UI** (CLI covers it).
 - **No markdown itemformat in v1** if it proves costly; YAML-format items are
   the baseline, markdown-with-frontmatter items are parsed if present
   (they are cheap: front matter is YAML, header/text come from the body).
+- **No streaming run output.** The backend returns stdout/stderr after the
+  process exits (host bound: 2 MiB/stream); live-incremental output stays a
+  terminal-only affordance.
 
 ## 5. Architecture
 
@@ -137,15 +145,49 @@ architecture with different discovery/parsing:
 │   ├─ doorstop-model.ts       parse configs + item YAML → tree/index       │
 │   ├─ doorstop-state.ts       fingerprints, suspect links, local findings  │
 │   ├─ doorstop-prompts.ts     prompt builders for the action palette       │
-│   └─ doorstop-elements.ts    Lit elements: tree, item list, detail, run   │
+│   └─ doorstop-panel-elements.ts  Lit elements + the runDoorstop dispatcher │
 └───────────────────────────────────────────────────────────────────────────┘
-        │ context.files (read)                │ context.terminal.runCommand
-        ▼                                     ▼
-  workspace *.yml/*.md              `doorstop validate|publish|add|link|…`
+   │ context.files (read)         │ context.backend.request("doorstop.run") │
+   ▼                              ▼ (paired; falls back to terminal)       │
+ workspace *.yml/*.md        POST /api/plugin-backends/opendoor/…           │
+                             ┌────────────── sessiond ─────────────┐       │
+                             │ server-plugin.ts  workspaceProvider  │       │
+                             │   probe: claims .doorstop.yml roots  │       │
+                             │ doorstop-backend.ts                  │       │
+                             │   validate input → build argv →      │       │
+                             │   context.execFile(doorstop …, cwd)  │       │
+                             └──────────────────────────────────────┘       │
 ```
 
-- **Browser-only** (browserRoot + module, no serverModule), id `opendoor`,
-  installed as a symlinked local plugin or Pi package like OpenSE.
+- **Paired plugin** (`browserRoot: "browser"` + `serverModule:
+  "server-plugin.js"`, id `opendoor`), installed as a symlinked local plugin
+  or Pi package like OpenSE. Server APIs are type-only imports; the server
+  bundle never ships browser code and vice versa (one shared contract module,
+  `doorstop-backend-contract.ts`, compiles into both).
+- The server entry is a workspace provider: `probe` runs a cheap
+  `node:fs/promises` check for `<project>/.doorstop.yml` and claims ONLY
+  those projects (never rejects, no exec); `list` serves the project
+  directory as the single main workspace; the `request` method enables the
+  browser-side `backend` helper. Non-doorstop projects are untouched (Git
+  provider keeps them).
+- **Ownership trade-off (accepted):** doorstop projects lose the fallback
+  Git provider's backend features (git status/diff panel data) while
+  opendoor claims them — the §9 decision, made consciously.
+- `request("doorstop.run", input)` validates the structured input BEFORE
+  exec (unknown op / invalid UID / invalid target never reach the CLI),
+  builds argv server-side only (no shell, no quoting), and runs the CLI via
+  the host `execFile()` with `cwd = request.workspace.path`, `timeoutMs`
+  clamped to 8 500 ms (headroom under the host's 10 s provider-callback
+  bound), the per-invocation signal forwarded, and per-workspace
+  serialization (no two doorstop runs overlap in one checkout).
+- The response (exitCode/signal nullable, stdout/stderr with truncation
+  flags, durationMs) is committed to the controller's `lastRun` state,
+  rendered as the **Last run** section (status badge ok/failed/killed/error,
+  duration, dismiss, `<pre>` output), and triggers `invalidate()` (rescan) —
+  §9.3's "no polling" idiom, now with captured output instead of none.
+- Mutating operations fall back to `terminal.runCommand()` (same shell
+  commands as before, `open: false`, rescan on the completed handle) whenever
+  the backend is absent — unpaired installs keep working unchanged.
 - Discovery finds every `.doorstop.yml` in the workspace (excluding `.git`,
   `node_modules`, published output dirs), reads each config to learn prefix,
   parent prefix, itemformat, and the document's item directory.
@@ -154,10 +196,12 @@ architecture with different discovery/parsing:
   subset parser or a committed browser bundle — decision point in §9).
 - The model index maps UID → item, prefix → document, builds parent/child link
   maps, and computes per-item state (§6).
-- Mutating operations run `doorstop …` through `terminal.runCommand()` with a
-  title like "Doorstop: add item to REQ"; `open: false` keeps the current view,
-  the run handle lets the panel show a spinner and, on completion, trigger
-  `onInvalidate`-style re-discovery (poll the handle or re-scan on focus).
+- Mutating operations run through the **paired backend** when available
+  (`backend.request("doorstop.run", …)`, structured request, argv built
+  server-side, output captured in the Last run pane); otherwise through
+  `terminal.runCommand()` with a title like "Doorstop: add item to REQ";
+  `open: false` keeps the current view, and the run handle's completion
+  triggers the re-discovery — no polling.
 
 ## 6. Requirements state model (per item)
 
@@ -295,10 +339,12 @@ in this workspace").
    hand-rolled subset parser. Recommendation: vendor js-yaml; OpenSE already
    established the committed-browser-bundle pattern, and correctness beats
    bundle size here.
-3. **Command results are not parsed (v1).** `terminal.runCommand` gives a run
-   handle, not structured output; the panel re-scans files after completion
-   instead of trusting CLI output. Structured parsing (or a future server
-   entry) is deferred.
+3. **Command results are not parsed on the terminal path.**
+   `terminal.runCommand` gives a run handle, not structured output; the
+   panel re-scans files after completion instead of trusting CLI output.
+   The paired server entry (M6) closes this for paired installs: it returns
+   structured stdout/stderr/exit status, rendered in the Last run pane. The
+   terminal path stays as the unpaired fallback.
 4. **Stale UI while CLI mutates files.** Terminal runs may change items while
    the panel shows cached state; the controller marks results stale (OpenSE
    already has the stale flag idiom) and invalidates on terminal completion
@@ -306,35 +352,58 @@ in this workspace").
 5. **Shortcut collisions.** `mod+7`/`mod+shift+d` must be checked against the
    current core/git/opense keybinding map at implementation time (documented
    in code comments like OpenSE's risk note).
-6. **Not a workspace provider.** A server entry would have to claim the
-   project to get `backend.request()`, suppressing fallback Git semantics —
-   rejected for v1. If structured backend operations are wanted later (e.g.
-   returning validation findings as JSON), the clean path is a *separate*
-   provider plugin decision, not a bolt-on.
+6. **Workspace-provider ownership.** The paired server entry claims only
+   projects whose root has `.doorstop.yml` (cheap probe, no exec); everything
+   else stays on the bundled Git provider. Accepted trade-off: a claimed
+   doorstop project loses the Git provider's backend features (git
+   status/diff panel data) for that project — spec §9 risk #6 of the original
+   plan, made consciously with the narrow probe as mitigation. Open question
+   kept: degrade to Git when the `doorstop` CLI is missing on the service
+   host (would cost an exec in every probe).
+7. **Provider-callback time ceiling.** pi-web bounds every provider callback
+   at 10 s, so the backend clamps its exec timeout to 8 500 ms: long
+   `doorstop publish` runs surface as killed-with-partial-output in the Last
+   run pane; the terminal remains the affordance for long runs.
+8. **sessiond PATH.** The CLI resolves on the daemon's environment, not the
+   user's login shell; `plugins.opendoor.settings.doorstopPath` is the
+   escape hatch, and a spawn ENOENT maps to a message pointing at it.
+9. **No hot reload for the server half.** Server entries load at sessiond
+   startup; every server-side change needs rebuild + sessiond restart + tab
+   reload (the browser may show `409 stale-plugin-revision` until reloaded).
 
 ## 10. Packaging, build, test
 
-Mirror `opense-package` exactly:
+Mirror the paired layout (browser bundle relocated, server bundle added;
+manifest verified against pi-web's plugin discovery code):
 
-- `package.json`: `piWeb.plugins: [{ id: "opendoor", browserRoot: ".",
-  module: "pi-web-plugin.js" }]` (the build script copies the root
-  `package.json` verbatim into `dist/`, so `browserRoot: "."` refers to the
-  dist root at discovery time), dependency `lit`, peerDependency
-  `@jmfederico/pi-web`, devDependency for type-only imports of
-  `@jmfederico/pi-web/plugin-api`.
-- `scripts/build-plugin.mjs` with pi-web's exact transpiler settings →
-  `dist/`; `npm run dev` watch; `npm test` (vitest + happy-dom);
-  `npm run typecheck`.
+- `package.json`: `piWeb.plugins: [{ id: "opendoor", browserRoot: "browser",
+  module: "browser/pi-web-plugin.js", serverModule: "server-plugin.js" }]`
+  (the build script copies the root `package.json` verbatim into `dist/`;
+  `browserRoot: "browser"` refers to the dist subtree at discovery time and
+  deliberately does NOT contain the server bundle), peerDependency
+  `@jmfederico/pi-web` **>= 1.202608.1** (the `.0` release lacks the
+  `/server-plugin-api` export and `serverModule` support), dependency `lit`.
+- `scripts/build-plugin.mjs` emits two esbuild bundles — browser entry →
+  `dist/browser/pi-web-plugin.js`, server entry → `dist/server-plugin.js`
+  (platform node, format esm) — plus the verbatim manifest copy; `npm run
+  dev` watches both entries; `npm test` (vitest + happy-dom, node
+  environment for the server suites); `npm run typecheck`.
+- Keep dist/ ≤ 4,096 entries / 16 MiB (the revision-scan budget covers the
+  whole installed package; never emit sourcemaps/caches into dist/).
 - Tests: discovery, model/index, state (incl. fingerprint fixtures), prompts,
   panel elements, plugin entry — the OpenSE test taxonomy.
-- Install: `ln -s ./dist ~/.pi-web/plugins/opendoor`, reload page; verify via
-  `/pi-web-plugins/manifest.json`.
+- Install: `ln -s ./dist ~/.pi-web/plugins/opendoor`, **restart sessiond**
+  (server entries load at daemon startup only), reload the page; verify via
+  `/pi-web-plugins/manifest.json` (the opendoor entry must carry
+  `backendRevision`).
 - Keep package ≤ 4,096 entries / 16 MiB (vendor bundle is the main mass).
 
 ## 11. Milestones
 
-Status: **M1–M5 shipped** (265 unit tests green; see the repository README
-for what shipped). M6 remains optional future work.
+Status: **M1–M5 shipped**, plus the paired server plugin (M6, Option 2 —
+plan: `docs/plan-opendoor-server-plugin.md`). 319 unit tests green; see the
+repository README for what shipped. Git change highlighting (M7) remains
+optional future work.
 1. **M1 — Skeleton + discovery + tree view.** Plugin loads; documents and
    items listed read-only; empty/error states.
 2. **M2 — State engine.** Fingerprints (with fixtures), suspect links,
@@ -344,12 +413,21 @@ for what shipped). M6 remains optional future work.
 4. **M4 — Agent prompts.** Prompt builders + detail-pane menu; prompt tests.
 5. **M5 — Polish.** Findings view, filters, markdown itemformat support,
    settings (publish target, excluded dirs), documentation.
-6. **M6 (optional) — Git change highlighting.** Overlay working-tree git
+6. **M6 — Paired server plugin.** Shared `doorstop.run` contract; server
+   entry (workspace provider + `execFile` backend, per-workspace
+   serialization, 8.5 s clamped timeout); paired packaging
+   (`browserRoot: "browser"` + `serverModule`); browser dispatcher with
+   terminal fallback; Last run pane (status, output, truncation/killed
+   notices, dismiss); host settings `{ doorstopPath, timeoutMs }`.
+7. **M7 (optional) — Git change highlighting.** Overlay working-tree git
    state onto items; see §12.
 
 ## 12. Optional: Git-based change highlighting (post-v1)
 
-Status: optional, deferred until after M5. Browser-only, no server entry.
+Status: optional, deferred. Note: with the M6 paired server plugin shipped,
+opendoor is no longer browser-only — a doorstop project is claimed by the
+opendoor provider (not Git), so any git change highlighting must work in that
+ownership context too (or wait for pi-web to allow non-owning backends).
 
 Because a Doorstop UID is its file name, "changed requirement" maps to
 "changed file", and git state can be obtained entirely in the browser.
