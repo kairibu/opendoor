@@ -6,13 +6,16 @@
 // (doorstop.run through `requestDoorstopBackend`).
 //
 // Ownership per plan §"Ownership trade-off": opendoor is a PRIMARY-tier
-// provider (no `fallback`) — `probe` claims ONLY when `<project.path>/
-// .doorstop.yml` exists, and passes everything else (staying on the fallback
-// Git provider). The claim check is a cheap `node:fs/promises` access — no
-// CLI exec on probe (a CLI-backed probe would force a doorstop install on
-// every non-doorstop project). `probe` NEVER rejects: a rejected probe
-// degrades the project into an errored state, so any failure (missing file,
-// unreadable project, aborting signal) passes.
+// provider (no `fallback`) — `probe` claims ONLY when the project contains a
+// `.doorstop.yml`, and passes everything else (staying on the fallback Git
+// provider). Doorstop trees commonly nest the marker inside document
+// subdirectories (`reqs/.doorstop.yml` is the idiom, not the exception), so
+// the probe is a BOUNDED SHALLOW WALK (≤ 3 directory levels, ≤ 256 entries,
+// `.git`/`node_modules` skipped) rather than a root-only access — still cheap
+// node:fs/promises readdirs, no CLI exec (a CLI-backed probe would force a
+// doorstop install on every non-doorstop project). `probe` NEVER rejects: a
+// rejected probe degrades the project into an errored state, so any failure
+// (missing marker, unreadable directory, aborting signal) passes.
 //
 // Lifecycle surface is deliberately minimal: `prepareRemove` is omitted
 // (main-only workspaces are not removable linked workspaces), and `health`
@@ -23,8 +26,9 @@
 // becomes a runtime import of the plugin.
 // ---------------------------------------------------------------------------
 
-import { access } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { join } from "node:path";
+import type { Dirent } from "node:fs";
 import type {
   PiWebServerPlugin,
   ProjectInput,
@@ -38,6 +42,47 @@ import { requestDoorstopBackend } from "./doorstop-backend.js";
 
 /** Marker file whose presence makes a project a doorstop project. */
 const DOORSTOP_MARKER_FILE = ".doorstop.yml";
+
+/** Probe walk bounds (see the module header): how deep below the project root
+ *  the marker may sit, how many entries may be scanned in total, and which
+ *  directory names are never entered (the plugin's built-in discovery skips;
+ *  the walk must not descend into huge vendor trees). */
+const PROBE_MAX_DEPTH = 3;
+const PROBE_MAX_ENTRIES = 256;
+const PROBE_SKIP_NAMES = new Set([".git", "node_modules"]);
+
+/** Bounded shallow walk: does `root` contain a `.doorstop.yml` at or below it
+ *  (≤ PROBE_MAX_DEPTH levels, ≤ PROBE_MAX_ENTRIES scanned entries)? Never
+ *  throws — an unreadable directory is skipped (its subtree is invisible,
+ *  which can only make the probe pass, never error), and an aborted signal
+ *  ends the walk as "not found". */
+async function probeContainsDoorstopMarker(root: string, signal: AbortSignal): Promise<boolean> {
+  // The mutable scan budget lives in a closure cell so the recursive walk
+  // stays a pure function of (directory, depth).
+  let scanned = 0;
+  const walk = async (directory: string, depth: number): Promise<boolean> => {
+    if (scanned >= PROBE_MAX_ENTRIES) return false;
+    scanned += 1;
+    let entries: Dirent[];
+    try {
+      if (signal.aborted) return false;
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch {
+      // Unreadable directory: its subtree is invisible → not found here.
+      return false;
+    }
+    for (const entry of entries) {
+      if (scanned >= PROBE_MAX_ENTRIES) return false;
+      scanned += 1;
+      if (entry.isFile() && entry.name === DOORSTOP_MARKER_FILE) return true;
+      if (entry.isDirectory() && depth < PROBE_MAX_DEPTH && !PROBE_SKIP_NAMES.has(entry.name)) {
+        if (await walk(join(directory, entry.name), depth + 1)) return true;
+      }
+    }
+    return false;
+  };
+  return walk(root, 0);
+}
 
 const plugin: PiWebServerPlugin = {
   apiVersion: 1,
@@ -56,11 +101,11 @@ export function createDoorstopWorkspaceProvider(context: ServerPluginActivationC
   return Object.freeze({
     async probe(project: ProjectInput, signal: AbortSignal): Promise<ProviderClaim> {
       try {
-        await access(join(project.path, DOORSTOP_MARKER_FILE));
-        return "claim";
+        if (await probeContainsDoorstopMarker(project.path, signal)) return "claim";
+        return "pass";
       } catch {
-        // Any failure passes — missing marker, unreadable path, aborted
-        // signal — so a probe never rejects (never degrades the project).
+        // Unreachable (the walk never throws) — kept as the probe's
+        // never-reject backstop: a rejected probe degrades the project.
         return "pass";
       }
     },

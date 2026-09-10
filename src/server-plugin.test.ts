@@ -58,7 +58,7 @@ describe("createDoorstopWorkspaceProvider", () => {
     const claimed = await fixtureDirectory("doorstop project");
     await writeFile(join(claimed, ".doorstop.yml"), "settings:\n  digits: 4\n");
     const passed = await fixtureDirectory("plain project");
-    // A nonexistent project path (access ENOENT) must also pass, not reject.
+    // A nonexistent project path (readdir ENOENT) must also pass, not reject.
     const gone = join(claimed, "does-not-exist");
 
     const provider = createDoorstopWorkspaceProvider(contextFor());
@@ -66,6 +66,42 @@ describe("createDoorstopWorkspaceProvider", () => {
     await expect(provider.probe(projectFor(claimed), signal)).resolves.toBe("claim");
     await expect(provider.probe(projectFor(passed), signal)).resolves.toBe("pass");
     await expect(provider.probe(projectFor(gone), signal)).resolves.toBe("pass");
+  });
+
+  it("claims nested markers — the reqs/.doorstop.yml idiom — and skips .git/node_modules", async () => {
+    const provider = createDoorstopWorkspaceProvider(contextFor());
+    const signal = new AbortController().signal;
+
+    // The real-world shape: documents live in subdirectories.
+    const nested = await fixtureDirectory("nested project");
+    await mkdir(join(nested, "reqs"));
+    await writeFile(join(nested, "reqs", ".doorstop.yml"), "settings:\n  digits: 4\n");
+    await expect(provider.probe(projectFor(nested), signal)).resolves.toBe("claim");
+
+    // Skip names are never entered — a marker inside them does not claim.
+    const vendor = await fixtureDirectory("vendor project");
+    await mkdir(join(vendor, "node_modules", "somepkg"), { recursive: true });
+    await writeFile(join(vendor, "node_modules", "somepkg", ".doorstop.yml"), "settings:\n");
+    await expect(provider.probe(projectFor(vendor), signal)).resolves.toBe("pass");
+
+    // Depth bound: a marker below PROBE_MAX_DEPTH levels stays invisible.
+    const deep = await fixtureDirectory("deep project");
+    const deepMarker = join(deep, "a", "b", "c", "d");
+    await mkdir(deepMarker, { recursive: true });
+    await writeFile(join(deepMarker, ".doorstop.yml"), "settings:\n");
+    await expect(provider.probe(projectFor(deep), signal)).resolves.toBe("pass");
+
+    // Exactly at the depth bound is still visible (a = 1 … c = 3).
+    const edge = await fixtureDirectory("edge project");
+    const edgeMarker = join(edge, "a", "b", "c");
+    await mkdir(edgeMarker, { recursive: true });
+    await writeFile(join(edgeMarker, ".doorstop.yml"), "settings:\n");
+    await expect(provider.probe(projectFor(edge), signal)).resolves.toBe("claim");
+
+    // An aborted signal ends the walk as "not found" (never rejects).
+    const aborted = new AbortController();
+    aborted.abort();
+    await expect(provider.probe(projectFor(nested), aborted.signal)).resolves.toBe("pass");
   });
 
   it("lists exactly one main workspace with a stable key and the absolute project path", async () => {
