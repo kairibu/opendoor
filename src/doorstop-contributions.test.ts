@@ -276,6 +276,21 @@ describe("panel render wiring", () => {
     controller.selectDocument("REQ");
     controller.setStateFilter(undefined);
     controller.setSearch("allocated");
+    // The run-state fields (Phase D): a run in flight and a committed view.
+    controller.beginRun("Doorstop: validate");
+    controller.commitRun({
+      op: "validate",
+      title: "Doorstop: validate",
+      status: "ok",
+      exitCode: 0,
+      signal: null,
+      stdout: "Validated 1 item.",
+      stderr: "",
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      durationMs: 12,
+      at: 7,
+    });
 
     const updated = panel.render(context);
     const expectedNames = [
@@ -289,6 +304,8 @@ describe("panel render wiring", () => {
       "selectedDocumentPrefix",
       "stateFilter",
       "search",
+      "lastRun",
+      "runInProgress",
     ];
     expect(bindingNames(updated)).toEqual(expectedNames);
     expect(updated.values).toHaveLength(expectedNames.length);
@@ -306,6 +323,10 @@ describe("panel render wiring", () => {
     expect(updated.values[8]).toBe(controller.stateFilter);
     expect(updated.values[9]).toBe(controller.search);
     expect(updated.values[9]).toBe("allocated");
+    // The Phase D additions mirror by identity too.
+    expect(updated.values[10]).toBe(controller.lastRun);
+    expect(updated.values[11]).toBe(controller.runInProgress);
+    expect(updated.values[11]).toBe("Doorstop: validate");
   });
 });
 

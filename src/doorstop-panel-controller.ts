@@ -3,10 +3,11 @@
 // OpenseWorkspaceController exactly): one `DoorstopWorkspaceController`
 // instance holds the complete UI state of one workspace's Requirements panel
 // — load result, loading/stale/error flags, document/state-filter selection,
-// and the search string — and pushes every connected state mutation to the
-// panel host via the CURRENT workspace context handle
-// (`this.context.host.requestRender()`), gated on the controller's own
-// connection flag.
+// the search string, and the last doorstop run's view record
+// (`lastRun`/`runInProgress`, plan Phase D step 8) — and pushes every
+// connected state mutation to the panel host via the CURRENT workspace
+// context handle (`this.context.host.requestRender()`), gated on the
+// controller's own connection flag.
 //
 // This is the formal `ReactiveController` the opendoor panel drives manually
 // (deviation 3, copied from opense): the per-workspace map and LRU eviction
@@ -27,7 +28,41 @@ import type { ReactiveController } from "lit";
 import type { WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
 import type { DoorstopFiles, ItemStateKey } from "./doorstop-contract.js";
 import { formatUnknownError } from "./doorstop-contract.js";
+import type { DoorstopRunRequest } from "./doorstop-backend-contract.js";
 import type { DoorstopWorkspaceResult } from "./doorstop-panel.js";
+
+/**
+ * The panel's view record of one doorstop run (plan Phase D step 8): the
+ * controller keeps the MOST RECENT run and renders it in the "Last run"
+ * section. Backend-path runs commit this record with the parse
+ * `DoorstopRunResponse` mapped onto it (`status`: exit 0 → `"ok"`, exit ≠ 0
+ * → `"failed"`, `signal !== null` → `"killed"`); a rejected backend request
+ * commits `status: "error"` with the parsed server error text instead.
+ * `lastRun` is run OUTPUT — independent of the discovery rescan — so it
+ * SURVIVES `invalidate()`/`load()` and is cleared only by `dismissRun()` or
+ * the next commit of a new run.
+ */
+export interface DoorstopLastRunView {
+  /** The run's op (also the terminal-metadata `opendoor.op` value). */
+  op: DoorstopRunRequest["op"];
+  /** Human title of the run (button label / terminal title). */
+  title: string;
+  status: "ok" | "failed" | "killed" | "error";
+  /** Process exit code; `null` when the process never exited (killed). */
+  exitCode: number | null;
+  /** Killing signal (e.g. "SIGTERM"); `null` for a normal exit. */
+  signal: string | null;
+  stdout: string;
+  stderr: string;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
+  /** Wall time of the run, in milliseconds. */
+  durationMs: number;
+  /** Epoch ms the run started (event order / display timestamp). */
+  at: number;
+  /** `status === "error"` only: the parsed backend rejection message. */
+  errorMessage?: string;
+}
 
 /** One load job: discovery walk → item reads/parse → index → state
  *  computation. Injected into the controller (rather than imported from the
@@ -100,6 +135,19 @@ export class DoorstopWorkspaceController implements ReactiveController {
   /** Search filter string; "" = no search filter. */
   search = "";
 
+  /** The most recent doorstop run's view record (plan Phase D step 8),
+   *  rendered in the "Last run" section. Deliberately INDEPENDENT of the
+   *  rescan: `invalidate()`/`load()` never touch it, and it is cleared only
+   *  by `dismissRun()` or a new run's commit — panel reloads keep showing
+   *  the last run's output. On LRU eviction it dies with the controller
+   *  (accepted — the registry bounds retained states). */
+  lastRun: DoorstopLastRunView | undefined;
+
+  /** The title of the doorstop run currently in flight; `undefined` when no
+   *  run is pending. The element disables its action buttons while this is
+   *  set (a second run must never overlap the one in flight). */
+  runInProgress: string | undefined;
+
   private readonly loadJob: DoorstopWorkspaceJob;
 
   /** In-flight load job; re-entrant calls reuse it (no overlapping jobs). */
@@ -134,7 +182,7 @@ export class DoorstopWorkspaceController implements ReactiveController {
   }
 
   /** Panel invalidation: re-run discovery + load unconditionally for the
-   *  connected workspace (browser-only plugin — no owned-workspace gate). */
+   *  connected workspace (paired or unpaired: the load job is browser-side, so there is no owned-workspace gate). */
   invalidate(): Promise<void> {
     this.stale = this.result !== undefined;
     this.requestUpdate();
@@ -198,7 +246,41 @@ export class DoorstopWorkspaceController implements ReactiveController {
     this.requestUpdate();
   }
 
+  /** Begin a doorstop run: record the op title (element disables action
+   *  buttons) and notify. */
+  beginRun(title: string): void {
+    this.runInProgress = title;
+    this.requestUpdate();
+  }
+
+  /** Finish a doorstop run (success or rejection): clear the in-flight
+   *  marker so the action buttons re-enable. */
+  endRun(): void {
+    this.runInProgress = undefined;
+    this.requestUpdate();
+  }
+
+  /** Commit a completed run's view record and notify. Replaces any previous
+   *  `lastRun` (a new run clears the old view); nothing else clears it. */
+  commitRun(view: DoorstopLastRunView): void {
+    this.lastRun = view;
+    this.requestUpdate();
+  }
+
+  /** Dismiss the last run's view record (the Last-run section's dismiss
+   *  button). The only non-run path that clears `lastRun`. */
+  dismissRun(): void {
+    this.lastRun = undefined;
+    this.requestUpdate();
+  }
+
   private requestUpdate(): void {
+    // The `isConnected` guard lives HERE, not in the state mutators above:
+    // beginRun/endRun/commitRun/dismissRun write their state unconditionally
+    // and only skip the render while the host is disconnected, so run output
+    // committed just before or during a disconnect survives a switch-back.
+    // This is deliberate and differs from `load()`, whose `.then` drops the
+    // whole result when disconnected — do not "fix" the mutators to match.
     // Route through the CURRENT context handle (refreshed by the registry on
     // workspace reuse), so re-renders reach the same fresh `host` snapshot
     // the load reads use.

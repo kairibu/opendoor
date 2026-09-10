@@ -15,7 +15,8 @@
 //      config's `parentPrefix`; item count + aggregate state dots; the
 //      "All" chip clears the document filter), state-filter dropdown, search
 //      input, Refresh (controller.invalidate), Run validation and Publish
-//      HTML (terminal), and the stale notice.
+//      HTML (backend when the workspace is opendoor-owned with an active
+//      backend, terminal otherwise), and the stale notice.
 //   2. Item list (top pane) — level/uid/header-excerpt rows with
 //      per-ItemStateKey chips; click selects the item. Diagnostics
 //      (truncated/binary/parse errors) surface as an inline warning strip
@@ -26,13 +27,25 @@
 //      fingerprint shorts), links in, references, extended attributes as
 //      JSON-ish text, local findings, and the action row: Review / Clear
 //      suspect links / Edit / Unlink / Link / Ask-agent menu.
+//   4. Last run (bottom) — the panel's view of the latest run's stdout/
+//      stderr/status/duration (driven by `controller.lastRun`, plan Phase D
+//      step 8), with a dismiss button; action buttons are disabled while
+//      `controller.runInProgress` is set.
 //
-// Every terminal command goes through `context.terminal.runCommand({ title,
-// command, metadata: { "opendoor.op": … }, open })`. `TerminalCommandRunHandle`
-// (node_modules/@jmfederico/pi-web/dist/plugin-api.d.ts) exposes
-// `completed: Promise<TerminalCommandRun>`, so on completion the panel
-// invalidates (rescans the workspace) — the §9.3 "re-scan on completion"
-// obligation fulfilled without polling.
+// Every run dispatches through `runDoorstop` (Phase D step 9) with TWO
+// paths. When the workspace is owned by the opendoor provider with an
+// active backend (`context.backend !== undefined &&
+// context.workspace.provider?.pluginId === OPENDOOR_PLUGIN_ID &&
+// provider.capabilities.request !== false`), the action calls
+// `context.backend.request("doorstop.run", input)` with the STRUCTURED
+// request (argv is built server-side — the browser never shell-quotes) and
+// commits the response to `controller.lastRun`. Otherwise it runs the
+// terminal command exactly as before: `context.terminal.runCommand({ title,
+// command, metadata: { "opendoor.op": … }, open })` —
+// `TerminalCommandRunHandle.completed` (node_modules/@jmfederico/pi-web/
+// dist/plugin-api.d.ts) resolves when the run finishes, so on completion
+// the panel invalidates (rescans the workspace) — the §9.3 "re-scan on
+// completion" obligation fulfilled without polling.
 //
 // The body element drives the controller lifecycle directly (opense hands
 // that duty to its activity element; here there is only one element, so it
@@ -41,7 +54,7 @@
 // switch) ends the old workspace's connection and starts the new one's.
 // ---------------------------------------------------------------------------
 
-import type { WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
+import type { WorkspacePanelContext, WorkspaceBackend } from "@jmfederico/pi-web/plugin-api";
 import { LitElement, css, html, nothing, svg, type PropertyValues, type TemplateResult } from "lit";
 import { classMap } from "lit/directives/class-map.js";
 import { createRef, ref, type Ref } from "lit/directives/ref.js";
@@ -54,9 +67,10 @@ import type {
   ItemStateKey,
   LinkRecord,
 } from "./doorstop-contract.js";
-import { isValidDoorstopUid } from "./doorstop-backend-contract.js";
+import { isValidDoorstopUid, OPENDOOR_PLUGIN_ID, DOORSTOP_RUN_OPERATION, parseDoorstopRunResponse, type DoorstopRunRequest } from "./doorstop-backend-contract.js";
+import { formatUnknownError } from "./doorstop-contract.js";
 import { computeItemStamp } from "./doorstop-state.js";
-import type { DoorstopWorkspaceController } from "./doorstop-panel-controller.js";
+import type { DoorstopWorkspaceController, DoorstopLastRunView } from "./doorstop-panel-controller.js";
 import type { DoorstopWorkspaceResult } from "./doorstop-panel.js";
 import { DEFAULT_OPENDOOR_SETTINGS } from "./doorstop-settings.js";
 import {
@@ -413,6 +427,12 @@ export interface DoorstopPanelBodyElement extends LitElement {
   selectedDocumentPrefix: string | undefined;
   stateFilter: ItemStateKey | undefined;
   search: string;
+  /** Mirrored from the controller: the latest doorstop run's view record
+   *  (renders the "Last run" section). */
+  lastRun: DoorstopLastRunView | undefined;
+  /** Mirrored from the controller: title of the run in flight (disables the
+   *  action buttons). */
+  runInProgress: string | undefined;
 }
 
 /**
@@ -479,6 +499,16 @@ function defineDoorstopPanelBodyElement(): void {
 
       @property({ attribute: false })
       search = "";
+
+      /** Latest doorstop run's view record, mirrored from the controller
+       *  (renders the "Last run" section). */
+      @property({ attribute: false })
+      lastRun: DoorstopLastRunView | undefined;
+
+      /** Title of the doorstop run in flight, mirrored from the controller;
+       *  `undefined` with no run pending (action buttons disabled while set). */
+      @property({ attribute: false })
+      runInProgress: string | undefined;
 
       /** Whether the Ask-agent menu is expanded. */
       @state()
@@ -1172,6 +1202,83 @@ function defineDoorstopPanelBodyElement(): void {
         .doorstop-empty .doorstop-muted {
           margin-top: 6px;
         }
+
+        /* --- last run (region 4) --- */
+        .doorstop-last-run {
+          flex: 0 0 auto;
+          max-height: 38%;
+          overflow: auto;
+          margin: 8px 8px 8px;
+          padding: 8px 10px;
+          border: 1px solid var(--pi-border-muted);
+          border-radius: 8px;
+          background: var(--pi-bg);
+        }
+
+        .doorstop-last-run-head {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-bottom: 6px;
+        }
+
+        .doorstop-last-run-status {
+          border-radius: 999px;
+          padding: 0 7px;
+          font-size: 11px;
+          white-space: nowrap;
+        }
+
+        .doorstop-last-run-status.is-ok {
+          border: 1px solid var(--pi-success-border);
+          color: var(--pi-success);
+        }
+
+        .doorstop-last-run-status.is-failed,
+        .doorstop-last-run-status.is-error {
+          border: 1px solid var(--pi-danger);
+          color: var(--pi-danger);
+        }
+
+        .doorstop-last-run-status.is-killed {
+          border: 1px solid var(--pi-warning);
+          color: var(--pi-warning);
+        }
+
+        .doorstop-last-run-meta {
+          color: var(--pi-muted);
+          font-size: 12px;
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+
+        .doorstop-last-run-dismiss {
+          margin-left: auto;
+          flex: 0 0 auto;
+        }
+
+        .doorstop-last-run-pre {
+          border: 1px solid var(--pi-border-muted);
+          border-radius: 6px;
+          background: var(--pi-surface);
+          color: var(--pi-text);
+          padding: 6px 8px;
+          font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          white-space: pre-wrap;
+          word-break: break-word;
+          overflow-wrap: anywhere;
+          max-height: 12em;
+          overflow: auto;
+          margin: 4px 0 0;
+        }
+
+        .doorstop-last-run-notice {
+          margin: 4px 0 0;
+          color: var(--pi-muted);
+          font-size: 11px;
+        }
       `,
       ];
 
@@ -1223,6 +1330,7 @@ function defineDoorstopPanelBodyElement(): void {
           ${this.renderToolbar()}
           ${this.error === undefined ? nothing : html`<div class="doorstop-error" role="alert">${this.error}</div>`}
           <section class="doorstop-viewer">${this.renderViewer()}</section>
+          ${this.renderLastRun()}
         `;
       }
 
@@ -1268,16 +1376,73 @@ function defineDoorstopPanelBodyElement(): void {
                   `
                 : nothing}
               <button type="button" class="doorstop-refresh" title="Re-read the workspace" @click=${this.onRefreshClick}>${refreshIconSvg}Refresh</button>
-              <button type="button" class="doorstop-validate" title="Run \`doorstop\` in the workspace terminal" @click=${this.onValidateClick}>${validateIconSvg}Run validation</button>
-              <button type="button" class="doorstop-publish" title=${`Publish the tree to ${publishTarget}`} @click=${this.onPublishClick}>${publishIconSvg}Publish HTML</button>
+              <button type="button" class="doorstop-validate" title="Run \`doorstop\` in the workspace (terminal when unpaired)" ?disabled=${this.runInProgress !== undefined} @click=${this.onValidateClick}>${validateIconSvg}Run validation</button>
+              <button type="button" class="doorstop-publish" title=${`Publish the tree to ${publishTarget}`} ?disabled=${this.runInProgress !== undefined} @click=${this.onPublishClick}>${publishIconSvg}Publish HTML</button>
             </div>
+          </section>
+        `;
+      }
+
+      /**
+       * The "Last run" section (plan Phase D step 8/9): the view of the
+       * latest backend-path run — status badge (ok/failed/killed/error),
+       * run duration (and exit code / killing signal when relevant), a
+       * dismiss button, and the captured stdout/stderr as pre-wrapped
+       * `<pre>` blocks with truncated-stream and killed notices. Driven
+       * entirely by `controller.lastRun`; renders nothing (and takes no
+       * space) before the first run. A run in flight marks action buttons
+       * disabled at the buttons themselves (`runInProgress`), not here.
+       */
+      private renderLastRun(): TemplateResult | typeof nothing {
+        const lastRun = this.lastRun;
+        if (lastRun === undefined) return nothing;
+        const statusLabel = lastRun.status === "killed" ? "killed (timeout)" : lastRun.status;
+        const detailParts: string[] = [lastRun.title, `${String(lastRun.durationMs)} ms`];
+        if (lastRun.exitCode !== null && (lastRun.status === "failed" || lastRun.status === "killed")) {
+          detailParts.push(`exit ${String(lastRun.exitCode)}`);
+        }
+        if (lastRun.signal !== null) detailParts.push(lastRun.signal);
+        return html`
+          <section class="doorstop-last-run" aria-label="Last run">
+            <div class="doorstop-last-run-head">
+              <span class=${`doorstop-last-run-status is-${lastRun.status}`}>${statusLabel}</span>
+              <span class="doorstop-last-run-meta">${detailParts.join(" · ")}</span>
+              <button
+                type="button"
+                class="doorstop-last-run-dismiss"
+                title="Dismiss the last run output"
+                @click=${() => { this.controller?.dismissRun(); }}
+              >Dismiss</button>
+            </div>
+            ${lastRun.status === "error"
+              ? html`<pre class="doorstop-last-run-pre">${lastRun.errorMessage ?? ""}</pre>`
+              : nothing}
+            ${lastRun.stdout === ""
+              ? nothing
+              : html`
+                  <pre class="doorstop-last-run-pre">${lastRun.stdout}</pre>
+                  ${lastRun.stdoutTruncated
+                    ? html`<p class="doorstop-last-run-notice">stdout truncated by the host stream limit (2 MiB) — output not fully captured</p>`
+                    : nothing}
+                `}
+            ${lastRun.stderr === ""
+              ? nothing
+              : html`
+                  <pre class="doorstop-last-run-pre">${lastRun.stderr}</pre>
+                  ${lastRun.stderrTruncated
+                    ? html`<p class="doorstop-last-run-notice">stderr truncated by the host stream limit (2 MiB) — output not fully captured</p>`
+                    : nothing}
+                `}
+            ${lastRun.stdout === "" && lastRun.stderr === "" && lastRun.status !== "error"
+              ? html`<p class="doorstop-last-run-notice">No output captured.</p>`
+              : nothing}
           </section>
         `;
       }
 
       /** The Items / Findings view toggle (spec §7.2): a tab-like switch
        *  between the item list/detail layout and the workspace-wide findings
-       *  list. The terminal actions (Refresh / Run validation / Publish) sit
+       *  list. The run actions (Refresh / Run validation / Publish) sit
        *  outside the switch and stay reachable in both views. */
       private renderViewToggle(): TemplateResult {
         return html`
@@ -1694,7 +1859,7 @@ function defineDoorstopPanelBodyElement(): void {
           <button
             type="button"
             class="doorstop-review"
-            ?disabled=${reviewed}
+            ?disabled=${reviewed || this.runInProgress !== undefined}
             title=${reviewed
               ? `${item.uid} is already reviewed against its current fingerprint`
               : `Mark ${item.uid} reviewed`}
@@ -1703,7 +1868,7 @@ function defineDoorstopPanelBodyElement(): void {
           <button
             type="button"
             class="doorstop-clear"
-            ?disabled=${suspects.length === 0}
+            ?disabled=${suspects.length === 0 || this.runInProgress !== undefined}
             title=${suspects.length === 0
               ? `No suspect links to clear`
               : `Re-record the parent fingerprints of ${item.uid}`}
@@ -1712,6 +1877,7 @@ function defineDoorstopPanelBodyElement(): void {
           <button
             type="button"
             class="doorstop-edit"
+            ?disabled=${this.runInProgress !== undefined}
             title=${`Open ${item.uid} in the editor`}
             @click=${() => { this.editItem(item); }}
           >Edit</button>
@@ -1724,7 +1890,7 @@ function defineDoorstopPanelBodyElement(): void {
               ${ref(this.unlinkInputRef)}
               @keydown=${this.onTargetKeydown}
             />
-            <button type="button" class="doorstop-unlink" title=${`doorstop unlink ${item.uid} <target>`} @click=${() => { this.runTargetOp("unlink", this.unlinkInputRef, item); }}>Unlink</button>
+            <button type="button" class="doorstop-unlink" title=${`doorstop unlink ${item.uid} <target>`} ?disabled=${this.runInProgress !== undefined} @click=${() => { this.runTargetOp("unlink", this.unlinkInputRef, item); }}>Unlink</button>
           </div>
           <div class="doorstop-op">
             <input
@@ -1735,7 +1901,7 @@ function defineDoorstopPanelBodyElement(): void {
               ${ref(this.linkInputRef)}
               @keydown=${this.onTargetKeydown}
             />
-            <button type="button" class="doorstop-link" title=${`doorstop link ${item.uid} <target>`} @click=${() => { this.runTargetOp("link", this.linkInputRef, item); }}>Link</button>
+            <button type="button" class="doorstop-link" title=${`doorstop link ${item.uid} <target>`} ?disabled=${this.runInProgress !== undefined} @click=${() => { this.runTargetOp("link", this.linkInputRef, item); }}>Link</button>
           </div>
           ${this.targetError === undefined ? nothing : html`<span class="doorstop-op-error" role="alert">${this.targetError}</span>`}
           ${this.renderAskMenu(item, index, suspects)}
@@ -1798,7 +1964,7 @@ function defineDoorstopPanelBodyElement(): void {
       };
 
       private onValidateClick = (): void => {
-        this.runDoorstop("validate", "Doorstop: validate", "doorstop", true);
+        this.runDoorstop("validate", "Doorstop: validate", { op: "validate" }, "doorstop", true);
       };
 
       private onPublishClick = (): void => {
@@ -1820,7 +1986,13 @@ function defineDoorstopPanelBodyElement(): void {
         }
         // The already-computed `target` is passed through so the confirm
         // message and the executed command can never disagree.
-        this.runDoorstop("publish", "Doorstop: publish", doorstopPublishCommand(this.result, target), false);
+        this.runDoorstop(
+          "publish",
+          "Doorstop: publish",
+          { op: "publish", target },
+          doorstopPublishCommand(this.result, target),
+          false,
+        );
       };
 
       private onStateFilterChange = (event: Event): void => {
@@ -1846,7 +2018,13 @@ function defineDoorstopPanelBodyElement(): void {
       };
 
       private reviewItem(item: ItemRecord): void {
-        this.runDoorstop("review", `Doorstop: review ${item.uid}`, `doorstop review ${item.uid}`, false);
+        this.runDoorstop(
+          "review",
+          `Doorstop: review ${item.uid}`,
+          { op: "review", uid: item.uid },
+          `doorstop review ${item.uid}`,
+          false,
+        );
       }
 
       private clearSuspects(item: ItemRecord, suspectUids: readonly string[]): void {
@@ -1857,13 +2035,20 @@ function defineDoorstopPanelBodyElement(): void {
         this.runDoorstop(
           "clear",
           "Doorstop: clear suspect links",
+          { op: "clear", uid: item.uid, parents: suspectUids },
           `doorstop clear ${item.uid} ${suspectUids.join(" ")}`,
           false,
         );
       }
 
       private editItem(item: ItemRecord): void {
-        this.runDoorstop("edit", `Doorstop: edit ${item.uid}`, `doorstop edit ${item.uid}`, false);
+        this.runDoorstop(
+          "edit",
+          `Doorstop: edit ${item.uid}`,
+          { op: "edit", uid: item.uid },
+          `doorstop edit ${item.uid}`,
+          false,
+        );
       }
 
       private runTargetOp(op: "unlink" | "link", inputRef: Ref<HTMLInputElement>, item: ItemRecord): void {
@@ -1885,7 +2070,13 @@ function defineDoorstopPanelBodyElement(): void {
         }
         this.targetError = undefined;
         if (input !== undefined) input.value = "";
-        this.runDoorstop(op, `Doorstop: ${op} ${item.uid}`, `doorstop ${op} ${item.uid} ${target}`, false);
+        this.runDoorstop(
+          op,
+          `Doorstop: ${op} ${item.uid}`,
+          { op, uid: item.uid, target },
+          `doorstop ${op} ${item.uid} ${target}`,
+          false,
+        );
       }
 
       private onDocumentClick = (event: MouseEvent): void => {
@@ -1930,30 +2121,139 @@ function defineDoorstopPanelBodyElement(): void {
       }
 
       /**
-       * Run one doorstop CLI command in the workspace terminal (the exact
-       * invocation surface of every panel action): a named run with
-       * `metadata: { "opendoor.op": … }` so runs are identifiable, and —
-       * because `TerminalCommandRunHandle.completed` resolves when the run
-       * finishes — a rescan (invalidate) on completion so the panel picks up
-       * whatever the CLI changed to the item files (§9.3, no polling). open
-       * keeps the current view for item-scoped ops; validation opens the
-       * terminal so its full output is visible.
+       * Run one doorstop CLI action (plan Phase D step 9) — the single
+       * dispatch surface of every panel action, with TWO paths:
+       *
+       *  - BACKEND path when the workspace is owned by the opendoor provider
+       *    with an active backend (`context.backend !== undefined &&
+       *    context.workspace.provider?.pluginId === OPENDOOR_PLUGIN_ID &&
+       *    provider.capabilities.request !== false`): `runDoorstopBackend`
+       *    sends the STRUCTURED `input` through `context.backend.request("doorstop.run", …)`
+       *    (argv is built server-side — the browser never shell-quotes on
+       *    this path), parses the response with `parseDoorstopRunResponse`,
+       *    commits it to `controller.lastRun`, invalidates, and clears
+       *    `runInProgress`. A rejected request commits `status: "error"`
+       *    with the parsed server error text and does NOT invalidate (the
+       *    run wrote nothing to the workspace)
+       *  - TERMINAL fallback everywhere else — exactly today's behavior: a
+       *    named run with `metadata: { "opendoor.op": … }` so runs are
+       *    identifiable, and — because `TerminalCommandRunHandle.completed`
+       *    resolves when the run finishes — a rescan (invalidate) on
+       *    completion so the panel picks up whatever the CLI changed to the
+       *    item files (§9.3, no polling). `doorstopPublishCommand`/
+       *    `quoteShellArgument`/UID guarding stay untouched for this path.
+       *
+       * `open` keeps the current view for item-scoped ops; validation opens
+       * the terminal so its full output is visible (terminal path only).
+       *
+       * This is the SINGLE choke point for the run-in-flight invariant: it
+       * returns early while `controller.runInProgress` is set, so the
+       * disabled buttons, the Link/Unlink inputs' Enter-key submits, and any
+       * future call site can never start a second overlapping run.
        */
-      private runDoorstop(op: string, title: string, command: string, open: boolean): void {
-        const terminal = this.context?.terminal;
+      private runDoorstop(
+        op: DoorstopRunRequest["op"],
+        title: string,
+        input: DoorstopRunRequest,
+        terminalCommand: string,
+        open: boolean,
+      ): void {
+        const context = this.context;
+        const controller = this.controller;
+        if (context === undefined || controller === undefined) return;
+        // Single choke point (see doc above): covers the disabled buttons,
+        // the Link/Unlink Enter keys, and any future call site at once.
+        if (controller.runInProgress !== undefined) return;
+        if (
+          context.backend !== undefined &&
+          context.workspace.provider?.pluginId === OPENDOOR_PLUGIN_ID &&
+          context.workspace.provider?.capabilities.request !== false
+        ) {
+          void this.runDoorstopBackend(op, title, input, context.backend);
+          return;
+        }
+        // Terminal fallback: exactly today's behavior (unpaired workspace,
+        // non-opendoor provider, or a provider whose backend disables the
+        // request capability).
+        const terminal = context.terminal;
         if (terminal === undefined) return;
         void terminal
-          .runCommand({ title, command, metadata: { "opendoor.op": op }, open })
+          .runCommand({ title, command: terminalCommand, metadata: { "opendoor.op": op }, open })
           .then((handle) => {
             void handle.completed
-              .then(() => { void this.controller?.invalidate(); })
-              .catch(() => { void this.controller?.invalidate(); });
+              .then(() => { void controller.invalidate(); })
+              .catch(() => { void controller.invalidate(); });
           })
           .catch(() => {
             // A rejected runCommand never reaches the panel domain: the
             // terminal surfaces its own error, and the panel has nothing
             // authoritative to add.
           });
+      }
+
+      /**
+       * The backend path of {@link runDoorstop}: set `runInProgress`, await
+       * the structured request, parse + map the response onto a
+       * `DoorstopLastRunView` (`status`: exit 0 → `"ok"`, exit ≠ 0 →
+       * `"failed"`, `signal !== null` → `"killed"`), commit it to
+       * `controller.lastRun`, invalidate (a successful run changed the
+       * workspace), and clear `runInProgress`. On REJECTION: commit
+       * `status: "error"` with the parsed server error text, clear
+       * `runInProgress`, and do NOT invalidate (nothing ran).
+       */
+      private async runDoorstopBackend(
+        op: DoorstopRunRequest["op"],
+        title: string,
+        input: DoorstopRunRequest,
+        backend: WorkspaceBackend,
+      ): Promise<void> {
+        const controller = this.controller;
+        if (controller === undefined) return;
+        controller.beginRun(title);
+        const startedAt = Date.now();
+        try {
+          const response = await backend.request(DOORSTOP_RUN_OPERATION, input);
+          const parsed = parseDoorstopRunResponse(response);
+          const status =
+            parsed.signal !== null ? "killed" : parsed.exitCode === 0 ? "ok" : "failed";
+          controller.commitRun({
+            // The server echoes the op it actually ran; render that echo
+            // rather than the requested `op` so a mismatch cannot be masked.
+            op: parsed.op,
+            title,
+            status,
+            exitCode: parsed.exitCode,
+            signal: parsed.signal,
+            stdout: parsed.stdout,
+            stderr: parsed.stderr,
+            stdoutTruncated: parsed.stdoutTruncated,
+            stderrTruncated: parsed.stderrTruncated,
+            // The server measured the exec wall time into `durationMs`;
+            // surfaced verbatim — the browser has nothing more accurate.
+            durationMs: parsed.durationMs,
+            at: startedAt,
+          });
+          void controller.invalidate();
+        } catch (error) {
+          // No response → no server duration; fall back to the client-side
+          // wall time around the rejected request.
+          controller.commitRun({
+            op,
+            title,
+            status: "error",
+            exitCode: null,
+            signal: null,
+            stdout: "",
+            stderr: "",
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            durationMs: Date.now() - startedAt,
+            at: startedAt,
+            errorMessage: formatUnknownError(error),
+          });
+        } finally {
+          controller.endRun();
+        }
       }
 
       private selectedItem(): ItemRecord | undefined {

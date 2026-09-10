@@ -18,6 +18,7 @@
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { TerminalCommandRun, TerminalCommandRunHandle, Workspace, WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
 import type { DoorstopDocumentConfig, DoorstopIndex, ItemRecord, ItemStateKey } from "./doorstop-contract.js";
+import type { DoorstopRunResponse } from "./doorstop-backend-contract.js";
 import { buildDoorstopIndex } from "./doorstop-model.js";
 import { computeItemStamp, computeItemStates } from "./doorstop-state.js";
 import {
@@ -69,6 +70,22 @@ const doorstopWorkspace: Workspace = {
   path: "/repo",
   label: "main",
   isMain: true,
+};
+
+/** Provider metadata variants for the Phase D dispatch tests: the opendoor
+ *  provider enables the backend path, the git provider (the usual fallback
+ *  owner) and a request-disabled opendoor provider force the terminal path. */
+const opendoorProvider: Workspace["provider"] = {
+  pluginId: "opendoor",
+  capabilities: { request: true, remove: false },
+};
+const opendoorNoRequestProvider: Workspace["provider"] = {
+  pluginId: "opendoor",
+  capabilities: { request: false, remove: false },
+};
+const gitProvider: Workspace["provider"] = {
+  pluginId: "git",
+  capabilities: { request: true, remove: false },
 };
 
 /** Access to `window.confirm` for stubbing — happy-dom's Window does not
@@ -199,6 +216,8 @@ async function mountBody(
     insertText?: Mock;
     focusPrompt?: Mock;
     runCommand?: Mock;
+    backend?: Mock;
+    provider?: Workspace["provider"];
   } = {},
 ): Promise<{ body: DoorstopPanelBodyElement; controller: DoorstopWorkspaceController; context: ReturnType<typeof panelContext>["context"] }> {
   defineDoorstopPanelElements();
@@ -1020,6 +1039,287 @@ describe("DoorstopPanelBodyElement (terminal actions: exact command lines + meta
   });
 });
 
+describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
+  it("dispatches through the backend and commits lastRun when the opendoor provider owns the workspace", async () => {
+    const backend = vi.fn(() => Promise.resolve(makeRunResponse()));
+    const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()), {
+      backend,
+      provider: opendoorProvider,
+    });
+    const invalidate = vi.spyOn(controller, "invalidate").mockImplementation(() => Promise.resolve());
+
+    body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
+    await flush(body);
+
+    // The structured request went to the backend; the terminal was NOT used;
+    // one rescan followed; the in-flight marker cleared.
+    expect(backend).toHaveBeenCalledTimes(1);
+    expect(backend).toHaveBeenCalledWith("doorstop.run", { op: "validate" });
+    expect(context.terminal.runCommand).not.toHaveBeenCalled();
+    expect(invalidate).toHaveBeenCalledTimes(1);
+    expect(controller.runInProgress).toBeUndefined();
+    expect(controller.lastRun).toMatchObject({
+      op: "validate",
+      title: "Doorstop: validate",
+      status: "ok",
+      exitCode: 0,
+      signal: null,
+      stdout: "Validated 4 items.",
+      stderr: "",
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      durationMs: 12,
+    });
+    expect(controller.lastRun?.errorMessage).toBeUndefined();
+
+    // The mirrored Last run section renders the badge, duration, and output.
+    bindBody(body, controller, context);
+    await flush(body);
+    const root = body.shadowRoot;
+    expect(root?.querySelector(".doorstop-last-run")).not.toBeNull();
+    expect(root?.querySelector(".doorstop-last-run-status")?.textContent).toBe("ok");
+    expect(root?.querySelector(".doorstop-last-run-pre")?.textContent).toContain("Validated 4 items.");
+  });
+
+  it("maps exit codes and killing signals onto the run status", async () => {
+    // exit ≠ 0 → failed (findings are output, not infrastructure errors).
+    const backendFailed = vi.fn(() => Promise.resolve(makeRunResponse({ exitCode: 3 })));
+    const failed = await mountBody(() => Promise.resolve(makeTreeResult()), {
+      backend: backendFailed,
+      provider: opendoorProvider,
+    });
+    failed.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
+    await flush(failed.body);
+    expect(failed.controller.lastRun?.status).toBe("failed");
+    expect(failed.controller.lastRun?.exitCode).toBe(3);
+
+    // signal !== null → killed (partial output preserved, surfaced not thrown).
+    const backendKilled = vi.fn(() =>
+      Promise.resolve(makeRunResponse({ exitCode: null, signal: "SIGTERM", stdout: "partial…" })),
+    );
+    const killed = await mountBody(() => Promise.resolve(makeTreeResult()), {
+      backend: backendKilled,
+      provider: opendoorProvider,
+    });
+    killed.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
+    await flush(killed.body);
+    expect(killed.controller.lastRun?.status).toBe("killed");
+    expect(killed.controller.lastRun?.signal).toBe("SIGTERM");
+    bindBody(killed.body, killed.controller, killed.context);
+    await flush(killed.body);
+    expect(killed.body.shadowRoot?.querySelector(".doorstop-last-run-status")?.textContent).toBe(
+      "killed (timeout)",
+    );
+  });
+
+  it("commits status error (without invalidate) when the backend request rejects", async () => {
+    const backend = vi.fn(() =>
+      Promise.reject(
+        new Error(
+          "opendoor: doorstop CLI not found on the sessiond host PATH — configure plugins.opendoor.settings.doorstopPath",
+        ),
+      ),
+    );
+    const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()), {
+      backend,
+      provider: opendoorProvider,
+    });
+    const invalidate = vi.spyOn(controller, "invalidate").mockImplementation(() => Promise.resolve());
+
+    body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
+    await flush(body);
+
+    // The run never wrote to the workspace: no rescan. The server error text
+    // is surfaced in the view record; the in-flight marker clears.
+    expect(invalidate).not.toHaveBeenCalled();
+    expect(context.terminal.runCommand).not.toHaveBeenCalled();
+    expect(controller.runInProgress).toBeUndefined();
+    expect(controller.lastRun?.status).toBe("error");
+    expect(controller.lastRun?.errorMessage).toContain("doorstop CLI not found");
+
+    bindBody(body, controller, context);
+    await flush(body);
+    const root = body.shadowRoot;
+    expect(root?.querySelector(".doorstop-last-run-status")?.textContent).toBe("error");
+    expect(root?.querySelector(".doorstop-last-run-pre")?.textContent).toContain(
+      "doorstop CLI not found",
+    );
+  });
+
+  it("falls back to the terminal when the provider is git, the backend is absent, or request is disabled", async () => {
+    // A git-owned workspace with a backend present: the pluginId gate fails →
+    // exactly today's terminal behavior.
+    const backendGit = vi.fn(() => Promise.resolve(makeRunResponse()));
+    const git = await mountBody(() => Promise.resolve(makeTreeResult()), {
+      backend: backendGit,
+      provider: gitProvider,
+    });
+    git.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
+    await flush(git.body);
+    expect(git.context.terminal.runCommand).toHaveBeenCalledWith({
+      title: "Doorstop: validate",
+      command: "doorstop",
+      metadata: { "opendoor.op": "validate" },
+      open: true,
+    });
+    expect(backendGit).not.toHaveBeenCalled();
+    expect(git.controller.lastRun).toBeUndefined();
+
+    // An opendoor provider whose capabilities disable request: terminal path.
+    const backendNoRequest = vi.fn(() => Promise.resolve(makeRunResponse()));
+    const noRequest = await mountBody(() => Promise.resolve(makeTreeResult()), {
+      backend: backendNoRequest,
+      provider: opendoorNoRequestProvider,
+    });
+    noRequest.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
+    await flush(noRequest.body);
+    expect(noRequest.context.terminal.runCommand).toHaveBeenCalled();
+    expect(backendNoRequest).not.toHaveBeenCalled();
+
+    // No backend at all (the default context): terminal path, nothing new.
+    const unpaired = await mountBody(() => Promise.resolve(makeTreeResult()));
+    unpaired.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
+    await flush(unpaired.body);
+    expect(unpaired.context.terminal.runCommand).toHaveBeenCalled();
+    expect(unpaired.controller.lastRun).toBeUndefined();
+    expect(unpaired.controller.runInProgress).toBeUndefined();
+  });
+
+  it("passes the structured request (array parents) to the backend, never a shell string", async () => {
+    const backend = vi.fn(() => Promise.resolve(makeRunResponse()));
+    const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()), {
+      backend,
+      provider: opendoorProvider,
+    });
+
+    // Clear suspect links: the parent UIDs travel as an ARRAY in the request
+    // (the server owns argv construction; the browser never joins/quotes).
+    body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0002"]')?.click();
+    bindBody(body, controller, context);
+    await flush(body);
+    body.shadowRoot?.querySelector<HTMLElement>(".doorstop-clear")?.click();
+    await flush(body);
+    expect(backend).toHaveBeenCalledWith("doorstop.run", {
+      op: "clear",
+      uid: "REQ0002",
+      parents: ["REQ0001"],
+    });
+
+    // Validate carries no arguments.
+    backend.mockClear();
+    body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
+    await flush(body);
+    expect(backend).toHaveBeenCalledWith("doorstop.run", { op: "validate" });
+  });
+
+  it("disables the action buttons while a run is in flight and clears the marker afterwards", async () => {
+    let resolveBackend!: (value: DoorstopRunResponse) => void;
+    const backend = vi.fn(
+      () =>
+        new Promise<DoorstopRunResponse>((resolve) => {
+          resolveBackend = resolve;
+        }),
+    );
+    const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()), {
+      backend,
+      provider: opendoorProvider,
+    });
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+
+    // Select REQ0002 so the action row renders (clear has one suspect there).
+    root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0002"]')?.click();
+    bindBody(body, controller, context);
+    await flush(body);
+
+    const buttons = [
+      root.querySelector<HTMLButtonElement>(".doorstop-validate"),
+      root.querySelector<HTMLButtonElement>(".doorstop-publish"),
+      root.querySelector<HTMLButtonElement>(".doorstop-review"),
+      root.querySelector<HTMLButtonElement>(".doorstop-clear"),
+      root.querySelector<HTMLButtonElement>(".doorstop-edit"),
+      root.querySelector<HTMLButtonElement>(".doorstop-link"),
+      root.querySelector<HTMLButtonElement>(".doorstop-unlink"),
+    ];
+    for (const button of buttons) expect(button?.disabled).toBe(false);
+
+    // A pending run disables every action button synchronously.
+    root.querySelector<HTMLElement>(".doorstop-validate")?.click();
+    expect(controller.runInProgress).toBe("Doorstop: validate");
+    bindBody(body, controller, context);
+    await flush(body);
+    for (const button of buttons) expect(button?.disabled).toBe(true);
+
+    // Landing the run re-enables them and clears the marker.
+    resolveBackend(makeRunResponse());
+    await flush(body);
+    expect(controller.runInProgress).toBeUndefined();
+    bindBody(body, controller, context);
+    await flush(body);
+    for (const button of buttons) expect(button?.disabled).toBe(false);
+  });
+
+  it("keeps the Last run section across an invalidate and clears it only on dismiss", async () => {
+    const backend = vi.fn(() => Promise.resolve(makeRunResponse()));
+    const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()), {
+      backend,
+      provider: opendoorProvider,
+    });
+
+    body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
+    await flush(body);
+    bindBody(body, controller, context);
+    await flush(body);
+    expect(body.shadowRoot?.querySelector(".doorstop-last-run")).not.toBeNull();
+
+    // A rescan (Refresh → invalidate → re-load) must NOT clear the run output.
+    body.shadowRoot?.querySelector<HTMLElement>(".doorstop-refresh")?.click();
+    await settle();
+    expect(controller.lastRun).toBeDefined();
+    bindBody(body, controller, context);
+    await flush(body);
+    expect(body.shadowRoot?.querySelector(".doorstop-last-run")).not.toBeNull();
+
+    // Dismiss removes it.
+    body.shadowRoot?.querySelector<HTMLElement>(".doorstop-last-run-dismiss")?.click();
+    expect(controller.lastRun).toBeUndefined();
+    bindBody(body, controller, context);
+    await flush(body);
+    expect(body.shadowRoot?.querySelector(".doorstop-last-run")).toBeNull();
+    expect(body.shadowRoot?.querySelector(".doorstop-last-run-dismiss")).toBeNull();
+  });
+
+  it("renders truncation notices and the killed badge", async () => {
+    const backend = vi.fn(() =>
+      Promise.resolve(
+        makeRunResponse({
+          exitCode: null,
+          signal: "SIGTERM",
+          stdout: "partial output…",
+          stdoutTruncated: true,
+          stderr: "partial err",
+          stderrTruncated: true,
+        }),
+      ),
+    );
+    const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()), {
+      backend,
+      provider: opendoorProvider,
+    });
+    body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
+    await flush(body);
+    bindBody(body, controller, context);
+    await flush(body);
+    const root = body.shadowRoot;
+    expect(root?.querySelector(".doorstop-last-run-status")?.textContent).toBe("killed (timeout)");
+    expect(root?.querySelectorAll(".doorstop-last-run-notice")).toHaveLength(2);
+    const sectionText = root?.querySelector(".doorstop-last-run")?.textContent ?? "";
+    expect(sectionText).toContain("truncated by the host stream limit");
+    expect(sectionText).toContain("SIGTERM");
+    expect(sectionText).toContain("partial output");
+  });
+});
+
 describe("DoorstopPanelBodyElement (findings view, spec §7.2)", () => {
   it("toggles between the Items and Findings views; items-only affordances hide in findings", async () => {
     const { body } = await mountBody(() => Promise.resolve(makeTreeResult()));
@@ -1598,6 +1898,9 @@ function bindBody(
   body.selectedDocumentPrefix = controller.selectedDocumentPrefix;
   body.stateFilter = controller.stateFilter;
   body.search = controller.search;
+  // Phase D: the run-state fields the Last-run section and button gating read.
+  body.lastRun = controller.lastRun;
+  body.runInProgress = controller.runInProgress;
 }
 
 async function flush(body: DoorstopPanelBodyElement): Promise<void> {
@@ -1608,28 +1911,37 @@ async function flush(body: DoorstopPanelBodyElement): Promise<void> {
 /** Build one panel context wrapping a fake files adapter plus spies for the
  *  surfaces the element reads at click time: `requestRender` (the
  *  controller's render path), `prompt.insertText`, a `focusPrompt` widening,
- *  and `terminal.runCommand`. */
+ *  `terminal.runCommand`, and (Phase D) the optional `backend.request`
+ *  surface plus the workspace `provider` metadata that gates the backend
+ *  path. Without `hook.backend` the context carries no `backend` property
+ *  (exactly the unpaired real shape), so the terminal path is exercised by
+ *  default. */
 function panelContext(hook: {
   insertText?: Mock;
   focusPrompt?: Mock;
   runCommand?: Mock;
+  backend?: Mock;
+  provider?: Workspace["provider"];
 } = {}): {
   context: WorkspacePanelContext;
   requestRender: Mock;
   insertText: Mock;
   focusPrompt: Mock;
   runCommand: Mock;
+  backend: Mock | undefined;
 } {
   const requestRender = vi.fn();
   const insertText = hook.insertText ?? vi.fn();
   const focusPrompt = hook.focusPrompt ?? vi.fn();
   const runCommand = hook.runCommand ?? vi.fn(() => Promise.resolve(completedHandle()));
+  const backend = hook.backend;
+  const workspace = hook.provider === undefined ? doorstopWorkspace : { ...doorstopWorkspace, provider: hook.provider };
   const files: FakeWorkspaceFiles = createFakeFiles();
   const context: WorkspacePanelContext & { focusPrompt: Mock } = {
     machine: { id: "local", name: "local", kind: "local" },
-    workspace: doorstopWorkspace,
+    workspace,
     state: {
-      selectedWorkspace: doorstopWorkspace,
+      selectedWorkspace: workspace,
       workspaceTool: "opendoor:workspace.doorstop",
       mainView: "opendoor:workspace.doorstop",
     },
@@ -1637,9 +1949,28 @@ function panelContext(hook: {
     host: { requestRender },
     prompt: { insertText, getText: () => "", getSelection: () => null },
     terminal: { open: () => undefined, runCommand },
+    // The optional `backend` field is only present when the hook supplied
+    // one (exactOptionalPropertyTypes forbids an explicit undefined write).
+    ...(backend === undefined ? {} : { backend: { request: backend } }),
     focusPrompt,
   };
-  return { context, requestRender, insertText, focusPrompt, runCommand };
+  return { context, requestRender, insertText, focusPrompt, runCommand, backend };
+}
+
+/** A canned `DoorstopRunResponse` for the backend spies; callers override
+ *  only the fields their scenario cares about. */
+function makeRunResponse(overrides: Partial<DoorstopRunResponse> = {}): DoorstopRunResponse {
+  return {
+    op: "validate",
+    exitCode: 0,
+    signal: null,
+    stdout: "Validated 4 items.",
+    stderr: "",
+    stdoutTruncated: false,
+    stderrTruncated: false,
+    durationMs: 12,
+    ...overrides,
+  };
 }
 
 /** Build a minimal TerminalCommandRun literal for the terminal spies; callers

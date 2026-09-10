@@ -4,9 +4,11 @@
 // src/client/src/plugins/external.ts parsePluginModule) and passes the
 // activation context into the contributions factory, exactly like the
 // info/git browser entries and OpenSE. All logic lives in
-// doorstop-contributions.ts (+ the reviewed panel/model/state modules); no
-// `context.backend` fallback path exists because browser-only plugins never
-// have one (feature spec §9.6). Host imports are type-only.
+// doorstop-contributions.ts (+ the reviewed panel/model/state modules). The
+// paired server module (server-plugin.ts) is what makes `context.backend`
+// present on opendoor-owned workspaces; the panel dispatches runs through
+// it and falls back to the terminal when unpaired (Phase D step 9). Host
+// imports are type-only.
 // ---------------------------------------------------------------------------
 
 import type { PiWebPlugin } from "@jmfederico/pi-web/plugin-api";

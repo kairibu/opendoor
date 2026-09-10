@@ -16,12 +16,14 @@
 //   4. wires the informational workspace label (§7.4) with the documented
 //      async-cache idiom.
 //
-// The validate / publish Doorstop operations are deliberately NOT palette
-// actions: `PluginRuntimeContext` (the palette action callback context) has
-// no terminal helper — `context.terminal` only exists on the
-// `WorkspacePanelContext` of a rendered panel. Running `doorstop` needs a
-// terminal, so those stay as panel-toolbar buttons (doorstop-panel-elements
-// drives them through `context.terminal.runCommand`).
+// The validate / publish / review / clear / edit / link / unlink Doorstop
+// operations are deliberately NOT palette actions: they need the rendered
+// panel — either the workspace's backend surface (`context.backend.request`)
+// or, unpaired, the panel terminal (`context.terminal`), which only exists on
+// the `WorkspacePanelContext` of a rendered panel (the palette action
+// callback context has neither). So they stay as panel-toolbar/action-row
+// buttons, dispatched by doorstop-panel-elements via the Phase D step 9
+// runDoorstop dispatcher.
 // ---------------------------------------------------------------------------
 
 import type {
@@ -90,7 +92,8 @@ function createDoorstopActions(panelId: string): PluginAction[] {
       // sequences. mod+7 avoids every one of those.
       shortcut: "mod+7",
       group: "Navigation",
-      // Enabled unconditionally: browser-only plugin owns no provider.
+      // Enabled unconditionally: the Requirements panel is useful for every
+      // workspace (paired or unpaired — it needs no owned provider).
       run: (context: PluginRuntimeContext) => { context.selectMainView(panelId); },
     },
     {
@@ -123,9 +126,10 @@ function createDoorstopPanel(registry: DoorstopWorkspaceRegistry): WorkspacePane
       </svg>
     `,
     order: 60,
-    // Browser-only plugins own no workspace provider, so the panel is always
-    // visible; the discovery-based empty state carries the "no documents"
-    // story (feature spec §7.1).
+    // The panel is always visible (paired or unpaired): when the workspace
+    // is opendoor-owned the run actions use the backend, otherwise the
+    // terminal fallback keeps every action working; the discovery-based
+    // empty state carries the "no documents" story (feature spec §7.1).
     visible: () => true,
     onInvalidate: (context) => registry.invalidate(context),
     render: (context) => renderDoorstopPanel(registry, context),
@@ -157,6 +161,8 @@ function renderDoorstopPanel(registry: DoorstopWorkspaceRegistry, context: Works
       .selectedDocumentPrefix=${controller.selectedDocumentPrefix}
       .stateFilter=${controller.stateFilter}
       .search=${controller.search}
+      .lastRun=${controller.lastRun}
+      .runInProgress=${controller.runInProgress}
     ></pi-web-opendoor-panel-body>
   `;
 }

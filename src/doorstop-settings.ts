@@ -9,12 +9,13 @@
 //   `ServerPluginActivationContext.settings`). It is part of the SESSION
 //   DAEMON's startup snapshot — there is no `settings` on the browser
 //   `PluginActivationContext` — and its authoritative copy lives in the
-//   machine's PI WEB config, not in the workspace. Opendoor is a
-//   BROWSER-ONLY plugin (feature spec §3.5 / §9.6: no server entry, no
-//   workspace-provider claim, no session-daemon restart to install or
-//   update), so it has no server entry to receive that settings object.
-//   A settings value that is really about a specific workspace — where the
-//   Doorstop publish output goes, which directories the discovery walk
+//   machine's PI WEB config, not in the workspace. Opendoor's server entry
+//   does receive that object (`ServerPluginActivationContext.settings`) and
+//   uses it for host-scoped knobs — which `doorstop` binary to run and the
+//   exec timeout (see doorstop-backend.ts) — but it is a session-daemon
+//   startup snapshot, not workspace configuration. A settings value that is
+//   really about a specific workspace — where the Doorstop publish output
+//   goes, which directories the discovery walk
 //   should skip — belongs in that workspace, travels with it under version
 //   control, and is read through the same `context.files` adapter the rest
 //   of the plugin uses. The bundled `workspace-tasks` plugin establishes

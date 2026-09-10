@@ -20,6 +20,7 @@ import { buildDoorstopIndex } from "./doorstop-model.js";
 import { computeItemStates } from "./doorstop-state.js";
 import {
   DoorstopWorkspaceController,
+  type DoorstopLastRunView,
   type DoorstopWorkspaceHost,
   type DoorstopWorkspaceJob,
 } from "./doorstop-panel-controller.js";
@@ -324,6 +325,93 @@ describe("DoorstopWorkspaceController (fake host, no DOM)", () => {
     const { context: freshContext } = panelContext(createFakeFiles(), makeWorkspace(1));
     const fresh = registry.for(freshContext);
     expect(fresh).not.toBe(controllers[1]);
+  });
+
+  it("toggles runInProgress and commits/dismisses lastRun through the run mutators", async () => {
+    const { context, requestRender } = panelContext(createFakeFiles());
+    const { host } = fakeHost();
+    const controller = new DoorstopWorkspaceController(host, context, () =>
+      Promise.resolve(makeResult([])),
+    );
+    controller.hostConnected();
+    await settle();
+    requestRender.mockClear();
+
+    controller.beginRun("Doorstop: validate");
+    expect(controller.runInProgress).toBe("Doorstop: validate");
+    expect(requestRender).toHaveBeenCalledTimes(1);
+
+    const view: DoorstopLastRunView = {
+      op: "validate",
+      title: "Doorstop: validate",
+      status: "ok",
+      exitCode: 0,
+      signal: null,
+      stdout: "Validated 1 item.",
+      stderr: "",
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      durationMs: 12,
+      at: 7,
+    };
+    controller.commitRun(view);
+    expect(controller.lastRun).toBe(view);
+    expect(requestRender).toHaveBeenCalledTimes(2);
+
+    controller.endRun();
+    expect(controller.runInProgress).toBeUndefined();
+    expect(requestRender).toHaveBeenCalledTimes(3);
+
+    controller.dismissRun();
+    expect(controller.lastRun).toBeUndefined();
+    expect(requestRender).toHaveBeenCalledTimes(4);
+  });
+
+  it("keeps lastRun across invalidate()/load() and drops only the render notification while disconnected", async () => {
+    const { context, requestRender } = panelContext(createFakeFiles());
+    const { host } = fakeHost();
+    const controller = new DoorstopWorkspaceController(host, context, () =>
+      Promise.resolve(makeResult([])),
+    );
+    controller.hostConnected();
+    await settle();
+    const view: DoorstopLastRunView = {
+      op: "validate",
+      title: "Doorstop: validate",
+      status: "ok",
+      exitCode: 0,
+      signal: null,
+      stdout: "ok",
+      stderr: "",
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      durationMs: 1,
+      at: 0,
+    };
+    controller.commitRun(view);
+    requestRender.mockClear();
+
+    // Run output is independent of the rescan: neither the re-load nor the
+    // re-render touches lastRun, and a fresh load result keeps it.
+    const before = controller.result;
+    await controller.invalidate();
+    expect(controller.lastRun).toBe(view);
+    expect(before).not.toBe(controller.result);
+    expect(controller.runInProgress).toBeUndefined();
+    await controller.load();
+    expect(controller.lastRun).toBe(view);
+
+    // A disconnected panel skips the render notification (the write itself
+    // is NOT dropped — plan: lastRun is cleared only by dismiss or a new
+    // run, so a workspace switch-back still shows the run).
+    requestRender.mockClear();
+    controller.hostDisconnected();
+    controller.commitRun({ ...view, status: "error", errorMessage: "opendoor: exploded" });
+    expect(requestRender).not.toHaveBeenCalled();
+    expect(controller.lastRun).not.toBe(view);
+    expect(controller.lastRun?.status).toBe("error");
+    controller.dismissRun();
+    expect(controller.lastRun).toBeUndefined();
   });
 });
 
