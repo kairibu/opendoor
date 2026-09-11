@@ -16,8 +16,9 @@
 import { describe, expect, it, vi, type Mock } from "vitest";
 import type { Workspace, WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
 import type { DoorstopDocumentConfig, DoorstopIndex, ItemRecord } from "./doorstop-contract.js";
+import type { DoorstopBaselineResponse } from "./doorstop-backend-contract.js";
 import { buildDoorstopIndex } from "./doorstop-model.js";
-import { computeItemStates } from "./doorstop-state.js";
+import { computeItemStamp, computeItemStates } from "./doorstop-state.js";
 import {
   DoorstopWorkspaceController,
   type DoorstopLastRunView,
@@ -415,6 +416,176 @@ describe("DoorstopWorkspaceController (fake host, no DOM)", () => {
   });
 });
 
+describe("DoorstopWorkspaceController (baseline cache, Phase D step 13)", () => {
+  /** An edited-after-review workspace result: REQ0003's `reviewed` is the
+   *  stamp of the pre-edit version (parsed from the baseline blob), the
+   *  current content diverges. The REQ document reviews the `owner`
+   *  extended attribute. */
+  function baselineResult(): DoorstopWorkspaceResult {
+    const reqConfig = makeDocument({
+      directoryPath: "reqs",
+      configPath: "reqs/.doorstop.yml",
+      prefix: "REQ",
+      digits: 4,
+      extra: { attributes: { reviewed: ["owner"] } },
+    });
+    const req0001 = makeItem("REQ0001", "REQ", { path: "reqs/REQ0001.yml", level: "1.0", text: "X" });
+    const req0002 = makeItem("REQ0002", "REQ", { path: "reqs/REQ0002.yml", level: "1.1", text: "Y" });
+    const oldVersion = makeItem("REQ0003", "REQ", {
+      path: "reqs/REQ0003.yml",
+      level: "1.2",
+      text: "The system shall do Z.\nAnd approve.",
+      links: [{ uid: "REQ0001", fingerprint: null }],
+      attributes: { owner: "team-a" },
+    });
+    const current = makeItem("REQ0003", "REQ", {
+      path: "reqs/REQ0003.yml",
+      level: "1.2",
+      text: "The system shall do Z.\nAnd approve.\nAsync.",
+      links: [
+        { uid: "REQ0001", fingerprint: null },
+        { uid: "REQ0002", fingerprint: null },
+      ],
+      attributes: { owner: "team-b" },
+    });
+    current.reviewed = computeItemStamp(oldVersion, reqConfig, true);
+    return makeResult([req0001, req0002, current], [reqConfig]);
+  }
+
+  /** The baseline blob of the pre-edit version: extended attributes are
+   *  TOP-LEVEL item keys (the model chain's `attributes` bucket is every
+   *  unmodeled top-level key). */
+  function oldVersionBlob(): string {
+    return [
+      "active: true",
+      "derived: false",
+      "normative: true",
+      "level: 1.2",
+      "text: |-",
+      "  The system shall do Z.",
+      "  And approve.",
+      "links:",
+      "- REQ0001",
+      "owner: team-a",
+    ].join("\n");
+  }
+
+  function baselineController(backend: Mock) {
+    const { context, requestRender } = panelContext(createFakeFiles());
+    const contextWithBackend: WorkspacePanelContext = { ...context, backend: { request: backend } };
+    const { host } = fakeHost();
+    const controller = new DoorstopWorkspaceController(host, contextWithBackend, () =>
+      Promise.resolve(baselineResult()),
+    );
+    controller.hostConnected();
+    return { controller, requestRender };
+  }
+
+  it("fetches via the baseline operation, stamp-walks the candidates, and caches under the reviewed+stamp key", async () => {
+    const backend = vi.fn((operation: string) => {
+      if (operation === "doorstop.item-baseline") {
+        return Promise.resolve({
+          git: true,
+          source: "review-commit",
+          candidates: [
+            // Newest first: a newer NON-matching revision must be skipped by
+            // the stamp walk before the matching candidate.
+            { sha: "beef0000", blob: "active: true\nnormative: true\ntext: Different.\n" },
+            { sha: "abc1234", blob: oldVersionBlob() },
+          ],
+        } satisfies DoorstopBaselineResponse);
+      }
+      return Promise.reject(new Error(`unexpected operation ${operation}`));
+    });
+    const { controller, requestRender } = baselineController(backend);
+    await settle();
+    requestRender.mockClear();
+
+    const item = controller.result?.index.byUid.get("REQ0003");
+    if (item === undefined) throw new Error("REQ0003 missing");
+    await controller.requestBaseline(item);
+
+    expect(backend).toHaveBeenCalledWith("doorstop.item-baseline", { uid: "REQ0003", path: "reqs/REQ0003.yml" });
+    // The render was requested (fetch start + landing notifications).
+    expect(requestRender).toHaveBeenCalled();
+    const view = controller.baselineViewFor(item);
+    expect(view?.state).toBe("ready");
+    expect(view?.source).toBe("review-commit");
+    expect(view?.diff?.linksAdded).toEqual(["REQ0002"]);
+    expect(view?.diff?.extended).toEqual([{ name: "owner", before: "team-a", after: "team-b" }]);
+    // The in-flight flag cleared and the version counter moved.
+    expect(controller.baselineInFlight).toBeUndefined();
+    expect(controller.baselineVersion).toBeGreaterThan(0);
+
+    // A cached hit under the current key does NOT refetch.
+    await controller.requestBaseline(item);
+    expect(backend.mock.calls.filter(([op]) => op === "doorstop.item-baseline")).toHaveLength(1);
+  });
+
+  it("misses naturally after a further edit or a re-review (the cache key is reviewed+stamp)", async () => {
+    const backend = vi.fn((operation: string) => {
+      if (operation === "doorstop.item-baseline") {
+        return Promise.resolve({
+          git: true,
+          source: "review-commit",
+          candidates: [{ sha: "abc1234", blob: oldVersionBlob() }],
+        } satisfies DoorstopBaselineResponse);
+      }
+      return Promise.reject(new Error(`unexpected operation ${operation}`));
+    });
+    const { controller } = baselineController(backend);
+    await settle();
+    const item = controller.result?.index.byUid.get("REQ0003");
+    if (item === undefined) throw new Error("REQ0003 missing");
+    await controller.requestBaseline(item);
+    expect(controller.baselineViewFor(item)?.state).toBe("ready");
+
+    // A further edit changes the current stamp → the cached entry misses.
+    item.text = item.text + "\nEdited again.";
+    expect(controller.baselineViewFor(item)).toBeUndefined();
+
+    // A re-review rewrites `reviewed` → the cached entry misses too.
+    item.text = item.text.replace("\nEdited again.", "");
+    item.reviewed = "REVIEWED-AGAIN-STAMP";
+    expect(controller.baselineViewFor(item)).toBeUndefined();
+
+    // An expand after the miss refetches (the new key has no entry).
+    await controller.requestBaseline(item);
+    expect(backend.mock.calls.filter(([op]) => op === "doorstop.item-baseline")).toHaveLength(2);
+  });
+
+  it("retries on a later expand after a transient request error (an error view is not a terminal cache hit)", async () => {
+    let failing = true;
+    const backend = vi.fn((operation: string) => {
+      if (operation === "doorstop.item-baseline") {
+        if (failing) return Promise.reject(new Error("bridge hiccup"));
+        return Promise.resolve({
+          git: true,
+          source: "review-commit",
+          candidates: [{ sha: "abc1234", blob: oldVersionBlob() }],
+        } satisfies DoorstopBaselineResponse);
+      }
+      return Promise.reject(new Error(`unexpected operation ${operation}`));
+    });
+    const { controller } = baselineController(backend);
+    await settle();
+    const item = controller.result?.index.byUid.get("REQ0003");
+    if (item === undefined) throw new Error("REQ0003 missing");
+
+    // The one-off failure lands an error view (still cached FOR RENDERING).
+    await controller.requestBaseline(item);
+    expect(controller.baselineViewFor(item)?.state).toBe("error");
+    expect(backend.mock.calls.filter(([op]) => op === "doorstop.item-baseline")).toHaveLength(1);
+
+    // The same key re-expanded: the stale error must NOT short-circuit the
+    // fetch — the retry lands the ready view.
+    failing = false;
+    await controller.requestBaseline(item);
+    expect(controller.baselineViewFor(item)?.state).toBe("ready");
+    expect(backend.mock.calls.filter(([op]) => op === "doorstop.item-baseline")).toHaveLength(2);
+  });
+});
+
 describe("isItemFile (the document item-name matching obligation)", () => {
   const base = { prefix: "REQ", digits: 4, separator: "" };
   const sep = { prefix: "REQ", digits: 4, separator: "-" };
@@ -653,7 +824,7 @@ describe("loadDoorstopWorkspace (end-to-end over the fake files adapter)", () =>
 
     // Settings surfaced on the result (the elements chain wires the publish
     // command to settings.publishTarget from here).
-    expect(result.settings).toEqual({ publishTarget: "./site", excludedDirectories: ["dist"] });
+    expect(result.settings).toEqual({ publishTarget: "./site", excludedDirectories: ["dist"], commitAfterReview: false });
     // The excluded document and its items were never discovered.
     expect(result.index.documents.map((d) => d.prefix)).toEqual(["REQ"]);
     expect(result.index.counts.documents).toBe(1);

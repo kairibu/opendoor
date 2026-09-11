@@ -57,22 +57,32 @@
 import type { WorkspacePanelContext, WorkspaceBackend } from "@jmfederico/pi-web/plugin-api";
 import { LitElement, css, html, nothing, svg, type PropertyValues, type TemplateResult } from "lit";
 import { classMap } from "lit/directives/class-map.js";
+import { keyed } from "lit/directives/keyed.js";
 import { createRef, ref, type Ref } from "lit/directives/ref.js";
 import { repeat } from "lit/directives/repeat.js";
 import { property, state } from "lit/decorators.js";
 import type {
   DoorstopDocumentConfig,
   DoorstopIndex,
+  DoorstopItemReference,
   ItemRecord,
   ItemStateKey,
   LinkRecord,
 } from "./doorstop-contract.js";
-import { isValidDoorstopUid, OPENDOOR_PLUGIN_ID, DOORSTOP_RUN_OPERATION, parseDoorstopRunResponse, type DoorstopRunRequest } from "./doorstop-backend-contract.js";
+import {
+  isValidDoorstopUid,
+  OPENDOOR_PLUGIN_ID,
+  DOORSTOP_RUN_OPERATION,
+  parseDoorstopRunResponse,
+  type DoorstopCommitOutcome,
+  type DoorstopRunRequest,
+} from "./doorstop-backend-contract.js";
 import { formatUnknownError } from "./doorstop-contract.js";
 import { computeItemStamp } from "./doorstop-state.js";
-import type { DoorstopWorkspaceController, DoorstopLastRunView } from "./doorstop-panel-controller.js";
+import type { DoorstopWorkspaceController, DoorstopBaselineView, DoorstopLastRunView } from "./doorstop-panel-controller.js";
 import type { DoorstopWorkspaceResult } from "./doorstop-panel.js";
 import { DEFAULT_OPENDOOR_SETTINGS } from "./doorstop-settings.js";
+import type { DiffLine, ItemFieldDiff } from "./doorstop-diff.js";
 import {
   draftChildRequirementPrompt,
   explainItemPrompt,
@@ -293,6 +303,34 @@ export function doorstopPublishTarget(result: DoorstopWorkspaceResult | undefine
   return result?.settings?.publishTarget ?? DEFAULT_OPENDOOR_SETTINGS.publishTarget;
 }
 
+/** Whether the workspace settings opt Review into the review→commit pipeline
+ *  (Phase C step 9) — `result.settings.commitAfterReview` with the frozen
+ *  default's `false` fallback when the result or its settings are missing
+ *  (exactly the publish-target fallback idiom). The commit flag travels
+ *  only on the BACKEND path; the terminal fallback does not commit. */
+export function doorstopCommitAfterReview(result: DoorstopWorkspaceResult | undefined): boolean {
+  return result?.settings?.commitAfterReview ?? DEFAULT_OPENDOOR_SETTINGS.commitAfterReview;
+}
+
+/** The one-line Last-run narration of a post-review git commit outcome
+ *  (Phase C step 11): `commit: <short-sha>` / `commit: clean (already
+ *  committed)` / `commit: skipped (not a git repository | review failed |
+ *  deadline)` / `commit: failed — <stderr excerpt>`. The outcome is
+ *  informational — it never flips the run's ok/failed badge (the review
+ *  itself succeeded; the commit is narration). */
+export function commitOutcomeText(outcome: DoorstopCommitOutcome): string {
+  switch (outcome.status) {
+    case "committed":
+      return `commit: ${outcome.sha ?? "<unknown sha>"}`;
+    case "clean":
+      return "commit: clean (already committed)";
+    case "skipped":
+      return "commit: skipped (not a git repository | review failed | deadline)";
+    case "failed":
+      return `commit: failed — ${outcome.stderr ?? "git step errored"}`;
+  }
+}
+
 /** Characters a publish target may contain and stay inert in any shell: the
  *  same `[\w.-]` token alphabet as the UID guard below plus `/` for path
  *  separators (the default `./public` is such a token). A target containing
@@ -400,6 +438,27 @@ function jsonishText(value: unknown): string {
   return json === undefined ? String(value) : json;
 }
 
+/** Display form of one side of a field-level diff: an attribute absent on
+ *  that side (undefined) reads as "—", anything else as JSON-ish text. */
+function diffValueText(value: unknown): string {
+  return value === undefined ? "—" : jsonishText(value);
+}
+
+/** Compact display form of one references list for a before→after chip:
+ *  paths joined with ", ", each with its keyword (`#kw`) and short sha
+ *  (`@abcdef01`) annotations when present, so a keyword/sha-only change is
+ *  still visible in the chip text. */
+function referenceListText(references: readonly DoorstopItemReference[]): string {
+  return references
+    .map((reference) => {
+      const parts = [reference.path];
+      if (reference.keyword !== undefined) parts.push(`#${reference.keyword}`);
+      if (reference.sha !== undefined) parts.push(`@${reference.sha.slice(0, 8)}`);
+      return parts.join(" ");
+    })
+    .join(", ");
+}
+
 /** Row summary for the item list: the header when present, else the first
  *  line of the text (truncated), else a placeholder dash. */
 function itemExcerpt(item: ItemRecord): string {
@@ -433,6 +492,11 @@ export interface DoorstopPanelBodyElement extends LitElement {
   /** Mirrored from the controller: title of the run in flight (disables the
    *  action buttons). */
   runInProgress: string | undefined;
+  /** Mirrored from the controller: counter bumped on every baseline-cache
+   *  mutation (the detail pane's "Changes since review" fetches). */
+  baselineVersion: number;
+  /** Mirrored from the controller: UID whose baseline fetch is in flight. */
+  baselineInFlight: string | undefined;
 }
 
 /**
@@ -509,6 +573,16 @@ function defineDoorstopPanelBodyElement(): void {
        *  `undefined` with no run pending (action buttons disabled while set). */
       @property({ attribute: false })
       runInProgress: string | undefined;
+
+      /** Baseline-cache version counter, mirrored from the controller (the
+       *  host re-binds a changed value on every baseline fetch mutation, so
+       *  the "Changes since review" section re-renders as fetches land). */
+      @property({ attribute: false })
+      baselineVersion = 0;
+
+      /** UID of the baseline fetch in flight, mirrored from the controller. */
+      @property({ attribute: false })
+      baselineInFlight: string | undefined;
 
       /** Whether the Ask-agent menu is expanded. */
       @state()
@@ -933,6 +1007,132 @@ function defineDoorstopPanelBodyElement(): void {
           gap: 4px;
         }
 
+        /* --- changes since review (Phase D step 14) --- */
+        .doorstop-changes {
+          border: 1px solid var(--pi-border-muted);
+          border-radius: 7px;
+          padding: 6px 10px;
+        }
+
+        .doorstop-changes-summary {
+          color: var(--pi-muted);
+          font-size: 11px;
+          text-transform: uppercase;
+          letter-spacing: 0.03em;
+          cursor: pointer;
+          user-select: none;
+        }
+
+        .doorstop-changes-summary::-webkit-details-marker {
+          color: var(--pi-muted);
+        }
+
+        .doorstop-changes-notice {
+          margin: 6px 0 0;
+          font-size: 12px;
+        }
+
+        .doorstop-changes-source {
+          margin: 6px 0 4px;
+          font-size: 11px;
+        }
+
+        .doorstop-diff-lines {
+          display: grid;
+          max-height: 180px;
+          overflow: auto;
+          border: 1px solid var(--pi-border-muted);
+          border-radius: 6px;
+          margin: 6px 0 8px;
+        }
+
+        .doorstop-diff-line {
+          display: flex;
+          gap: 7px;
+          border-bottom: 1px solid var(--pi-border-muted);
+          padding: 1px 7px;
+          font-family: var(--pi-monospace-family, monospace);
+          font-size: 12px;
+        }
+
+        .doorstop-diff-line:last-child {
+          border-bottom: 0;
+        }
+
+        .doorstop-diff-line.is-added {
+          background: color-mix(in srgb, var(--pi-success) 9%, transparent);
+        }
+
+        .doorstop-diff-line.is-removed {
+          background: color-mix(in srgb, var(--pi-danger) 9%, transparent);
+        }
+
+        .doorstop-diff-mark {
+          flex: 0 0 auto;
+          width: 1em;
+          text-align: center;
+          user-select: none;
+        }
+
+        .doorstop-diff-line.is-added .doorstop-diff-mark {
+          color: var(--pi-success);
+        }
+
+        .doorstop-diff-line.is-removed .doorstop-diff-mark {
+          color: var(--pi-danger);
+        }
+
+        .doorstop-diff-line.is-same .doorstop-diff-mark {
+          color: var(--pi-muted);
+        }
+
+        .doorstop-diff-text {
+          min-width: 0;
+          white-space: pre-wrap;
+          overflow-wrap: anywhere;
+        }
+
+        .doorstop-field-change {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: baseline;
+          gap: 6px;
+          border-top: 1px solid var(--pi-border-muted);
+          padding: 5px 0 0;
+          margin-top: 5px;
+        }
+
+        .doorstop-field-name {
+          color: var(--pi-muted);
+          font-size: 11px;
+          text-transform: uppercase;
+          letter-spacing: 0.03em;
+        }
+
+        .doorstop-field-chip {
+          border-radius: 5px;
+          border: 1px solid var(--pi-border-muted);
+          font-size: 12px;
+          padding: 1px 6px;
+          overflow-wrap: anywhere;
+        }
+
+        .doorstop-field-chip-before {
+          border-color: var(--pi-danger);
+          color: var(--pi-danger);
+          background: color-mix(in srgb, var(--pi-danger) 9%, transparent);
+        }
+
+        .doorstop-field-chip-after {
+          border-color: var(--pi-success-border);
+          color: var(--pi-success);
+          background: color-mix(in srgb, var(--pi-success) 9%, transparent);
+        }
+
+        .doorstop-field-arrow {
+          color: var(--pi-muted);
+        }
+
         .doorstop-section-title {
           color: var(--pi-muted);
           font-size: 11px;
@@ -1222,6 +1422,12 @@ function defineDoorstopPanelBodyElement(): void {
           margin-bottom: 6px;
         }
 
+        .doorstop-last-run-commit {
+          margin: 0 0 6px;
+          font-size: 12px;
+          overflow-wrap: anywhere;
+        }
+
         .doorstop-last-run-status {
           border-radius: 999px;
           padding: 0 7px;
@@ -1325,6 +1531,29 @@ function defineDoorstopPanelBodyElement(): void {
         }
       }
 
+      /**
+       * Self-heal the reused-`<details>` hole in the "Changes since review"
+       * section: Lit REUSES the section's DOM node when the detail pane
+       * re-renders for the same selected item whose cache key changed (an
+       * edit landed) — node reuse fires no `toggle`, so the expand handler
+       * alone would leave the section stuck on "Loading baseline…" with no
+       * fetch in flight. After every render, if the section is OPEN but the
+       * current item has no baseline view, kick the lazy fetch.
+       * `requestBaseline` installs its "loading" view synchronously, so this
+       * cannot loop: the next pass sees a view and stands down, and the
+       * landing fetch replaces it. (A selection switch needs no help here —
+       * {@link renderChangesSinceReview} keys the node by UID, so Lit
+       * recreates it closed and the user's expand fires a real `toggle`.)
+       */
+      protected override updated(): void {
+        const details = this.shadowRoot?.querySelector<HTMLDetailsElement>(".doorstop-changes");
+        if (details === null || details === undefined || !details.open) return;
+        const item = this.selectedItem();
+        if (item === undefined) return;
+        if (this.controller?.baselineViewFor(item) !== undefined) return;
+        void this.controller?.requestBaseline(item);
+      }
+
       protected override render(): TemplateResult {
         return html`
           ${this.renderToolbar()}
@@ -1414,6 +1643,9 @@ function defineDoorstopPanelBodyElement(): void {
                 @click=${() => { this.controller?.dismissRun(); }}
               >Dismiss</button>
             </div>
+            ${lastRun.commit === undefined
+              ? nothing
+              : html`<p class="doorstop-last-run-commit doorstop-muted">${commitOutcomeText(lastRun.commit)}</p>`}
             ${lastRun.status === "error"
               ? html`<pre class="doorstop-last-run-pre">${lastRun.errorMessage ?? ""}</pre>`
               : nothing}
@@ -1680,6 +1912,132 @@ function defineDoorstopPanelBodyElement(): void {
         return html`<span class=${`doorstop-chip doorstop-chip-${kind}`}>${STATE_CHIP_LABELS[key]}</span>`;
       }
 
+      /** Whether the workspace runs the paired backend path (the exact
+       *  `runDoorstop` gate: an owned opendoor provider whose backend
+       *  enables `request`). The baseline fetch and the review→commit pipeline
+       *  live server-side, so the "Changes since review" section is hidden on
+       *  unpaired installs — consistent with the existing backend-absent
+       *  fallbacks (the section's git access is the backend's, not the
+       *  browser's). */
+      private backendActive(): boolean {
+        const context = this.context;
+        return (
+          context?.backend !== undefined &&
+          context.workspace.provider?.pluginId === OPENDOOR_PLUGIN_ID &&
+          context.workspace.provider?.capabilities.request !== false
+        );
+      }
+
+      /**
+       * The collapsible "Changes since review" section (plan Phase D step
+       * 14): rendered between the state-chip row and the Text section, gated
+       * on the item being unreviewed WITH a stored reviewed fingerprint (a
+       * never-reviewed item has no baseline to recover) and the backend path
+       * being active. Collapsed by default; expanding triggers the lazy
+       * baseline fetch, which resolves to the loading/no-git/no-match notices
+       * or the semantic diff view.
+       *
+       * The `<details>` is wrapped in `keyed(item.uid, …)` so a selection
+       * switch RE-CREATES the node (fresh, collapsed, with a real `toggle` on
+       * expand) instead of Lit reusing the old item's open node — a reused
+       * node fires no `toggle`, which would strand the new item on
+       * "Loading baseline…". {@link updated} covers the remaining reuse
+       * hole (same item re-rendered after its cache key changed).
+       */
+      private renderChangesSinceReview(item: ItemRecord): ReturnType<typeof keyed> | typeof nothing {
+        if (!item.stateKeys.includes("unreviewed") || item.reviewed === null) return nothing;
+        if (!this.backendActive()) return nothing;
+        const view = this.controller?.baselineViewFor(item);
+        return keyed(
+          item.uid,
+          html`
+            <details class="doorstop-changes" @toggle=${this.onChangesToggle}>
+              <summary class="doorstop-changes-summary">Changes since review</summary>
+              ${view === undefined || view.state === "loading"
+                ? html`<p class="doorstop-muted doorstop-changes-notice">Loading baseline…</p>`
+                : this.renderBaselineView(view)}
+            </details>
+          `,
+        );
+      }
+
+      /** The opened section's body: the state notices or the ready diff view. */
+      private renderBaselineView(view: DoorstopBaselineView): TemplateResult {
+        switch (view.state) {
+          case "loading":
+            return html`<p class="doorstop-muted doorstop-changes-notice">Loading baseline…</p>`;
+          case "no-git":
+            return html`<p class="doorstop-muted doorstop-changes-notice">No git history — previous version unavailable</p>`;
+          case "no-match":
+            return html`<p class="doorstop-muted doorstop-changes-notice">Could not locate the reviewed version (history may have been rewritten)</p>`;
+          case "error":
+            return html`<p class="doorstop-muted doorstop-changes-notice">Baseline unavailable — ${view.errorMessage ?? "request failed"}</p>`;
+          case "ready": {
+            const diff = view.diff;
+            if (diff === undefined) return html`<p class="doorstop-muted doorstop-changes-notice">No changes found.</p>`;
+            return this.renderBaselineDiff(view, diff);
+          }
+        }
+      }
+
+      /** The semantic diff of a matched baseline: the source label, the text
+       *  as `+`/`−` line rows (or a too-large-to-diff notice), and before→after
+       *  field chips for ref, references, link UIDs, and the changed extended
+       *  reviewed attributes. */
+      private renderBaselineDiff(view: DoorstopBaselineView, diff: ItemFieldDiff): TemplateResult {
+        return html`
+          ${view.source === undefined
+            ? nothing
+            : html`<p class="doorstop-muted doorstop-changes-source">matched via ${view.source === "review-commit" ? "review commit" : "history walk"}</p>`}
+          ${diff.text === undefined
+            ? html`<p class="doorstop-muted doorstop-changes-notice">Text changed — too large to render a line diff.</p>`
+            : html`<div class="doorstop-diff-lines" role="list" aria-label="Text changes since review">
+                ${diff.text.map((line) => this.renderDiffLine(line))}
+              </div>`}
+          ${diff.ref === undefined ? nothing : this.renderFieldChange("ref", diff.ref.before, diff.ref.after)}
+          ${diff.references === undefined
+            ? nothing
+            : this.renderFieldChange(
+                "references",
+                referenceListText(diff.references.before),
+                referenceListText(diff.references.after),
+              )}
+          ${diff.linksAdded.length === 0 && diff.linksRemoved.length === 0
+            ? nothing
+            : html`<div class="doorstop-field-change">
+                <span class="doorstop-field-name">links</span>
+                ${diff.linksAdded.map((uid) => html`<code class="doorstop-field-chip doorstop-field-chip-after">+ ${uid}</code>`)}
+                ${diff.linksRemoved.map((uid) => html`<code class="doorstop-field-chip doorstop-field-chip-before">− ${uid}</code>`)}
+              </div>`}
+          ${diff.extended.map((change) => this.renderFieldChange(change.name, change.before, change.after))}
+        `;
+      }
+
+      /** One text-diff row: a `+`/`−` gutter mark and the line (an empty
+       *  line keeps its row height via a non-breaking space). */
+      private renderDiffLine(line: DiffLine): TemplateResult {
+        const mark = line.kind === "added" ? "+" : line.kind === "removed" ? "−" : "";
+        return html`
+          <div class=${`doorstop-diff-line is-${line.kind}`} role="listitem">
+            <span class="doorstop-diff-mark">${mark}</span>
+            <span class="doorstop-diff-text">${line.text === "" ? "\u00a0" : line.text}</span>
+          </div>
+        `;
+      }
+
+      /** One field-level before→after chip row (ref / references / a changed
+       *  extended reviewed attribute). */
+      private renderFieldChange(label: string, before: unknown, after: unknown): TemplateResult {
+        return html`
+          <div class="doorstop-field-change">
+            <span class="doorstop-field-name">${label}</span>
+            <code class="doorstop-field-chip doorstop-field-chip-before">${diffValueText(before)}</code>
+            <span class="doorstop-field-arrow">→</span>
+            <code class="doorstop-field-chip doorstop-field-chip-after">${diffValueText(after)}</code>
+          </div>
+        `;
+      }
+
       // --- detail pane ------------------------------------------------------------------
 
       private renderDetail(result: DoorstopWorkspaceResult): TemplateResult {
@@ -1708,6 +2066,7 @@ function defineDoorstopPanelBodyElement(): void {
             <div class="doorstop-state-chip-row">
               ${item.stateKeys.map((key) => this.renderStateChip(key))}
             </div>
+            ${this.renderChangesSinceReview(item)}
             <h4 class="doorstop-section-title">Text</h4>
             <p class=${item.text === "" ? "doorstop-text doorstop-text-empty" : "doorstop-text"}>${item.text === "" ? "empty" : item.text}</p>
             <h4 class="doorstop-section-title">Parent links</h4>
@@ -2018,10 +2377,16 @@ function defineDoorstopPanelBodyElement(): void {
       };
 
       private reviewItem(item: ItemRecord): void {
+        // Phase C step 9: the workspace setting `commitAfterReview` (default
+        // off) opts this review into the backend's review→commit pipeline.
+        // The flag is OMITTED under the default (the exact optional-field
+        // idiom) so old servers and in-flight requests across a mixed-version
+        // reload window parse the request fine.
+        const commit = doorstopCommitAfterReview(this.result);
         this.runDoorstop(
           "review",
           `Doorstop: review ${item.uid}`,
-          { op: "review", uid: item.uid },
+          commit ? { op: "review", uid: item.uid, commit: true } : { op: "review", uid: item.uid },
           `doorstop review ${item.uid}`,
           false,
         );
@@ -2106,6 +2471,18 @@ function defineDoorstopPanelBodyElement(): void {
 
       private onAskMenuToggle = (): void => {
         this.askMenuOpen = !this.askMenuOpen;
+      };
+
+      /** Expanding the "Changes since review" section triggers the lazy
+       *  baseline fetch for the currently selected item (collapsing does
+       *  nothing). The controller's cache + in-flight join make repeated
+       *  expands cheap. */
+      private onChangesToggle = (event: Event): void => {
+        const details = event.currentTarget;
+        if (!(details instanceof HTMLDetailsElement) || !details.open) return;
+        const item = this.selectedItem();
+        if (item === undefined) return;
+        void this.controller?.requestBaseline(item);
       };
 
       private insertPrompt(text: string): void {
@@ -2232,6 +2609,10 @@ function defineDoorstopPanelBodyElement(): void {
             // surfaced verbatim — the browser has nothing more accurate.
             durationMs: parsed.durationMs,
             at: startedAt,
+            // The optional review→commit outcome rides along when the server
+            // sent it (absent under the default — the exact optional-field
+            // idiom); the Last-run section renders its one narration line.
+            ...(parsed.commit === undefined ? {} : { commit: parsed.commit }),
           });
           void controller.invalidate();
         } catch (error) {

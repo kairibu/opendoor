@@ -1,9 +1,10 @@
 // @vitest-environment node
 //
 // Contract tests for the paired-server boundary module
-// (src/doorstop-backend-contract.ts), per plan Phase A step 1 — the ONE
-// operation name, request/response shapes, strict parse validators, and the
-// UID/publish-target grammars shared by the browser and server bundles.
+// (src/doorstop-backend-contract.ts), per plan Phase A steps 1–4 (and step
+// 17's contract tests) — the TWO operation names, request/response shapes,
+// strict parse validators, and the UID/publish-target/item-path grammars
+// shared by the browser and server bundles.
 // Pure node environment: the module carries no DOM and no host imports.
 //
 // The parity tests import the ported grammar consumers — the element-level
@@ -16,12 +17,21 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  DOORSTOP_BASELINE_BLOB_MAX,
+  DOORSTOP_BASELINE_GREP_LIMIT,
+  DOORSTOP_BASELINE_HISTORY_LIMIT,
+  DOORSTOP_BASELINE_OPERATION,
   DOORSTOP_RUN_OPERATION,
+  isValidDoorstopItemPath,
   isValidDoorstopUid,
   isValidPublishTarget,
   OPENDOOR_PLUGIN_ID,
+  parseDoorstopBaselineRequest,
+  parseDoorstopBaselineResponse,
+  parseDoorstopCommitOutcome,
   parseDoorstopRunRequest,
   parseDoorstopRunResponse,
+  type DoorstopBaselineResponse,
   type DoorstopRunResponse,
 } from "./doorstop-backend-contract.js";
 import { isValidTargetUid } from "./doorstop-panel-elements.js";
@@ -51,6 +61,21 @@ describe("constants", () => {
     // The host's operation-name grammar: lowercase letter, then letters /
     // digits / dots / hyphens.
     expect(DOORSTOP_RUN_OPERATION).toMatch(/^[a-z][a-z0-9.-]*$/);
+  });
+});
+
+describe("baseline constants", () => {
+  it("exposes the item-baseline operation name, matching the host operation grammar", () => {
+    expect(DOORSTOP_BASELINE_OPERATION).toBe("doorstop.item-baseline");
+    // The host's operation-name grammar: lowercase letter, then letters /
+    // digits / dots / hyphens.
+    expect(DOORSTOP_BASELINE_OPERATION).toMatch(/^[a-z][a-z0-9.-]*$/);
+  });
+
+  it("pins the three baseline limits the server and browser share", () => {
+    expect(DOORSTOP_BASELINE_GREP_LIMIT).toBe(20);
+    expect(DOORSTOP_BASELINE_HISTORY_LIMIT).toBe(50);
+    expect(DOORSTOP_BASELINE_BLOB_MAX).toBe(256 * 1024);
   });
 });
 
@@ -112,6 +137,38 @@ describe("parseDoorstopRunResponse", () => {
     expect(() => parseDoorstopRunResponse(validResponse({ op: "purge" }))).toThrow(/Invalid doorstop run op/);
     expect(() => parseDoorstopRunResponse(validResponse({ op: "" }))).toThrow(/Invalid doorstop run op/);
   });
+
+  it("accepts the optional commit outcome on a response (compile-time proof)", () => {
+    const withCommit = validResponse({
+      op: "review",
+      commit: { status: "committed", sha: "abc1234" },
+    });
+    const parsed: DoorstopRunResponse = parseDoorstopRunResponse(withCommit);
+    expect(parsed).toEqual(withCommit);
+    expect(parsed.commit).toEqual({ status: "committed", sha: "abc1234" });
+  });
+
+  it("omits the commit field when the response carries none", () => {
+    const parsed = parseDoorstopRunResponse(validResponse());
+    expect(parsed).toEqual(validResponse());
+    expect("commit" in parsed).toBe(false);
+  });
+
+  it("rejects a wrongly-typed commit field", () => {
+    expect(() => parseDoorstopRunResponse(validResponse({ commit: "yes" }))).toThrow(/must be an object/);
+    expect(() => parseDoorstopRunResponse(validResponse({ commit: { status: "unknown" } }))).toThrow(/Invalid doorstop commit status/);
+    expect(() => parseDoorstopRunResponse(validResponse({ commit: { status: "failed", stderr: 42 } }))).toThrow(/Expected string field: stderr/);
+  });
+
+  it("pins the commit field's null-vs-undefined asymmetry (null throws, undefined omits)", () => {
+    // Undefined (absent) → the field is omitted from the parsed result
+    // (see the omission test above). null → throws: the host JSON bridge
+    // emits null for the `exitCode`/`signal` values, never for an optional
+    // object field — a null commit is junk, not an absent outcome (the
+    // request parser omits `commit` under the default, so a well-formed
+    // response never carries the field as null).
+    expect(() => parseDoorstopRunResponse(validResponse({ commit: null }))).toThrow(/must be an object/);
+  });
 });
 
 describe("parseDoorstopRunRequest", () => {
@@ -139,6 +196,30 @@ describe("parseDoorstopRunRequest", () => {
       uid: "REQ0001",
       target: "TST-ALPHA",
     });
+  });
+
+  it("accepts a review request with and without the optional commit flag", () => {
+    // Absent (today's shape) and explicit true/false all parse; the field
+    // is omitted from the result when absent (exactOptionalPropertyTypes).
+    expect(parseDoorstopRunRequest({ op: "review", uid: "REQ0001" })).toEqual({ op: "review", uid: "REQ0001" });
+    expect(parseDoorstopRunRequest({ op: "review", uid: "REQ0001", commit: true })).toEqual({
+      op: "review",
+      uid: "REQ0001",
+      commit: true,
+    });
+    expect(parseDoorstopRunRequest({ op: "review", uid: "REQ0001", commit: false })).toEqual({
+      op: "review",
+      uid: "REQ0001",
+      commit: false,
+    });
+  });
+
+  it("rejects a wrongly-typed commit flag on the review variant", () => {
+    expect(() => parseDoorstopRunRequest({ op: "review", uid: "REQ0001", commit: "yes" })).toThrow(
+      /Expected boolean field: commit/,
+    );
+    expect(() => parseDoorstopRunRequest({ op: "review", uid: "REQ0001", commit: 1 })).toThrow(/Expected boolean field: commit/);
+    expect(() => parseDoorstopRunRequest({ op: "review", uid: "REQ0001", commit: null })).toThrow(/Expected boolean field: commit/);
   });
 
   it("rejects non-object requests", () => {
@@ -206,6 +287,189 @@ describe("parseDoorstopRunRequest", () => {
     // guard: the Clear button is disabled at zero suspects, so a clear
     // request with no parents is a contradiction the browser never emits.
     expect(() => parseDoorstopRunRequest({ op: "clear", uid: "REQ0001", parents: [] })).toThrow(/at least one parent/);
+  });
+});
+
+describe("parseDoorstopCommitOutcome", () => {
+  it("accepts every status, with and without the optional excerpts", () => {
+    expect(parseDoorstopCommitOutcome({ status: "committed", sha: "abc1234" })).toEqual({ status: "committed", sha: "abc1234" });
+    expect(parseDoorstopCommitOutcome({ status: "committed" })).toEqual({ status: "committed" });
+    expect(parseDoorstopCommitOutcome({ status: "clean" })).toEqual({ status: "clean" });
+    expect(parseDoorstopCommitOutcome({ status: "skipped" })).toEqual({ status: "skipped" });
+    expect(parseDoorstopCommitOutcome({ status: "failed", stderr: "fatal: not a git repository" })).toEqual({
+      status: "failed",
+      stderr: "fatal: not a git repository",
+    });
+  });
+
+  it("rejects an unknown status (nothing is defaulted)", () => {
+    expect(() => parseDoorstopCommitOutcome({ status: "pushed" })).toThrow(/Invalid doorstop commit status/);
+    expect(() => parseDoorstopCommitOutcome({ status: "" })).toThrow(/Invalid doorstop commit status/);
+    expect(() => parseDoorstopCommitOutcome({ status: 42 })).toThrow(/Expected string field: status/);
+    expect(() => parseDoorstopCommitOutcome({})).toThrow(/Expected string field: status/);
+  });
+
+  it("rejects non-object junk and wrongly-typed optional excerpts", () => {
+    for (const junk of [null, undefined, [], "committed", 42, true]) {
+      expect(() => parseDoorstopCommitOutcome(junk)).toThrow(/must be an object/);
+    }
+    expect(() => parseDoorstopCommitOutcome({ status: "failed", stderr: 42 })).toThrow(/Expected string field: stderr/);
+    expect(() => parseDoorstopCommitOutcome({ status: "committed", sha: [] })).toThrow(/Expected string field: sha/);
+    expect(() => parseDoorstopCommitOutcome({ status: "committed", sha: 7 })).toThrow(/Expected string field: sha/);
+  });
+
+  it("ties sha to committed and stderr to failed — a stray excerpt on any other status throws", () => {
+    // The outcome JSDoc declares sha "committed only" and stderr "failed
+    // only"; the parser enforces that coupling. `{ status: "clean", sha }`,
+    // `{ status: "committed", stderr }`, etc. are malformed outcomes — the
+    // field is rejected, never silently ignored (strict-parse idiom).
+    expect(() => parseDoorstopCommitOutcome({ status: "clean", sha: "abc1234" })).toThrow(
+      /Only a "committed" outcome may carry "sha"/,
+    );
+    expect(() => parseDoorstopCommitOutcome({ status: "skipped", sha: "abc1234" })).toThrow(/Only a "committed" outcome may carry "sha"/);
+    expect(() => parseDoorstopCommitOutcome({ status: "failed", sha: "abc1234" })).toThrow(/Only a "committed" outcome may carry "sha"/);
+    expect(() => parseDoorstopCommitOutcome({ status: "committed", stderr: "fatal: oops" })).toThrow(
+      /Only a "failed" outcome may carry "stderr"/,
+    );
+    expect(() => parseDoorstopCommitOutcome({ status: "clean", stderr: "fatal: oops" })).toThrow(/Only a "failed" outcome may carry "stderr"/);
+    expect(() => parseDoorstopCommitOutcome({ status: "skipped", stderr: "fatal: oops" })).toThrow(/Only a "failed" outcome may carry "stderr"/);
+    // The legal pairings still parse: sha only on committed, stderr only on failed.
+    expect(parseDoorstopCommitOutcome({ status: "committed", sha: "abc1234" })).toEqual({ status: "committed", sha: "abc1234" });
+    expect(parseDoorstopCommitOutcome({ status: "failed", stderr: "fatal: oops" })).toEqual({ status: "failed", stderr: "fatal: oops" });
+  });
+});
+
+/** The server's exact baseline response shape; `overrides` replace fields
+ *  for the junk cases (mirrors `validResponse` above). */
+function validBaselineResponse(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    git: true,
+    source: "none",
+    candidates: [],
+    ...overrides,
+  };
+}
+
+describe("parseDoorstopBaselineRequest", () => {
+  it("accepts a valid request and tolerates extra keys (forward compat)", () => {
+    expect(parseDoorstopBaselineRequest({ uid: "REQ0001", path: "docs/reqs/REQ0001.yml" })).toEqual({
+      uid: "REQ0001",
+      path: "docs/reqs/REQ0001.yml",
+    });
+    expect(parseDoorstopBaselineRequest({ uid: "REQ0001", path: "docs/reqs/REQ0001.yml", futureField: 1 })).toEqual({
+      uid: "REQ0001",
+      path: "docs/reqs/REQ0001.yml",
+    });
+  });
+
+  it("rejects non-object junk", () => {
+    for (const junk of [null, undefined, [], "REQ0001", 42, true]) {
+      expect(() => parseDoorstopBaselineRequest(junk)).toThrow(/must be an object/);
+    }
+  });
+
+  it("rejects missing and wrongly-typed fields", () => {
+    expect(() => parseDoorstopBaselineRequest({ uid: "REQ0001" })).toThrow(/Expected string field: path/);
+    expect(() => parseDoorstopBaselineRequest({ path: "docs/reqs/REQ0001.yml" })).toThrow(/Expected string field: uid/);
+    expect(() => parseDoorstopBaselineRequest({ uid: 42, path: "docs/reqs/REQ0001.yml" })).toThrow(/Expected string field: uid/);
+    expect(() => parseDoorstopBaselineRequest({ uid: "REQ0001", path: null })).toThrow(/Expected string field: path/);
+  });
+
+  it("rejects UIDs outside the item grammar", () => {
+    for (const uid of ["", "REQ", "REQ0001; echo pwn", "REQ0 001"]) {
+      expect(() => parseDoorstopBaselineRequest({ uid, path: "docs/reqs/REQ0001.yml" })).toThrow(/Invalid doorstop UID in field: uid/);
+    }
+  });
+
+  it("rejects unsafe item paths, mirroring the item-path rule", () => {
+    for (const path of [
+      "..",
+      "../escape.yml",
+      "docs/../../etc/passwd",
+      "docs/..",
+      "/abs/REQ0001.yml",
+      "//abs",
+      "C:/win/REQ0001.yml",
+      "c:\\win\\REQ0001.yml",
+      "docs\\REQ0001.yml",
+      "docs/REQ0001\n.yml",
+      "docs/REQ0001\r.yml",
+      "docs/\u0000REQ0001.yml",
+      "docs/REQ0001\u007f.yml",
+      "docs/REQ0001\u0085.yml",
+      "docs/REQ0001\u2028.yml",
+      "a".repeat(257),
+    ]) {
+      expect(() => parseDoorstopBaselineRequest({ uid: "REQ0001", path })).toThrow(/Invalid doorstop item path/);
+    }
+  });
+
+  it("accepts item paths at the 256-char boundary", () => {
+    const exactly256 = "docs/" + "a".repeat(247) + ".yml";
+    const beyond256 = "docs/" + "a".repeat(248) + ".yml";
+    expect(parseDoorstopBaselineRequest({ uid: "REQ0001", path: exactly256 })).toMatchObject({ path: exactly256 });
+    expect(() => parseDoorstopBaselineRequest({ uid: "REQ0001", path: beyond256 })).toThrow(/Invalid doorstop item path/);
+  });
+});
+
+describe("parseDoorstopBaselineResponse", () => {
+  it("accepts a happy path with candidates (compile-time proof via the response type)", () => {
+    const resp = validBaselineResponse({
+      source: "review-commit",
+      candidates: [
+        { sha: "abc1234", blob: "uid: REQ0001\ntext: reviewed version" },
+        { sha: "def5678", blob: "uid: REQ0001\ntext: older version" },
+      ],
+    });
+    const parsed: DoorstopBaselineResponse = parseDoorstopBaselineResponse(resp);
+    expect(parsed).toEqual(resp);
+    expect(parsed.candidates[0]).toEqual({ sha: "abc1234", blob: "uid: REQ0001\ntext: reviewed version" });
+  });
+
+  it("accepts the no-git and generic-history shapes", () => {
+    expect(parseDoorstopBaselineResponse({ git: false, source: "none", candidates: [] })).toEqual({
+      git: false,
+      source: "none",
+      candidates: [],
+    });
+    expect(parseDoorstopBaselineResponse({ git: true, source: "history", candidates: [] })).toEqual({
+      git: true,
+      source: "history",
+      candidates: [],
+    });
+  });
+
+  it("rejects non-object junk", () => {
+    for (const junk of [null, undefined, [], "x", 42, true]) {
+      expect(() => parseDoorstopBaselineResponse(junk)).toThrow(/must be an object/);
+    }
+  });
+
+  it("rejects missing required fields", () => {
+    for (const field of ["git", "source", "candidates"]) {
+      const { [field]: _removed, ...rest } = validBaselineResponse();
+      expect(() => parseDoorstopBaselineResponse(rest)).toThrow();
+    }
+  });
+
+  it("rejects unknown sources and wrongly-typed fields", () => {
+    expect(() => parseDoorstopBaselineResponse(validBaselineResponse({ source: "grep" }))).toThrow(
+      /Invalid doorstop baseline source/,
+    );
+    expect(() => parseDoorstopBaselineResponse(validBaselineResponse({ source: "" }))).toThrow(/Invalid doorstop baseline source/);
+    expect(() => parseDoorstopBaselineResponse(validBaselineResponse({ git: "yes" }))).toThrow(/Expected boolean field: git/);
+    expect(() => parseDoorstopBaselineResponse(validBaselineResponse({ candidates: {} }))).toThrow(/must be an array/);
+    expect(() => parseDoorstopBaselineResponse(validBaselineResponse({ candidates: "x" }))).toThrow(/must be an array/);
+    expect(() => parseDoorstopBaselineResponse(validBaselineResponse({ candidates: ["junk"] }))).toThrow(/must be an object/);
+    expect(() => parseDoorstopBaselineResponse(validBaselineResponse({ candidates: [{ sha: 42, blob: "x" }] }))).toThrow(
+      /Expected string field: sha/,
+    );
+    expect(() => parseDoorstopBaselineResponse(validBaselineResponse({ candidates: [{ sha: "abc", blob: null }] }))).toThrow(
+      /Expected string field: blob/,
+    );
+    expect(() => parseDoorstopBaselineResponse(validBaselineResponse({ candidates: [{ sha: "abc" }] }))).toThrow(
+      /Expected string field: blob/,
+    );
   });
 });
 
@@ -279,5 +543,64 @@ describe("publish-target rule (isValidPublishTarget, shared with the settings ch
       expect(isValidPublishTarget(target), target).toBe(true);
       expect(parseOpendoorSettings({ publishTarget: target }).settings.publishTarget).toBe(target);
     }
+  });
+});
+
+describe("item-path rule (isValidDoorstopItemPath)", () => {
+  it("accepts workspace-relative item paths with any extension", () => {
+    for (const path of [
+      "REQ0001.yml",
+      "docs/reqs/REQ0001.yml",
+      "docs/reqs/REQ-ALPHA.md",
+      "./docs/REQ0001.yml",
+      ".hidden/REQ0001.yml",
+      "a/b/c/deep.yml",
+      "docs/" + "a".repeat(247) + ".yml", // exactly 256 chars
+    ]) {
+      expect(isValidDoorstopItemPath(path), path).toBe(true);
+    }
+  });
+
+  it("rejects empty, absolute, drive-letter, backslash, and traversal paths", () => {
+    for (const path of [
+      "",
+      "/abs",
+      "/abs/REQ0001.yml",
+      "//abs",
+      "C:/win/REQ0001.yml",
+      "C:",
+      "c:\\win\\REQ0001.yml",
+      "docs\\REQ0001.yml",
+      "..",
+      "../REQ0001.yml",
+      "docs/../../etc/passwd",
+      "docs/..",
+      "a/../b",
+    ]) {
+      expect(isValidDoorstopItemPath(path), path).toBe(false);
+    }
+  });
+
+  it("rejects control characters and line breaks (single line)", () => {
+    for (const path of [
+      "docs/REQ0001\n.yml",
+      "docs/REQ0001\r.yml",
+      "docs/\u0000REQ0001.yml",
+      "docs/\u0007REQ0001.yml",
+      "docs/REQ0001\u007f.yml",
+      // C1 controls (U+0080–U+009F) are controls too — the plan's "no
+      // control characters" rule covers them, not just C0/DEL.
+      "docs/REQ0001\u0085.yml",
+      "docs/REQ0001\u009f.yml",
+      "docs/REQ0001\u2028.yml",
+      "docs/REQ0001\u2029.yml",
+    ]) {
+      expect(isValidDoorstopItemPath(path), path).toBe(false);
+    }
+  });
+
+  it("rejects paths over 256 characters", () => {
+    expect(isValidDoorstopItemPath("a".repeat(257))).toBe(false);
+    expect(isValidDoorstopItemPath("docs/" + "a".repeat(248) + ".yml")).toBe(false); // 257 chars
   });
 });

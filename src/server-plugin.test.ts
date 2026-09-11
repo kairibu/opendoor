@@ -12,11 +12,21 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type {
+  JsonValue,
   ProjectInput,
+  ProviderRequestContext,
   ServerPluginActivationContext,
+  ServerPluginExecFileRequest,
+  ServerPluginExecFileResult,
   WorkspaceProvider,
 } from "@jmfederico/pi-web/server-plugin-api";
 import plugin, { createDoorstopWorkspaceProvider } from "./server-plugin.js";
+import {
+  DOORSTOP_BASELINE_OPERATION,
+  DOORSTOP_RUN_OPERATION,
+  parseDoorstopBaselineResponse,
+  parseDoorstopRunResponse,
+} from "./doorstop-backend-contract.js";
 
 const tempRoots: string[] = [];
 
@@ -137,6 +147,53 @@ describe("createDoorstopWorkspaceProvider", () => {
     expect(provider.fallback).toBeUndefined();
     // Main-only workspaces are not removable: no prepareRemove in v1.
     expect(provider.prepareRemove).toBeUndefined();
+  });
+
+  it("dispatches on the operation name: run → run handler, item-baseline → baseline handler, else unsupported error", async () => {
+    const requests: ServerPluginExecFileRequest[] = [];
+    const context = {
+      ...contextFor(),
+      execFile: async (request: ServerPluginExecFileRequest): Promise<ServerPluginExecFileResult> => {
+        requests.push(request);
+        // rev-parse answers "true"; log/show produce a blob so the baseline
+        // handler's candidate walk settles deterministically.
+        return {
+          exitCode: 0,
+          signal: null,
+          stdout: (request.args ?? [])[0] === "rev-parse" ? "true" : "sha1\n",
+          stderr: "",
+          stdoutTruncated: false,
+          stderrTruncated: false,
+        };
+      },
+    };
+    const provider = createDoorstopWorkspaceProvider(context);
+    const signal = new AbortController().signal;
+    const requestFor = (operation: string, input: JsonValue): ProviderRequestContext => ({
+      project: projectFor("/workspace/demo checkout"),
+      workspace: { key: "/workspace/demo checkout", path: "/workspace/demo checkout", label: "demo", isMain: true },
+      operation,
+      input,
+      signal,
+    });
+
+    // `doorstop.item-baseline` routes to the baseline handler (read-only git fetch).
+    const baseline = await provider.request?.(requestFor(DOORSTOP_BASELINE_OPERATION, { uid: "REQ0001", path: "reqs/REQ0001.yml" }));
+    expect(parseDoorstopBaselineResponse(baseline)).toEqual({
+      git: true,
+      source: "review-commit",
+      candidates: [{ sha: "sha1", blob: "sha1\n" }],
+    });
+
+    // `doorstop.run` still routes to the run handler (doorstop exec only).
+    const run = await provider.request?.(requestFor(DOORSTOP_RUN_OPERATION, { op: "validate" }));
+    expect(parseDoorstopRunResponse(run).op).toBe("validate");
+    expect(requests.map((request) => request.file)).toEqual(["git", "git", "git", "doorstop"]);
+
+    // Anything else → the existing unsupported-operation error.
+    await expect(provider.request?.(requestFor("doorstop.purge", null))).rejects.toThrow(
+      "opendoor: unsupported workspace backend operation: doorstop.purge",
+    );
   });
 });
 

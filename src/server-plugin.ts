@@ -38,7 +38,8 @@ import type {
   ServerPluginActivationContext,
   WorkspaceProvider,
 } from "@jmfederico/pi-web/server-plugin-api";
-import { requestDoorstopBackend } from "./doorstop-backend.js";
+import { requestDoorstopBackend, requestDoorstopBaseline, unsupportedBackendOperationError } from "./doorstop-backend.js";
+import { DOORSTOP_BASELINE_OPERATION, DOORSTOP_RUN_OPERATION } from "./doorstop-backend-contract.js";
 
 /** Marker file whose presence makes a project a doorstop project. */
 const DOORSTOP_MARKER_FILE = ".doorstop.yml";
@@ -96,7 +97,9 @@ export default plugin;
 
 /** Create the opendoor workspace provider for one activation (testable —
  *  git's `createGitWorkspaceProvider` idiom). The provider is frozen and its
- *  `request` routes `doorstop.run` to the shared backend. */
+ *  `request` DISPATCHES on the operation name (plan step 8): `doorstop.run`
+ *  → the run backend, `doorstop.item-baseline` → the read-only baseline
+ *  backend, anything else → the unsupported-operation error. */
 export function createDoorstopWorkspaceProvider(context: ServerPluginActivationContext): WorkspaceProvider {
   return Object.freeze({
     async probe(project: ProjectInput, signal: AbortSignal): Promise<ProviderClaim> {
@@ -123,6 +126,23 @@ export function createDoorstopWorkspaceProvider(context: ServerPluginActivationC
         },
       ];
     },
-    request: (request: ProviderRequestContext) => requestDoorstopBackend(context, request),
+    request: (request: ProviderRequestContext) => {
+      // Operation dispatch (plan step 8): the two contract operations route
+      // to their shared backend handlers (both serialize per workspace path
+      // and share the deadline budget inside doorstop-backend.ts); every
+      // other operation gets the existing unsupported-operation error — the
+      // same message the run handler's own guard throws.
+      switch (request.operation) {
+        case DOORSTOP_RUN_OPERATION:
+          return requestDoorstopBackend(context, request);
+        case DOORSTOP_BASELINE_OPERATION:
+          return requestDoorstopBaseline(context, request);
+        default:
+          // Reject (never throw synchronously): the provider contract
+          // returns a promise, and the async handlers' own guard rejects
+          // with this same error — one message source, one failure mode.
+          return Promise.reject(unsupportedBackendOperationError(request.operation));
+      }
+    },
   });
 }

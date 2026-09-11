@@ -21,14 +21,26 @@
 //
 // lit is imported type-only: the module carries no runtime framework code, so
 // the load job it runs stays pure and the controller is unit-testable with a
-// fake host, no DOM required (plan §5).
+// fake host, no DOM required (plan §5). The baseline cache (Phase D step 13)
+// does import the pure model/state/diff chains (parse + stamp + semantic
+// diff) — no framework code either, so the DOM-free testability holds.
 // ---------------------------------------------------------------------------
 
 import type { ReactiveController } from "lit";
 import type { WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
-import type { DoorstopFiles, ItemStateKey } from "./doorstop-contract.js";
+import type { DoorstopDocumentConfig, DoorstopFiles, ItemRecord, ItemStateKey } from "./doorstop-contract.js";
 import { formatUnknownError } from "./doorstop-contract.js";
-import type { DoorstopRunRequest } from "./doorstop-backend-contract.js";
+import {
+  DOORSTOP_BASELINE_OPERATION,
+  parseDoorstopBaselineResponse,
+  type DoorstopBaselineCandidate,
+  type DoorstopBaselineResponse,
+  type DoorstopCommitOutcome,
+  type DoorstopRunRequest,
+} from "./doorstop-backend-contract.js";
+import { parseDoorstopItem } from "./doorstop-model.js";
+import { computeItemStamp } from "./doorstop-state.js";
+import { diffItemFields, type ItemFieldDiff } from "./doorstop-diff.js";
 import type { DoorstopWorkspaceResult } from "./doorstop-panel.js";
 
 /**
@@ -62,6 +74,40 @@ export interface DoorstopLastRunView {
   at: number;
   /** `status === "error"` only: the parsed backend rejection message. */
   errorMessage?: string;
+  /** Post-review git commit outcome (Phase C step 11): present only when the
+   *  review request carried `commit: true` and the backend ran the
+   *  review→commit pipeline. Narration, never infrastructure: a failed /
+   *  skipped commit leaves the run's `status` (the review itself) unchanged. */
+  commit?: DoorstopCommitOutcome;
+}
+
+/**
+ * The panel's view of one item's "changes since review" baseline (plan
+ * Phase D step 13): the async baseline fetch's state plus, on a match, the
+ * semantic field diff between the recovered reviewed version and the current
+ * item. `baselineViewFor` hands this to the detail pane; a cached view whose
+ * KEY no longer matches the item's current state is never returned (the
+ * section refetches on the next expand).
+ */
+export interface DoorstopBaselineView {
+  /** "loading" → the fetch is in flight; "no-git" → not a git repository
+   *  (or no backend at all); "no-match" → history was rewritten / the
+   *  reviewed blob is not among the candidates; "ready" → `diff` is set;
+   *  "error" → the request rejected (the bridge/parse failure fallback —
+   *  TRANSIENT: the next expand refetches instead of caching the failure). */
+  state: "loading" | "no-git" | "no-match" | "ready" | "error";
+  /** "ready" only: the diff between the matched baseline and the item. */
+  diff?: ItemFieldDiff;
+  /** "ready" only: which history source matched (review commit vs walk). */
+  source?: DoorstopBaselineResponse["source"];
+  /** "error" only: the rejection message. */
+  errorMessage?: string;
+}
+
+/** One cached baseline view plus the cache key it was fetched under. */
+interface DoorstopBaselineCacheEntry {
+  key: string;
+  view: DoorstopBaselineView;
 }
 
 /** One load job: discovery walk → item reads/parse → index → state
@@ -147,6 +193,27 @@ export class DoorstopWorkspaceController implements ReactiveController {
    *  run is pending. The element disables its action buttons while this is
    *  set (a second run must never overlap the one in flight). */
   runInProgress: string | undefined;
+
+  /** Per-item "changes since review" baseline views (plan Phase D step 13),
+   *  keyed by item UID. Each entry remembers the cache KEY it was fetched
+   *  under (`reviewed + NUL + currentStamp`), so a re-review or a further
+   *  edit invalidates the entry naturally — `baselineViewFor` only returns a
+   *  view whose key still matches the item's current state. */
+  private readonly baselineViews = new Map<string, DoorstopBaselineCacheEntry>();
+
+  /** In-flight baseline fetches per UID: a second expand while a fetch runs
+   *  joins the running promise instead of stacking a duplicate request. */
+  private readonly baselineRequests = new Map<string, Promise<void>>();
+
+  /** Bumped on every baseline-cache mutation (fetch start/landing); mirrored
+   *  into the body element properties (same pattern as lastRun/runInProgress,
+   *  plan step 15) so the host render wiring has a concrete changing value to
+   *  bind and re-render the section. */
+  baselineVersion = 0;
+
+  /** UID of the item whose baseline fetch is in flight; `undefined` with none
+   *  pending (mirrored into the body element). */
+  baselineInFlight: string | undefined;
 
   private readonly loadJob: DoorstopWorkspaceJob;
 
@@ -274,6 +341,146 @@ export class DoorstopWorkspaceController implements ReactiveController {
     this.requestUpdate();
   }
 
+  /**
+   * Synchronous read of the current "changes since review" baseline view for
+   * `item`, or `undefined` when nothing was fetched OR the cached entry's key
+   * no longer matches the item's current reviewed/stamp state (a re-review or
+   * further edit missed naturally — the next expand refetches).
+   */
+  baselineViewFor(item: ItemRecord): DoorstopBaselineView | undefined {
+    const entry = this.baselineViews.get(item.uid);
+    if (entry === undefined) return undefined;
+    if (entry.key !== baselineKey(item, this.configForItem(item))) return undefined;
+    return entry.view;
+  }
+
+  /**
+   * Request the "changes since review" baseline view for an item (the detail
+   * pane's expand handler). A cache hit under the current key returns
+   * immediately — EXCEPT a `"loading"` view (the in-flight fetch is joined
+   * below, never stacked) and an `"error"` view (a failed request is a
+   * TRANSIENT bridge/parse hiccup, not a terminal result — re-expanding
+   * retries instead of showing a stale failure forever). A fetch already in
+   * flight for the same UID is joined (never stacked). Otherwise the fetch
+   * runs through
+   * `backend.request(DOORSTOP_BASELINE_OPERATION, { uid, path })`, parses the
+   * response with the contract validator, and stamp-walks the returned blobs
+   * newest-first (`parseDoorstopItem` + the document's config via
+   * `computeItemStamp(item, config, true)`) until one matches
+   * `item.reviewed`. The matched blob becomes the diff's "before" side.
+   *
+   * Follows the run-mutator idiom: state is written unconditionally and the
+   * render is requested through {@link requestUpdate}; after every `await`,
+   * writes are dropped when the host disconnected (the loading view then
+   * self-heals on the next expand, which sees no in-flight request and
+   * refetches).
+   */
+  async requestBaseline(item: ItemRecord): Promise<void> {
+    const uid = item.uid;
+    const config = this.configForItem(item);
+    const key = baselineKey(item, config);
+    const cached = this.baselineViews.get(uid);
+    // An `"error"` view misses the cache like a `"loading"` one: the failure
+    // is transient, so the next expand retries it (the stale error stays
+    // VISIBLE for rendering — `baselineViewFor` still returns it — it just
+    // no longer short-circuits the fetch). The terminal states (`"no-git"` /
+    // `"no-match"` / `"ready"`) are authoritative under the current key.
+    if (
+      cached !== undefined &&
+      cached.key === key &&
+      cached.view.state !== "loading" &&
+      cached.view.state !== "error"
+    ) {
+      return;
+    }
+    const inflight = this.baselineRequests.get(uid);
+    if (inflight !== undefined) {
+      await inflight;
+      return;
+    }
+    const request = this.fetchBaseline(item, config, key);
+    this.baselineRequests.set(uid, request);
+    try {
+      await request;
+    } finally {
+      if (this.baselineRequests.get(uid) === request) this.baselineRequests.delete(uid);
+    }
+  }
+
+  /** The baseline fetch itself: loading view → backend request → validation →
+   *  stamp walk → final view. Never throws out of the controller. */
+  private async fetchBaseline(
+    item: ItemRecord,
+    config: DoorstopDocumentConfig,
+    key: string,
+  ): Promise<void> {
+    const uid = item.uid;
+    this.baselineViews.set(uid, { key, view: { state: "loading" } });
+    this.baselineInFlight = uid;
+    this.baselineVersion += 1;
+    this.requestUpdate();
+    try {
+      const backend = this.context.backend;
+      if (backend === undefined) {
+        // Defensive fallback only — the panel gates the section on
+        // `backendActive()`, so this branch is reachable solely by direct
+        // controller callers (tests, host wiring) on unpaired installs.
+        this.commitBaseline(uid, { key, view: { state: "no-git" } });
+        return;
+      }
+      const response = await backend.request(DOORSTOP_BASELINE_OPERATION, { uid, path: item.path });
+      if (!this.host.isConnected) return;
+      const parsed = parseDoorstopBaselineResponse(response);
+      if (!parsed.git) {
+        this.commitBaseline(uid, { key, view: { state: "no-git" } });
+        return;
+      }
+      const matched = matchBaselineCandidate(parsed.candidates, item, config);
+      if (matched === undefined) {
+        this.commitBaseline(uid, { key, view: { state: "no-match", source: parsed.source } });
+        return;
+      }
+      this.commitBaseline(uid, {
+        key,
+        view: { state: "ready", source: parsed.source, diff: diffItemFields(matched, item, config) },
+      });
+    } catch (error) {
+      if (!this.host.isConnected) return;
+      this.commitBaseline(uid, { key, view: { state: "error", errorMessage: formatUnknownError(error) } });
+    } finally {
+      // Clear the in-flight marker and notify even on the disconnected-early
+      // paths (the cache keeps its loading view; the next expand refetches).
+      if (this.baselineInFlight === uid) this.baselineInFlight = undefined;
+      this.baselineVersion += 1;
+      this.requestUpdate();
+    }
+  }
+
+  /** Commit one baseline view under its fetch key and notify. */
+  private commitBaseline(uid: string, entry: DoorstopBaselineCacheEntry): void {
+    this.baselineViews.set(uid, entry);
+    this.baselineVersion += 1;
+    this.requestUpdate();
+  }
+
+  /** Config of an item's own document — the state chain's `configForItem`
+   *  idiom (a missing config must not silently break stamps). The index
+   *  always carries it (the item came from that index), so the inert fallback
+   *  is defensive only. */
+  private configForItem(item: ItemRecord): DoorstopDocumentConfig {
+    const config = this.result?.index.byPrefix.get(item.documentPrefix);
+    if (config !== undefined) return config;
+    return {
+      directoryPath: "",
+      configPath: "",
+      prefix: item.documentPrefix,
+      digits: 0,
+      separator: "",
+      itemformat: "yaml",
+      extra: {},
+    };
+  }
+
   private requestUpdate(): void {
     // The `isConnected` guard lives HERE, not in the state mutators above:
     // beginRun/endRun/commitRun/dismissRun write their state unconditionally
@@ -286,6 +493,39 @@ export class DoorstopWorkspaceController implements ReactiveController {
     // the load reads use.
     if (this.host.isConnected) this.context.host.requestRender();
   }
+}
+
+/**
+ * The per-item baseline cache key (plan Phase D step 13): the item's stored
+ * reviewed fingerprint plus its CURRENT stamp. A re-review rewrites
+ * `reviewed`; any further edit changes the stamp — either way the key
+ * changes, so a stale cached view is never returned.
+ */
+function baselineKey(item: ItemRecord, config: DoorstopDocumentConfig): string {
+  return `${item.reviewed ?? ""}\u0000${computeItemStamp(item, config, true)}`;
+}
+
+/**
+ * Stamp-walk the baseline candidates NEWEST-first (the backend returns them
+ * in that order): parse each blob with the model chain's item parser under
+ * the item's document config and recompute the reviewed stamp
+ * (`computeItemStamp(item, config, true)`) until one matches
+ * `item.reviewed`. Returns the parsed "before" record of the first match, or
+ * `undefined` when none matches (history rewritten / the reviewed blob is
+ * not recoverable). `parseDoorstopItem` never throws on content problems — a
+ * malformed blob yields a default item whose stamp cannot match, so the walk
+ * simply continues to the next candidate.
+ */
+function matchBaselineCandidate(
+  candidates: readonly DoorstopBaselineCandidate[],
+  item: ItemRecord,
+  config: DoorstopDocumentConfig,
+): ItemRecord | undefined {
+  for (const candidate of candidates) {
+    const parsed = parseDoorstopItem(item.path, candidate.blob, config);
+    if (computeItemStamp(parsed.item, config, true) === item.reviewed) return parsed.item;
+  }
+  return undefined;
 }
 
 /**

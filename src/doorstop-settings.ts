@@ -46,6 +46,11 @@
 //     at 16 entries. Invalid entries are warned about and dropped; the
 //     extras beyond the cap are dropped with one warning. The discovery
 //     chain merges these with its built-in `.git`/`node_modules` skip set.
+//   - commitAfterReview: an opt-in boolean (default false) that makes the
+//     Review action record a pathspec-limited git commit of the item file
+//     after the review run succeeds (the review→commit pipeline, plan
+//     Phase C step 9). Wrong type → warning + default false — the decision
+//     is the user's, never coerced, and never made for them.
 // ---------------------------------------------------------------------------
 
 import { isValidPublishTarget } from "./doorstop-backend-contract.js";
@@ -77,6 +82,14 @@ export interface OpendoorSettings {
    *  built-in `.git`/`node_modules` skip set. Validated, deduplicated, and
    *  capped at {@link MAX_EXCLUDED_DIRECTORIES}. */
   excludedDirectories: readonly string[];
+  /** Opt-in review→commit pipeline (plan Phase C step 9): when true, a
+   *  backend Review run records a pathspec-limited git commit of the item
+   *  file with the conforming `doorstop: review <uid>` message after the
+   *  review succeeds — the historical anchor the "Changes since review"
+   *  diff recovers. Default false: absent/false reviews behave exactly as
+   *  today. The DECISION is the user's (this workspace file); the server
+   *  only executes it. */
+  commitAfterReview: boolean;
 }
 
 /** The out-of-the-box settings (no config file, or a file that failed to
@@ -87,6 +100,7 @@ export interface OpendoorSettings {
 export const DEFAULT_OPENDOOR_SETTINGS: Readonly<OpendoorSettings> = Object.freeze({
   publishTarget: DEFAULT_PUBLISH_TARGET,
   excludedDirectories: Object.freeze([]),
+  commitAfterReview: false,
 });
 
 /** Outcome of reading the workspace settings file. */
@@ -236,7 +250,24 @@ export function parseOpendoorSettings(value: unknown): OpendoorSettingsResult {
     }
   }
 
-  return { settings: { publishTarget, excludedDirectories }, diagnostics };
+  // commitAfterReview: an opt-in boolean (default false). A wrong type is
+  // warned about and falls back to the default — the flag is never coerced
+  // ("yes" strings must not silently become commits).
+  let commitAfterReview = false;
+  const rawCommit = value["commitAfterReview"];
+  if (rawCommit !== undefined) {
+    if (typeof rawCommit !== "boolean") {
+      diagnostics.push({
+        severity: "warning",
+        path: OPENDOOR_SETTINGS_PATH,
+        message: `${OPENDOOR_SETTINGS_PATH} "commitAfterReview" must be a boolean; using default false`,
+      });
+    } else {
+      commitAfterReview = rawCommit;
+    }
+  }
+
+  return { settings: { publishTarget, excludedDirectories, commitAfterReview }, diagnostics };
 }
 
 /** Validate the excluded-directory names: plain names only (no separators, no

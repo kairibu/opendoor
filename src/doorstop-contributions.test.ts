@@ -306,6 +306,9 @@ describe("panel render wiring", () => {
       "search",
       "lastRun",
       "runInProgress",
+      // Phase D step 15: the baseline-cache state the render wiring mirrors.
+      "baselineVersion",
+      "baselineInFlight",
     ];
     expect(bindingNames(updated)).toEqual(expectedNames);
     expect(updated.values).toHaveLength(expectedNames.length);
@@ -327,6 +330,11 @@ describe("panel render wiring", () => {
     expect(updated.values[10]).toBe(controller.lastRun);
     expect(updated.values[11]).toBe(controller.runInProgress);
     expect(updated.values[11]).toBe("Doorstop: validate");
+    // The baseline cache state mirrors as counters/flag (plain values).
+    expect(updated.values[12]).toBe(controller.baselineVersion);
+    expect(updated.values[12]).toBe(0);
+    expect(updated.values[13]).toBe(controller.baselineInFlight);
+    expect(updated.values[13]).toBeUndefined();
   });
 });
 

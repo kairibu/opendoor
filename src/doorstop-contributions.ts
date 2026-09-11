@@ -163,6 +163,8 @@ function renderDoorstopPanel(registry: DoorstopWorkspaceRegistry, context: Works
       .search=${controller.search}
       .lastRun=${controller.lastRun}
       .runInProgress=${controller.runInProgress}
+      .baselineVersion=${controller.baselineVersion}
+      .baselineInFlight=${controller.baselineInFlight}
     ></pi-web-opendoor-panel-body>
   `;
 }

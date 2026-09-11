@@ -130,7 +130,7 @@ describe("parseOpendoorSettingsText (JSON layer)", () => {
 describe("parseOpendoorSettings (validation)", () => {
   it("tolerates unknown keys silently (forward compatibility)", () => {
     const result = parseOpendoorSettings({ version: 1, futureKey: { anything: [1, 2, 3] }, publishTarget: "site" });
-    expect(result.settings).toEqual({ publishTarget: "site", excludedDirectories: [] });
+    expect(result.settings).toEqual({ publishTarget: "site", excludedDirectories: [], commitAfterReview: false });
     expect(result.diagnostics).toEqual([]);
   });
 
@@ -174,6 +174,27 @@ describe("parseOpendoorSettings (validation)", () => {
       const nonString = parseOpendoorSettings({ publishTarget: 42 });
       expect(nonString.settings.publishTarget).toBe(DEFAULT_PUBLISH_TARGET);
       expect(nonString.diagnostics[0]?.message).toContain("invalid \"publishTarget\"");
+    });
+  });
+
+  describe("commitAfterReview", () => {
+    it("accepts true and false, warning + default on any wrong type (plan step 19)", () => {
+      const enabled = parseOpendoorSettings({ commitAfterReview: true });
+      expect(enabled.settings.commitAfterReview).toBe(true);
+      expect(enabled.diagnostics).toEqual([]);
+      expect(parseOpendoorSettings({ commitAfterReview: false }).settings.commitAfterReview).toBe(false);
+      // Default when the key is absent (the read path's no-file default is
+      // pinned by the DEFAULT_OPENDOOR_SETTINGS equality assertions above).
+      expect(parseOpendoorSettings({}).settings.commitAfterReview).toBe(false);
+      // Wrong types warn and fall back — the flag is never coerced (a
+      // "yes" string must not silently become commits).
+      for (const bad of ["yes", 1, 0, null, [true]]) {
+        const result = parseOpendoorSettings({ commitAfterReview: bad });
+        expect(result.settings.commitAfterReview).toBe(false);
+        expect(result.diagnostics).toEqual([
+          { severity: WARNING, path: OPENDOOR_SETTINGS_PATH, message: expect.stringContaining("\"commitAfterReview\" must be a boolean") },
+        ]);
+      }
     });
   });
 

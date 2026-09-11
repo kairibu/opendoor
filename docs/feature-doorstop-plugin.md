@@ -68,8 +68,9 @@ needs:
   terminal with visible output (the same pattern the bundled
   **Workspace Tasks** plugin uses for `npm run dev`-style commands).
 - **Paired server module** (added post-v1, “Option 2”): a workspace provider
-  whose `probe` claims only projects with a root `.doorstop.yml`, serving a
-  `doorstop.run` backend operation. The host runs it inside sessiond via its
+  whose `probe` claims only projects with a root `.doorstop.yml`, serving the
+  `doorstop.run` and `doorstop.item-baseline` backend operations. The host
+  runs it inside sessiond via its
   bounded `execFile()` helper (`cwd` = the workspace path, output/timeout
   bounded); the browser reaches it through `context.backend.request()`.
   Server APIs are imported type-only from `@jmfederico/pi-web/server-plugin-api`.
@@ -108,7 +109,9 @@ architecture with different discovery/parsing:
    sense in a UI: Validate, Publish, Add item, Link items, Unlink, Clear
    suspect links, Review item — each running the corresponding `doorstop` CLI
    command in a workspace terminal so output, and any VCS effects, stay
-   visible and auditable.
+   visible and auditable; with `commitAfterReview` enabled (paired), Review
+   also *creates* the VCS effect itself — the opt-in pathspec-limited review
+   commit (§8).
 4. Support the agent workflow: insert item text, UID, links, and findings into
    the prompt editor with ready-made task prompts.
 5. Run the CLI through a **paired server module** when available (plan:
@@ -120,7 +123,8 @@ architecture with different discovery/parsing:
 
 - **No in-browser editing of requirement files.** Mutating requirement YAML is
   delegated to the `doorstop` CLI (which handles numbering, fingerprints, and
-  formatting) or to the agent via prompts; the panel itself is read-only.
+  formatting) or to the agent via prompts; the panel itself is read-only
+  (opt-in review commits aside).
 - **No re-implementation of full Doorstop validation.** The plugin computes
   the cheap, display-relevant state (reviewed/suspect) itself for instant UI,
   but *authoritative* validation is `doorstop` run via the backend (paired)
@@ -147,7 +151,8 @@ architecture with different discovery/parsing:
 │   ├─ doorstop-prompts.ts     prompt builders for the action palette       │
 │   └─ doorstop-panel-elements.ts  Lit elements + the runDoorstop dispatcher │
 └───────────────────────────────────────────────────────────────────────────┘
-   │ context.files (read)         │ context.backend.request("doorstop.run") │
+   │ context.files (read)         │ backend.request("doorstop.run" /        │
+   │                              │   "doorstop.item-baseline")             │
    ▼                              ▼ (paired; falls back to terminal)       │
  workspace *.yml/*.md        POST /api/plugin-backends/opendoor/…           │
                              ┌────────────── sessiond ─────────────┐       │
@@ -168,23 +173,55 @@ architecture with different discovery/parsing:
   `node:fs/promises` check for `<project>/.doorstop.yml` and claims ONLY
   those projects (never rejects, no exec); `list` serves the project
   directory as the single main workspace; the `request` method enables the
-  browser-side `backend` helper. Non-doorstop projects are untouched (Git
-  provider keeps them).
+  browser-side `backend` helper and DISPATCHES on the operation name:
+  `doorstop.run` → the run backend, `doorstop.item-baseline` → the read-only
+  baseline backend, anything else → the unsupported-operation error.
+  Non-doorstop projects are untouched (Git provider keeps them).
 - **Ownership trade-off (accepted):** doorstop projects lose the fallback
   Git provider's backend features (git status/diff panel data) while
   opendoor claims them — the §9 decision, made consciously.
-- `request("doorstop.run", input)` validates the structured input BEFORE
-  exec (unknown op / invalid UID / invalid target never reach the CLI),
-  builds argv server-side only (no shell, no quoting), and runs the CLI via
+- The two backend operations validate the structured input BEFORE exec
+  (unknown op / invalid UID / invalid target / invalid item path never reach
+  the CLI), build argv server-side only (no shell, no quoting), and run via
   the host `execFile()` with `cwd = request.workspace.path`, `timeoutMs`
   clamped to 8 500 ms (headroom under the host's 10 s provider-callback
   bound), the per-invocation signal forwarded, and per-workspace
-  serialization (no two doorstop runs overlap in one checkout).
+  serialization (no two plugin runs overlap in one checkout):
+  - `request("doorstop.run", input)` — one Doorstop CLI invocation. A review
+    request carrying the opt-in `commit: true` flag (the workspace setting
+    `commitAfterReview`) is the **review→commit pipeline**: `doorstop review
+    <uid>` runs first and, ONLY on a clean exit, the backend records a
+    pathspec-limited git commit of the item file with the conforming message
+    `doorstop: review <uid>` (git `add` + `commit -m … -- <path>`, every
+    pathspec literalized with `:(literal)`; the whole pipeline shares one
+    deadline budget under the host's 10 s callback bound). The response's
+    optional `commit` outcome narrates the result (`committed` + short sha /
+    `clean` / `skipped` / `failed` + bounded stderr) — narration, never
+    infrastructure error.
+  - `request("doorstop.item-baseline", { uid, path })` — read-only recovery
+    of the reviewed version of an item file: `git log --grep` on the pinned
+    `^doorstop: review <uid>$` message (the uid regex-escaped before
+    interpolation; a generic history walk is the fallback when the message
+    was rewritten/squashed away), then `git show <sha>:<path>` per commit,
+    newest-first, blobs capped at 256 KiB. Returns `{ git, source,
+    candidates }`; the browser parses each blob and stamp-matches it against
+    the item's stored `reviewed` fingerprint.
+  Both operations pass item paths to git as pathspecs literalized with
+  `:(literal)` — magic prefixes and glob characters can never widen the
+  matched set beyond the one item file — and the baseline fetch translates
+  the workspace-relative path to a repo-root tree path via
+  `git rev-parse --show-prefix`, so nested workspaces resolve candidates too.
 - The response (exitCode/signal nullable, stdout/stderr with truncation
   flags, durationMs) is committed to the controller's `lastRun` state,
   rendered as the **Last run** section (status badge ok/failed/killed/error,
   duration, dismiss, `<pre>` output), and triggers `invalidate()` (rescan) —
   §9.3's "no polling" idiom, now with captured output instead of none.
+  A review response carrying the opt-in `commit` outcome adds one narration
+  line to the pane — `commit: <short-sha>` / `commit: clean (already
+  committed)` / `commit: skipped (not a git repository | item file not found |
+  review failed | deadline)` / `commit: failed — <stderr excerpt>` — and the
+  outcome never flips the run's ok/failed badge (the review itself
+  succeeded).
 - Mutating operations fall back to `terminal.runCommand()` (same shell
   commands as before, `open: false`, rescan on the completed handle) whenever
   the backend is absent — unpaired installs keep working unchanged.
@@ -217,6 +254,15 @@ architecture with different discovery/parsing:
 | **unknown link** | link target UID not in index | tree index |
 | **missing reference** | `ref`/`references` path not found among workspace files | discovery index (best effort; `doorstop validate` is authoritative) |
 
+With the paired backend, **unreviewed changes** is optionally resolvable to a
+concrete diff: the detail pane's **Changes since review** section (§7.1)
+recovers the reviewed version of the item file from git history — the
+`doorstop: review <uid>` commit when the opt-in `commitAfterReview` setting
+recorded one, otherwise a generic history walk — and diffs it against the
+current item. A never-reviewed item (`reviewed: null`) has no baseline to
+recover, and a rewritten/squashed history may find none either (the section
+says so honestly).
+
 The fingerprint function must reproduce Doorstop's `Item.stamp()` exactly:
 SHA-256 over `[uid, text, ref, references?, link UIDs…, extended reviewed
 attrs…]` serialized as Doorstop's `Stamp` does, URL-safe Base64. This is the
@@ -246,12 +292,30 @@ OpenSE split (item list above, detail below):
 3. **Item detail pane (bottom)** — for the selected item:
    - UID, level, header, full `text` (rendered as sanitized markdown), active/
      normative/derived flags, extended attributes table.
+   - **Changes since review** (collapsible, paired installs only) — for an
+     item with unreviewed changes and a stored `reviewed` fingerprint:
+     expanding lazily fetches the reviewed version from the backend
+     (`doorstop.item-baseline`), stamp-matches it against `reviewed`, and
+     renders a text line diff (LCS, `+`/`−` rows) plus before→after chips
+     for `ref` / `references` / link UIDs / changed extended reviewed
+     attributes, labeled with the history source (review commit vs. history
+     walk). Honest notices when no baseline is recoverable: "No git
+     history — previous version unavailable", "Could not locate the
+     reviewed version (history may have been rewritten)". The view is cached
+     per item under a key of `reviewed` + current stamp (a re-review or
+     further edit invalidates it naturally); a rejected fetch is transient
+     and retried on the next expand; the `<details>` node is keyed by UID
+     with a post-render self-heal hook, so re-rendering the pane for an
+     already-open item still triggers the lazy fetch. Texts exceeding the
+     line-diff cell budget (250 000 LCS cells) render a "text changed — too
+     large to diff" notice instead of rows.
    - **Links out** (parents): UID + suspect/ok state + link fingerprint
      recorded vs. current; clickable to navigate.
    - **Links in** (children): computed reverse links; clickable.
    - **References**: resolved file path (linkable into Files via prompt
      mention or path display), or "not found" state.
-   - **Action row** for the item: *Review*, *Clear suspect links*, *Edit*
+   - **Action row** for the item: *Review* (opt-in review→commit when
+     `commitAfterReview` is enabled — §8), *Clear suspect links*, *Edit*
      (`doorstop edit`), *Unlink…*, plus a prompt-menu (§7.3).
    - **Local findings** for this item (plugin-computed, labeled as such).
 
@@ -316,9 +380,25 @@ Item-scoped operations live in the panel (they need a selected item), not the
 palette: *Add item* (`doorstop add <PREFIX>`), *Link…* (two-UID picker →
 `doorstop link CHILD PARENT`), *Unlink*, *Clear suspect links*
 (`doorstop clear UID [PARENT…]`), *Review* (`doorstop review UID`), *Edit*
-(`doorstop edit UID`). Each runs in a named workspace terminal via
-`terminal.runCommand()` with `metadata: { "opendoor.op": "link" }` so runs are
-identifiable; after completion the panel re-scans and re-renders.
+(`doorstop edit UID`). Paired, each runs through the backend
+(`backend.request("doorstop.run", …)`, argv built server-side) with its
+captured output in the Last run pane; unpaired, the same command runs in a
+named workspace terminal via `terminal.runCommand()` with
+`metadata: { "opendoor.op": … }` so runs are identifiable. After completion
+the panel re-scans and re-renders.
+
+When the workspace setting `commitAfterReview` is enabled (default **false**)
+and the workspace is paired, *Review* is the **review→commit pipeline**: after
+`doorstop review <uid>` exits 0, the backend records a pathspec-limited git
+commit of the item file with the conforming message `doorstop: review <uid>`
+(git `add` + `commit -m … -- <path>` — other staged/unstaged work is left
+untouched). The Last run pane adds one narration line (`commit: <short-sha>` /
+`commit: clean (already committed)` / `commit: skipped (not a git repository |
+item file not found | review failed | deadline)` / `commit: failed — <stderr
+excerpt>`); a failed or skipped commit never changes the review run's ok/failed
+badge. Committing user content is strictly opt-in — under the default, Review
+behaves exactly as before, and the conforming message is what the "Changes
+since review" baseline (§7.1) greps for.
 
 `enabled`/`disabledReason` on palette actions hide/disable Doorstop operations
 when discovery found no documents, with a reason string ("no Doorstop documents
@@ -400,8 +480,10 @@ manifest verified against pi-web's plugin discovery code):
 
 ## 11. Milestones
 
-Status: **M1–M5 shipped**, plus the paired server plugin (M6, Option 2 —
-plan: `docs/plan-opendoor-server-plugin.md`). 319 unit tests green; see the
+Status: **M1–M5 shipped**, plus the paired server plugin and its
+review-baseline/diff extension (M6, Option 2 — plans:
+`docs/plan-opendoor-server-plugin.md`,
+`docs/plan-review-baseline-and-diff.md`). 400 unit tests green; see the
 repository README for what shipped. Git change highlighting (M7) remains
 optional future work.
 1. **M1 — Skeleton + discovery + tree view.** Plugin loads; documents and
@@ -413,12 +495,15 @@ optional future work.
 4. **M4 — Agent prompts.** Prompt builders + detail-pane menu; prompt tests.
 5. **M5 — Polish.** Findings view, filters, markdown itemformat support,
    settings (publish target, excluded dirs), documentation.
-6. **M6 — Paired server plugin.** Shared `doorstop.run` contract; server
-   entry (workspace provider + `execFile` backend, per-workspace
-   serialization, 8.5 s clamped timeout); paired packaging
-   (`browserRoot: "browser"` + `serverModule`); browser dispatcher with
-   terminal fallback; Last run pane (status, output, truncation/killed
-   notices, dismiss); host settings `{ doorstopPath, timeoutMs }`.
+6. **M6 — Paired server plugin + review baseline.** Shared `doorstop.run` /
+   `doorstop.item-baseline` contract; server entry (workspace provider +
+   `execFile` backend, per-workspace serialization, 8.5 s clamped timeout);
+   paired packaging (`browserRoot: "browser"` + `serverModule`); browser
+   dispatcher with terminal fallback; Last run pane (status, output,
+   truncation/killed notices, dismiss); host settings `{ doorstopPath,
+   gitPath, timeoutMs }`; the review-baseline/diff extension (opt-in
+   `commitAfterReview` review→commit + "Changes since review" diff; plan:
+   `docs/plan-review-baseline-and-diff.md`).
 7. **M7 (optional) — Git change highlighting.** Overlay working-tree git
    state onto items; see §12.
 
@@ -428,6 +513,20 @@ Status: optional, deferred. Note: with the M6 paired server plugin shipped,
 opendoor is no longer browser-only — a doorstop project is claimed by the
 opendoor provider (not Git), so any git change highlighting must work in that
 ownership context too (or wait for pi-web to allow non-owning backends).
+
+**Shipped: the reviewed-baseline half needs none of the parsing below.** The
+review→commit pipeline and the `doorstop.item-baseline` backend operation
+(plan: `docs/plan-review-baseline-and-diff.md`) recover the reviewed item
+snapshot **server-side, where git lives**: the pinned
+`doorstop: review <uid>` commit message is a cheap `git log --grep` anchor,
+with a generic history walk as fallback for rewritten/squashed history, and
+the browser stamp-matches the returned blobs against the item's `reviewed`
+fingerprint. "What changed since the last review" is therefore diffable
+without any of the `.git/index` / object-database parsing sketched below —
+this commit message is the historical anchor that deferred browser-side git
+parsing could not provide, so that half of this section is obsolete for the
+review-baseline feature. The index-parsing scheme below remains useful only
+for the remaining *worktree-vs-index* half (uncommitted working-tree state).
 
 Because a Doorstop UID is its file name, "changed requirement" maps to
 "changed file", and git state can be obtained entirely in the browser.
