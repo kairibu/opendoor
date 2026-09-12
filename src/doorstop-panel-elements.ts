@@ -1696,6 +1696,7 @@ function defineDoorstopPanelBodyElement(): void {
         // real host) the workspace label is the fallback.
         const projectPath = this.context?.workspace.path ?? "";
         const projectLabel = projectPath === "" ? "Doorstop" : projectPath.split("/").filter(Boolean).pop() ?? projectPath;
+        //const projectLabel = projectPath;
         return html`
           <section class="doorstop-project-actions">
             <strong class="doorstop-title" title=${projectPath === "" ? nothing : projectPath}>${doorstopIconSvg}${projectLabel}</strong>
