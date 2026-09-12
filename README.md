@@ -139,8 +139,9 @@ restart to take effect). Parsed leniently; wrong types fall back to defaults:
 The right-hand panel body is divided into five vertical sections, top to
 bottom:
 
-1. **`project-actions`** — the panel title, the **Items / Findings** toggle,
-   and the project-scoped buttons **Refresh**, **Run validation**, and
+1. **`project-actions`** — the project heading (the workspace's root path,
+   basename shown, full path on hover), the **Items / Findings** toggle, and
+   the project-scoped buttons **Refresh**, **Run validation**, and
    **Publish HTML**.
 2. **`item-list`** — a filters row (document chips, state filter, search)
    above the item rows.

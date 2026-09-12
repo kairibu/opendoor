@@ -646,6 +646,19 @@ describe("DoorstopPanelBodyElement (layout sections: actions / filters / palette
     expect(root.querySelector(".doorstop-last-run")).not.toBeNull();
   });
 
+  it("shows the project path as the project-actions heading", async () => {
+    const { body } = await mountBody(() => Promise.resolve(makeTreeResult()));
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+    // The heading is the workspace path's basename ("repo" for /repo); the
+    // full path is the tooltip. Without a bound context the static
+    // "Doorstop" label is the fallback.
+    const title = root.querySelector(".doorstop-title");
+    expect(title).not.toBeNull();
+    expect(title?.textContent?.trim()).toBe("repo");
+    expect(title?.getAttribute("title")).toBe("/repo");
+  });
+
   it("renders the document/state/search filters in their own row above the split", async () => {
     const { body } = await mountBody(() => Promise.resolve(makeTreeResult()));
     const root = body.shadowRoot;

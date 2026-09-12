@@ -1689,9 +1689,16 @@ function defineDoorstopPanelBodyElement(): void {
        *  item list instead (region 2's own affordances). */
       private renderProjectActions(): TemplateResult {
         const publishTarget = doorstopPublishTarget(this.result);
+        // The heading is the project path (the host workspace's root directory)
+        // rather than the static "Doorstop" label — it identifies WHICH tree the
+        // panel is acting on. The basename is displayed and the full path is
+        // kept as the tooltip (title); without a bound context (never in the
+        // real host) the workspace label is the fallback.
+        const projectPath = this.context?.workspace.path ?? "";
+        const projectLabel = projectPath === "" ? "Doorstop" : projectPath.split("/").filter(Boolean).pop() ?? projectPath;
         return html`
           <section class="doorstop-project-actions">
-            <strong class="doorstop-title">${doorstopIconSvg}Doorstop</strong>
+            <strong class="doorstop-title" title=${projectPath === "" ? nothing : projectPath}>${doorstopIconSvg}${projectLabel}</strong>
             ${this.renderViewToggle()}
             <div class="doorstop-toolbar-actions">
               ${this.stale ? html`<button type="button" class="doorstop-stale" title="Doorstop ran or files changed behind the panel — click to rescan" @click=${this.onRefreshClick}>stale — refresh</button>` : nothing}
