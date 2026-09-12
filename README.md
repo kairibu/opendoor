@@ -8,8 +8,8 @@ links), validation findings, and one-click `doorstop` CLI actions (validate,
 publish, add/link/unlink, clear suspect links, review), plus agent prompts
 that insert requirement context into the session. When paired, the plugin's
 server entry runs the CLI headlessly and the captured output is displayed in
-the panel itself (a **Last run** section); when unpaired, every action falls
-back to the workspace terminal. The paired backend also recovers the
+the panel itself (a **status bar** at the bottom); when unpaired, every action
+falls back to the workspace terminal. The paired backend also recovers the
 reviewed version of an item file from git history, so the item detail pane
 can show a **Changes since review** diff — and Review can optionally record
 a pathspec-limited review commit (`commitAfterReview`).
@@ -27,12 +27,16 @@ The plugin is fully wired and green, in two halves:
 
   - **panel** `workspace.doorstop` (title **Requirements**, order 60) — the Lit
     body element `<pi-web-opendoor-panel-body>`, driven by the per-workspace
-    controller registry (`src/doorstop-panel.ts`): document tree, item list
-    with state chips, item detail pane (links in/out, references, extended
-    attributes, collapsible **Changes since review** diff, per-item actions),
-    findings sub-view, ask-agent menu, and the **Last run** section (status
-    badge, duration, dismissable stdout/stderr of the latest CLI run, plus
-    the review-commit outcome line when the review requested a commit);
+    controller registry (`src/doorstop-panel.ts`): five vertical sections —
+    `project-actions` (title, Items/Findings toggle, Refresh / Run validation
+    / Publish HTML), `item-list` (filters row + item rows with state chips),
+    `item-details` (links in/out, references, extended attributes,
+    collapsible **Changes since review** diff), `item-action-palette`
+    (Review / Clear suspect links / Edit / Link / Unlink / Ask-agent menu,
+    sized to the host prompt footer), and `status-bar` (status badge,
+    duration, Dismiss button, and the auto-expanding stdout/stderr of the
+    latest CLI run, plus the review-commit outcome line when the review
+    requested a commit);
   - **actions** `view.doorstop` (mod+7) and `workspace.refresh-doorstop`
     (mod+shift+d);
   - **label** `doorstop-status` — the informational requirement-health counts
@@ -57,9 +61,9 @@ is opendoor-owned with an active backend, the action sends a structured
 request via `context.backend.request("doorstop.run", …)` (the review-commit
 flag rides along when the setting is enabled; the "Changes since review"
 section fetches via `context.backend.request("doorstop.item-baseline", …)`)
-and the captured output appears in the panel's Last run section; the panel
-auto-rescans on completion. When the backend is absent (unpaired install, or
-a workspace the provider does not own), the action falls back to
+and the captured output appears in the panel's status bar (auto-expanded);
+the panel auto-rescans on completion. When the backend is absent (unpaired
+install, or a workspace the provider does not own), the action falls back to
 `terminal.runCommand()` with the same shell command, so output stays visible
 and auditable in the terminal.
 
@@ -102,7 +106,7 @@ bundled workspace-tasks plugin. The *server* entry's host-scoped knobs
   followed by a pathspec-limited git commit of the item file with the
   conforming message `doorstop: review <uid>` (git `add` then
   `commit -m … -- <path>` — other staged/unstaged work is left untouched).
-  Committing user content is strictly opt-in, and the Last run section
+  Committing user content is strictly opt-in, and the status bar
   narrates every commit outcome (`commit: <sha>` / `clean` (already
   committed) / `skipped` (not a git repository | item file not found |
   review failed | deadline) / `failed` — `<stderr>`). Under the default,
@@ -132,18 +136,40 @@ restart to take effect). Parsed leniently; wrong types fall back to defaults:
 
 ## Using the panel
 
-- **Items / Findings toggle** in the toolbar. Findings lists all
+The right-hand panel body is divided into five vertical sections, top to
+bottom:
+
+1. **`project-actions`** — the panel title, the **Items / Findings** toggle,
+   and the project-scoped buttons **Refresh**, **Run validation**, and
+   **Publish HTML**.
+2. **`item-list`** — a filters row (document chips, state filter, search)
+   above the item rows.
+3. **`item-details`** — the selected item's full detail pane (unchanged).
+4. **`item-action-palette`** — the item actions (**Review**, **Clear suspect
+   links**, **Edit**, **Unlink**/**Link** + target UID inputs, **Ask agent**
+   menu), moved out of the detail pane so the row spans the panel at the same
+   height as the center-panel chat prompt footer. A muted "Select an item…"
+   placeholder keeps the palette at constant height while nothing is
+   selected; the palette is hidden in the Findings view.
+5. **`status-bar`** — the run status row (badge, duration, **Dismiss**),
+   sized like the center-panel status bar, plus the captured output.
+
+- **Items / Findings toggle** in the project-actions row. Findings lists all
   plugin-computed findings and diagnostics (error > warning > info); a
   finding's UID navigates back to the item. Findings are informational — run
-  the toolbar **Run validation** button for the authoritative `doorstop`
-  output (paired: rendered in the panel's Last run section; unpaired: in the
-  workspace terminal).
-- **Last run** section: after a paired action completes, the pane shows the
-  run's status (ok / failed / killed / error), duration, and captured
-  stdout/stderr, and the panel re-scans automatically. Runs are killed at the
-  exec timeout (partial output preserved and shown); prefer the workspace
-  terminal for long publishes. When a review ran with `commitAfterReview`
-  enabled, the pane adds a `commit: …` narration line (`commit: <short-sha>` /
+  the **Run validation** button for the authoritative `doorstop` output
+  (paired: rendered in the panel's status bar; unpaired: in the workspace
+  terminal).
+- **Status bar**: after a paired action completes, the bottom bar shows the
+  run's status (ok / failed / killed / error) and duration, and the panel
+  re-scans automatically. The captured stdout/stderr *auto-expands* whenever
+  a run produces a message to show (any output, an error message, or a
+  review-commit line) — no interaction needed; a run with nothing to display
+  stays collapsed to its status row. **Dismiss** clears the run and collapses
+  the bar; the next run with output re-expands it. Runs killed at the exec
+  timeout preserve and show partial output; prefer the workspace terminal for
+  long publishes. When a review ran with `commitAfterReview` enabled, the bar
+  adds a `commit: …` narration line (`commit: <short-sha>` /
   `clean (already committed)` / `skipped (not a git repository | item file
   not found | review failed | deadline)` / `failed — <stderr excerpt>`); a
   failed or skipped commit never changes the run's ok/failed badge.
@@ -162,7 +188,7 @@ restart to take effect). Parsed leniently; wrong types fall back to defaults:
   `doorstop: review <uid>` commit message is the historical anchor that the
   deferred browser-side git parsing of feature spec §12 could not give — the
   recovery runs server-side, where git lives.
-- **Item actions** (detail pane): Review (`doorstop review UID` — with
+- **Item actions** (item-action-palette): Review (`doorstop review UID` — with
   `commitAfterReview` enabled and paired, followed by the pathspec-limited
   review commit), Clear suspect links (`doorstop clear UID [parents…]`),
   Edit (`doorstop edit UID`), Link/Unlink via inline UID input (validated

@@ -5,32 +5,41 @@
 // state-flow: controller fields mirrored into reactive properties by the
 // host render function, controller passed for *actions*).
 //
-// Layout follows docs/feature-doorstop-plugin.md §7.1 — three regions in
+// Layout (plan-layout-improvement.md): five named vertical sections in
 // host-chrome classes (the git/opense panel conventions — toolbar/viewer/
 // empty/muted), all `doorstop-*`-prefixed like git's `git-*`/opense's
 // `opense-*`. Regions 2–3 stack vertically like the opense split
 // (item list above, detail below):
 //
-//   1. Toolbar — the document tree as chips (`REQ ← [TST, LLT]` via each
-//      config's `parentPrefix`; item count + aggregate state dots; the
-//      "All" chip clears the document filter), state-filter dropdown, search
-//      input, Refresh (controller.invalidate), Run validation and Publish
+//   1. project-actions — the panel title, the Items / Findings toggle, the
+//      stale and skipped-confirmation notices, and the project-scoped
+//      buttons Refresh (controller.invalidate), Run validation and Publish
 //      HTML (backend when the workspace is opendoor-owned with an active
-//      backend, terminal otherwise), and the stale notice.
-//   2. Item list (top pane) — level/uid/header-excerpt rows with
-//      per-ItemStateKey chips; click selects the item. Diagnostics
-//      (truncated/binary/parse errors) surface as an inline warning strip
-//      at the top of the list pane.
-//   3. Detail pane (below) — uid/level/header, the item text as ESCAPED
-//      text (v1 deliberately renders no markdown — injection-safe by
-//      construction), flags, links out (suspect/ok + recorded vs current
-//      fingerprint shorts), links in, references, extended attributes as
-//      JSON-ish text, local findings, and the action row: Review / Clear
-//      suspect links / Edit / Unlink / Link / Ask-agent menu.
-//   4. Last run (bottom) — the panel's view of the latest run's stdout/
-//      stderr/status/duration (driven by `controller.lastRun`, plan Phase D
-//      step 8), with a dismiss button; action buttons are disabled while
-//      `controller.runInProgress` is set.
+//      backend, terminal otherwise).
+//   2. item-list — a `doorstop-list-filters` row (the document tree as
+//      chips (`REQ ← [TST, LLT]` via each config's `parentPrefix`; item
+//      count + aggregate state dots; the "All" chip clears the document
+//      filter), the state-filter dropdown, and the search input) above the
+//      list pane: level/uid/header-excerpt rows with per-ItemStateKey
+//      chips; click selects the item. Diagnostics (truncated/binary/parse
+//      errors) surface as an inline warning strip at the top of the list
+//      pane.
+//   3. item-details — the pane below the list: uid/level/header, the item
+//      text as ESCAPED text (v1 deliberately renders no markdown —
+//      injection-safe by construction), flags, links out (suspect/ok +
+//      recorded vs current fingerprint shorts), links in, references,
+//      extended attributes as JSON-ish text, and local findings.
+//   4. item-action-palette — the Review / Clear suspect links / Edit /
+//      Unlink / Link + target input / target-error alert / Ask-agent menu
+//      row, moved OUT of the detail pane so it spans the panel at a fixed
+//      height matching the host prompt footer; a muted placeholder row
+//      while nothing is selected; absent in the findings view.
+//   5. status-bar — the panel's view of the latest run's status/duration/
+//      output (driven by `controller.lastRun`, plan Phase D step 8) with a
+//      dismiss button; the output body AUTO-EXPANDS whenever a run produces
+//      a message to show, and Dismiss clears the run + collapses the bar.
+//
+// Action buttons are disabled while `controller.runInProgress` is set.
 //
 // Every run dispatches through `runDoorstop` (Phase D step 9) with TWO
 // paths. When the workspace is owned by the opendoor provider with an
@@ -331,6 +340,19 @@ export function commitOutcomeText(outcome: DoorstopCommitOutcome): string {
   }
 }
 
+/** Whether a run produced anything the status bar should display: captured
+ *  stdout/stderr, a backend error message, or a review-commit narration.
+ *  Drives the status bar's content-driven AUTO-EXPANSION — a run with no
+ *  output at all stays collapsed to its status row only. */
+export function lastRunHasMessage(lastRun: DoorstopLastRunView): boolean {
+  return (
+    lastRun.stdout !== "" ||
+    lastRun.stderr !== "" ||
+    (lastRun.errorMessage ?? "") !== "" ||
+    lastRun.commit !== undefined
+  );
+}
+
 /** Characters a publish target may contain and stay inert in any shell: the
  *  same `[\w.-]` token alphabet as the UID guard below plus `/` for path
  *  separators (the default `./public` is such a token). A target containing
@@ -487,7 +509,7 @@ export interface DoorstopPanelBodyElement extends LitElement {
   stateFilter: ItemStateKey | undefined;
   search: string;
   /** Mirrored from the controller: the latest doorstop run's view record
-   *  (renders the "Last run" section). */
+   *  (renders the bottom status bar's badge and output body). */
   lastRun: DoorstopLastRunView | undefined;
   /** Mirrored from the controller: title of the run in flight (disables the
    *  action buttons). */
@@ -565,7 +587,7 @@ function defineDoorstopPanelBodyElement(): void {
       search = "";
 
       /** Latest doorstop run's view record, mirrored from the controller
-       *  (renders the "Last run" section). */
+       *  (renders the bottom status bar). */
       @property({ attribute: false })
       lastRun: DoorstopLastRunView | undefined;
 
@@ -606,6 +628,17 @@ function defineDoorstopPanelBodyElement(): void {
        *  render (module-level type comment documents this). */
       @state()
       private view: DoorstopPanelView = "items";
+
+      /** Whether the status bar's output body is expanded. Content-driven:
+       *  auto-set when a run produces a message to show; Dismiss collapses it.
+       *  Element-local @state — the controller has no expansion concept. */
+      @state()
+      private statusExpanded = false;
+
+      /** The lastRun view object that already drove an expansion decision, so
+       *  each NEW run re-triggers the auto-expansion (but a re-render of the
+       *  same run does not). Non-reactive; element-local. */
+      private lastExpandedRun: DoorstopLastRunView | undefined;
 
       /** Inline target inputs of the Link/Unlink actions. Values stay
        *  uncontrolled (typed by the user; cleared after a run). */
@@ -664,14 +697,25 @@ function defineDoorstopPanelBodyElement(): void {
           color: var(--pi-muted);
         }
 
-        /* --- toolbar (region 1) --- */
-        .doorstop-toolbar {
+        /* --- project actions (region 1) --- */
+        .doorstop-project-actions {
           flex: 0 0 auto;
           display: flex;
           flex-wrap: wrap;
           align-items: center;
           gap: 8px;
           padding: 8px;
+          border-bottom: 1px solid var(--pi-border-muted);
+        }
+
+        /* --- list filters (above the item list, inside the viewer) --- */
+        .doorstop-list-filters {
+          flex: 0 0 auto;
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          gap: 8px;
+          padding: 6px 8px;
           border-bottom: 1px solid var(--pi-border-muted);
         }
 
@@ -775,11 +819,13 @@ function defineDoorstopPanelBodyElement(): void {
           color: var(--pi-accent);
         }
 
-        /* --- viewer (region 2 + 3) --- */
+        /* --- viewer (regions 2 + 3; the filters row and split stack) --- */
         .doorstop-viewer {
           flex: 1 1 auto;
           min-height: 0;
-          overflow: auto;
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
         }
 
         .doorstop-standalone {
@@ -850,7 +896,8 @@ function defineDoorstopPanelBodyElement(): void {
         }
 
         .doorstop-split {
-          height: 100%;
+          flex: 1 1 auto;
+          min-height: 0;
           display: grid;
           grid-template-rows: minmax(110px, 40%) minmax(0, 1fr);
         }
@@ -877,10 +924,6 @@ function defineDoorstopPanelBodyElement(): void {
           flex: 1 1 auto;
           min-height: 0;
           overflow: auto;
-        }
-
-        .doorstop-detail-pane .doorstop-actions {
-          flex: 0 0 auto;
         }
 
         .doorstop-items {
@@ -1243,14 +1286,37 @@ function defineDoorstopPanelBodyElement(): void {
           font-weight: 600;
         }
 
-        /* --- action row --- */
-        .doorstop-actions {
+        /* --- item action palette (region 4), sized to the prompt footer --- */
+        .doorstop-action-palette {
+          flex: 0 0 auto;
           display: flex;
           flex-wrap: wrap;
           align-items: center;
-          gap: 6px;
-          border-top: 1px solid var(--pi-border-muted);
-          padding-top: 8px;
+          gap: 8px;
+          padding: 12px;
+          border-top: 1px solid var(--pi-border);
+        }
+
+        .doorstop-action-palette button {
+          min-height: 36px;
+          padding: 7px 9px;
+        }
+
+        /* The Ask-agent dropdown items keep their compact sizing: the parity
+           rule above has higher specificity (0,1,1) than the menu-item rule
+           (0,1,0), so without this override the popover rows would become
+           tall palette buttons. The Unlink/Link buttons inside the op group
+           deliberately keep the palette size — they are primary actions in
+           the row, not menu rows. */
+        .doorstop-action-palette .doorstop-menu-item {
+          min-height: auto;
+          padding: 5px 8px;
+        }
+
+        .doorstop-palette-placeholder {
+          min-height: 36px;
+          display: inline-flex;
+          align-items: center;
         }
 
         .doorstop-op {
@@ -1301,6 +1367,9 @@ function defineDoorstopPanelBodyElement(): void {
 
         /* --- findings view (spec §7.2) --- */
         .doorstop-findings-view {
+          flex: 1 1 auto;
+          min-height: 0;
+          overflow: auto;
           padding: 10px 12px;
           display: grid;
           gap: 8px;
@@ -1393,6 +1462,7 @@ function defineDoorstopPanelBodyElement(): void {
           border-radius: 8px;
           color: var(--pi-muted);
           padding: 12px;
+          overflow: auto;
         }
 
         .doorstop-empty p {
@@ -1403,23 +1473,46 @@ function defineDoorstopPanelBodyElement(): void {
           margin-top: 6px;
         }
 
-        /* --- last run (region 4) --- */
-        .doorstop-last-run {
+        /* --- status bar (region 5), sized to the host center status bar --- */
+        .doorstop-status-bar {
           flex: 0 0 auto;
+          display: flex;
+          flex-direction: column;
+          min-width: 0;
+          /* Cap the whole bar at 38% of the panel (the pre-improvement cap),
+             not 38vh: on a short viewport with a tall side panel a viewport
+             unit can dwarf the panel. The cap cannot live on the body div
+             (.doorstop-last-run) — its containing block (this bar) is
+             content-sized, so a percentage max-height there would be treated
+             as none — so the bar caps itself and the body shrinks (and
+             scrolls) below it. */
           max-height: 38%;
-          overflow: auto;
-          margin: 8px 8px 8px;
-          padding: 8px 10px;
-          border: 1px solid var(--pi-border-muted);
-          border-radius: 8px;
+          border-top: 1px solid var(--pi-border);
           background: var(--pi-bg);
+          color: var(--pi-muted);
+          font: 12px system-ui, sans-serif;
         }
 
-        .doorstop-last-run-head {
+        .doorstop-status-bar-row {
+          flex: 0 0 auto; /* the status row never collapses under the body cap */
           display: flex;
           align-items: center;
           gap: 8px;
-          margin-bottom: 6px;
+          min-width: 0;
+          padding: 7px 12px;
+          overflow: hidden;
+          white-space: nowrap;
+        }
+
+        /* The status bar's expanded output body — no card chrome. Shrinks
+           (and scrolls) when the bar hits its 38% cap; content-sized
+           otherwise. */
+        .doorstop-last-run {
+          flex: 1 1 auto;
+          min-height: 0;
+          overflow: auto;
+          padding: 8px 12px 10px;
+          border-top: 1px solid var(--pi-border-muted);
         }
 
         .doorstop-last-run-commit {
@@ -1429,6 +1522,7 @@ function defineDoorstopPanelBodyElement(): void {
         }
 
         .doorstop-last-run-status {
+          flex: 0 0 auto; /* the badge label keeps its full width */
           border-radius: 999px;
           padding: 0 7px;
           font-size: 11px;
@@ -1452,17 +1546,24 @@ function defineDoorstopPanelBodyElement(): void {
         }
 
         .doorstop-last-run-meta {
-          color: var(--pi-muted);
-          font-size: 12px;
+          /* Fills the row's leftover width (plain auto margins would instead
+             push Dismiss right and leave the meta at content width), so the
+             ellipsis only kicks in where space actually runs out — the run
+             title never collapses to nothing while the badge/Dismiss pair
+             stays fixed. */
+          flex: 1 1 auto;
           min-width: 0;
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
+          color: var(--pi-muted);
+          font-size: 12px;
         }
 
         .doorstop-last-run-dismiss {
-          margin-left: auto;
           flex: 0 0 auto;
+          /* Buttons do not inherit font; match the bar's 12px system-ui. */
+          font: inherit;
         }
 
         .doorstop-last-run-pre {
@@ -1517,6 +1618,21 @@ function defineDoorstopPanelBodyElement(): void {
         if (changedProperties.has("selectedUid")) {
           this.askMenuOpen = false;
         }
+        // Status-bar auto-expansion: a NEW run object that produced a message
+        // to show (any stdout/stderr, a backend error, or a commit narration)
+        // re-expands the bar; a new run with nothing to show stays collapsed.
+        // Dismiss clears the run and collapses (`onDismissRun`). Element-local
+        // state — the controller is untouched.
+        if (changedProperties.has("lastRun")) {
+          const lastRun = this.lastRun;
+          if (lastRun === undefined) {
+            this.lastExpandedRun = undefined;
+            this.statusExpanded = false;
+          } else if (lastRun !== this.lastExpandedRun) {
+            this.lastExpandedRun = lastRun;
+            this.statusExpanded = lastRunHasMessage(lastRun);
+          }
+        }
         // Workspace switch while the element stays connected (the host
         // re-commits a DIFFERENT controller): end the old workspace's
         // connection, start the new one's — same guarded ordering as the
@@ -1556,54 +1672,30 @@ function defineDoorstopPanelBodyElement(): void {
 
       protected override render(): TemplateResult {
         return html`
-          ${this.renderToolbar()}
+          ${this.renderProjectActions()}
           ${this.error === undefined ? nothing : html`<div class="doorstop-error" role="alert">${this.error}</div>`}
           <section class="doorstop-viewer">${this.renderViewer()}</section>
-          ${this.renderLastRun()}
+          ${this.renderItemActionPalette()}
+          ${this.renderStatusBar()}
         `;
       }
 
-      // --- toolbar ------------------------------------------------------------------
+      // --- project actions (region 1) -----------------------------------------------
 
-      private renderToolbar(): TemplateResult {
-        const result = this.result;
-        const publishTarget = doorstopPublishTarget(result);
+      /** Project-scoped actions (region 1): the panel title, the Items /
+       *  Findings toggle, the stale / skipped-confirm notices, and the
+       *  Refresh / Run validation / Publish buttons. The document chips and
+       *  the state/search filters live in the list-filters row above the
+       *  item list instead (region 2's own affordances). */
+      private renderProjectActions(): TemplateResult {
+        const publishTarget = doorstopPublishTarget(this.result);
         return html`
-          <section class="doorstop-toolbar">
+          <section class="doorstop-project-actions">
             <strong class="doorstop-title">${doorstopIconSvg}Doorstop</strong>
             ${this.renderViewToggle()}
-            ${this.view === "items"
-              ? html`<div class="doorstop-docs" role="list" aria-label="Doorstop documents">
-                  ${result === undefined
-                    ? html`<span class="doorstop-muted">documents…</span>`
-                    : html`
-                        ${this.renderDocumentChip(undefined, result)}
-                        ${result.index.documents.map((document) => this.renderDocumentChip(document, result))}
-                      `}
-                </div>`
-              : nothing}
             <div class="doorstop-toolbar-actions">
               ${this.stale ? html`<button type="button" class="doorstop-stale" title="Doorstop ran or files changed behind the panel — click to rescan" @click=${this.onRefreshClick}>stale — refresh</button>` : nothing}
               ${this.confirmSkipped ? html`<span class="doorstop-muted doorstop-confirm-skipped" title="No confirmation dialog is available in this environment — publishing proceeded without one">confirmation skipped — publishing</span>` : nothing}
-              ${this.view === "items"
-                ? html`
-                    <select class="doorstop-state-filter" aria-label="Filter by state" @change=${this.onStateFilterChange}>
-                      <option value="" .selected=${this.stateFilter === undefined}>All states</option>
-                      ${Object.entries(STATE_CHIP_LABELS).map(
-                        ([key, label]) =>
-                          html`<option value=${key} .selected=${this.stateFilter === key}>${label}</option>`,
-                      )}
-                    </select>
-                    <input
-                      class="doorstop-search"
-                      type="search"
-                      aria-label="Search items"
-                      placeholder="Search UID or text"
-                      .value=${this.search}
-                      @input=${this.onSearchInput}
-                    />
-                  `
-                : nothing}
               <button type="button" class="doorstop-refresh" title="Re-read the workspace" @click=${this.onRefreshClick}>${refreshIconSvg}Refresh</button>
               <button type="button" class="doorstop-validate" title="Run \`doorstop\` in the workspace (terminal when unpaired)" ?disabled=${this.runInProgress !== undefined} @click=${this.onValidateClick}>${validateIconSvg}Run validation</button>
               <button type="button" class="doorstop-publish" title=${`Publish the tree to ${publishTarget}`} ?disabled=${this.runInProgress !== undefined} @click=${this.onPublishClick}>${publishIconSvg}Publish HTML</button>
@@ -1612,17 +1704,54 @@ function defineDoorstopPanelBodyElement(): void {
         `;
       }
 
+      // --- list filters (above the item list) ---------------------------------------
+
+      /** The item-list filter row: the document tree chips, the state-filter
+       *  dropdown, and the search input. Rendered at the top of the items-view
+       *  branch (inside the viewer), directly above the list/detail split —
+       *  behavior is unchanged from the old toolbar placement. */
+      private renderListFilters(result: DoorstopWorkspaceResult): TemplateResult {
+        return html`
+          <section class="doorstop-list-filters">
+            <div class="doorstop-docs" role="list" aria-label="Doorstop documents">
+              ${this.renderDocumentChip(undefined, result)}
+              ${result.index.documents.map((document) => this.renderDocumentChip(document, result))}
+            </div>
+            <select class="doorstop-state-filter" aria-label="Filter by state" @change=${this.onStateFilterChange}>
+              <option value="" .selected=${this.stateFilter === undefined}>All states</option>
+              ${Object.entries(STATE_CHIP_LABELS).map(
+                ([key, label]) =>
+                  html`<option value=${key} .selected=${this.stateFilter === key}>${label}</option>`,
+              )}
+            </select>
+            <input
+              class="doorstop-search"
+              type="search"
+              aria-label="Search items"
+              placeholder="Search UID or text"
+              .value=${this.search}
+              @input=${this.onSearchInput}
+            />
+          </section>
+        `;
+      }
+
       /**
-       * The "Last run" section (plan Phase D step 8/9): the view of the
-       * latest backend-path run — status badge (ok/failed/killed/error),
-       * run duration (and exit code / killing signal when relevant), a
-       * dismiss button, and the captured stdout/stderr as pre-wrapped
-       * `<pre>` blocks with truncated-stream and killed notices. Driven
+       * The status bar (region 5, plan Phase D step 8/9): the latest
+       * backend-path run's status badge (ok/failed/killed/error), run
+       * duration (and exit code / killing signal when relevant), a Dismiss
+       * button, and — when expanded — the captured output body. Driven
        * entirely by `controller.lastRun`; renders nothing (and takes no
-       * space) before the first run. A run in flight marks action buttons
-       * disabled at the buttons themselves (`runInProgress`), not here.
+       * space) before the first run. Visible in both the items and findings
+       * views. A run in flight marks action buttons disabled at the buttons
+       * themselves (`runInProgress`), not here.
+       *
+       * Expansion is CONTENT-DRIVEN: whenever a new run produces a message to
+       * show (`lastRunHasMessage`), the bar expands automatically without any
+       * user interaction (see `willUpdate`). Dismiss clears the run and
+       * collapses the bar; there is no manual expand/collapse toggle.
        */
-      private renderLastRun(): TemplateResult | typeof nothing {
+      private renderStatusBar(): TemplateResult | typeof nothing {
         const lastRun = this.lastRun;
         if (lastRun === undefined) return nothing;
         const statusLabel = lastRun.status === "killed" ? "killed (timeout)" : lastRun.status;
@@ -1632,17 +1761,28 @@ function defineDoorstopPanelBodyElement(): void {
         }
         if (lastRun.signal !== null) detailParts.push(lastRun.signal);
         return html`
-          <section class="doorstop-last-run" aria-label="Last run">
-            <div class="doorstop-last-run-head">
+          <section class="doorstop-status-bar" aria-label="Last run">
+            <div class="doorstop-status-bar-row">
               <span class=${`doorstop-last-run-status is-${lastRun.status}`}>${statusLabel}</span>
               <span class="doorstop-last-run-meta">${detailParts.join(" · ")}</span>
               <button
                 type="button"
                 class="doorstop-last-run-dismiss"
                 title="Dismiss the last run output"
-                @click=${() => { this.controller?.dismissRun(); }}
+                @click=${this.onDismissRun}
               >Dismiss</button>
             </div>
+            ${this.statusExpanded ? this.renderStatusBarBody(lastRun) : nothing}
+          </section>
+        `;
+      }
+
+      /** The status bar's expanded body: the commit narration line, the
+       *  captured stdout/stderr as pre-wrapped `<pre>` blocks with the
+       *  truncated-stream notices, and the "No output captured." fallback. */
+      private renderStatusBarBody(lastRun: DoorstopLastRunView): TemplateResult {
+        return html`
+          <div class="doorstop-last-run">
             ${lastRun.commit === undefined
               ? nothing
               : html`<p class="doorstop-last-run-commit doorstop-muted">${commitOutcomeText(lastRun.commit)}</p>`}
@@ -1668,7 +1808,7 @@ function defineDoorstopPanelBodyElement(): void {
             ${lastRun.stdout === "" && lastRun.stderr === "" && lastRun.status !== "error"
               ? html`<p class="doorstop-last-run-notice">No output captured.</p>`
               : nothing}
-          </section>
+          </div>
         `;
       }
 
@@ -1765,6 +1905,7 @@ function defineDoorstopPanelBodyElement(): void {
           return this.renderFindingsView(result);
         }
         return html`
+          ${this.renderListFilters(result)}
           ${result.index.documents.length === 0
             ? html`
                 ${this.renderDiagnostics(result)}
@@ -2052,7 +2193,6 @@ function defineDoorstopPanelBodyElement(): void {
         if (item === undefined) {
           return html`<p class="doorstop-muted doorstop-standalone">This item is no longer available — refresh the panel.</p>`;
         }
-        const suspects = suspectParentItems(item, result.index);
         const children = result.index.childrenByUid.get(item.uid) ?? [];
         const findings = result.index.findings.filter((finding) => finding.uid === item.uid);
         return html`
@@ -2096,7 +2236,35 @@ function defineDoorstopPanelBodyElement(): void {
                   })}
                 </div>`}
           </section>
-          <section class="doorstop-actions" aria-label="Item actions">
+        `;
+      }
+
+      // --- item action palette (region 4) --------------------------------------------
+
+      /** The panel-level item action palette (region 4) — the Review / Clear
+       *  suspect links / Edit / Unlink / Link + target inputs, target-error
+       *  alert, and Ask-agent menu moved out of the detail pane so the section
+       *  spans the panel width at a fixed height matching the host prompt
+       *  footer. Rendered ONLY in the items view: hidden in the findings view
+       *  and when the workspace has no documents; a muted placeholder row when
+       *  nothing is selected (keeps the palette at constant height); the full
+       *  action row otherwise. All handlers/refs are the detail pane's
+       *  originals, untouched. */
+      private renderItemActionPalette(): TemplateResult | typeof nothing {
+        if (this.view !== "items") return nothing;
+        const result = this.result;
+        if (result === undefined || result.index.documents.length === 0) return nothing;
+        const item = this.selectedItem();
+        if (item === undefined) {
+          return html`
+            <section class="doorstop-action-palette" aria-label="Item actions">
+              <span class="doorstop-muted doorstop-palette-placeholder">Select an item…</span>
+            </section>
+          `;
+        }
+        const suspects = suspectParentItems(item, result.index);
+        return html`
+          <section class="doorstop-action-palette" aria-label="Item actions">
             ${this.renderActionRow(item, result.index, suspects)}
           </section>
         `;
@@ -2317,6 +2485,17 @@ function defineDoorstopPanelBodyElement(): void {
       }
 
       // --- handlers ------------------------------------------------------------------
+
+      /** Dismiss collapses the status bar. With a controller bound, the run
+       *  clears via the existing `controller.dismissRun()` clear-run semantics
+       *  (plan Risk: clear + collapse) and `willUpdate` resets the expansion
+       *  trigger; without one there is no run to clear, so the bar merely
+       *  collapses and the run stays (there are no runs to re-expand it
+       *  anyway — expansion is re-triggered by the next run's message). */
+      private onDismissRun = (): void => {
+        this.statusExpanded = false;
+        this.controller?.dismissRun();
+      };
 
       private onRefreshClick = (): void => {
         void this.controller?.invalidate();

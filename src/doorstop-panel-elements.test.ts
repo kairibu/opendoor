@@ -601,6 +601,153 @@ describe("DoorstopPanelBodyElement (toolbar + empty/loading/error/stale states)"
   });
 });
 
+describe("DoorstopPanelBodyElement (layout sections: actions / filters / palette / status bar)", () => {
+  it("composes the panel sections in order", async () => {
+    const { body } = await mountBody(() => Promise.resolve(makeTreeResult()));
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+    // The panel body is: project-actions → (error alert) → viewer → action
+    // palette → status bar. The error alert is a div, so the sections are the
+    // direct <section> children. Before the first run the status bar renders
+    // nothing (no row), and the palette shows its placeholder.
+    const sections = [...root.children].filter((child) => child.tagName === "SECTION");
+    expect(sections.map((section) => section.className)).toEqual([
+      "doorstop-project-actions",
+      "doorstop-viewer",
+      "doorstop-action-palette",
+    ]);
+    expect(root.querySelector(".doorstop-status-bar")).toBeNull();
+  });
+
+  it("keeps the full section order (actions → viewer → palette → status bar) after a run", async () => {
+    const backend = vi.fn(() => Promise.resolve(makeRunResponse()));
+    const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()), {
+      backend,
+      provider: opendoorProvider,
+    });
+
+    body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
+    await flush(body);
+    bindBody(body, controller, context);
+    await flush(body);
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+    // With a live run committed, the auto-expanded status bar is the LAST
+    // section: project-actions → viewer → action-palette → status-bar
+    // (the error alert is absent here, and the palette shows its placeholder
+    // with nothing selected).
+    const sections = [...root.children].filter((child) => child.tagName === "SECTION");
+    expect(sections.map((section) => section.className)).toEqual([
+      "doorstop-project-actions",
+      "doorstop-viewer",
+      "doorstop-action-palette",
+      "doorstop-status-bar",
+    ]);
+    expect(root.querySelector(".doorstop-last-run")).not.toBeNull();
+  });
+
+  it("renders the document/state/search filters in their own row above the split", async () => {
+    const { body } = await mountBody(() => Promise.resolve(makeTreeResult()));
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+    const viewer = root.querySelector(".doorstop-viewer");
+    const filters = viewer?.querySelector(".doorstop-list-filters");
+    const split = viewer?.querySelector(".doorstop-split");
+    expect(filters).not.toBeNull();
+    expect(split).not.toBeNull();
+    if (viewer === null || filters === null || filters === undefined || split === null || split === undefined) {
+      throw new Error("viewer/filters/split");
+    }
+    const viewerChildren = [...viewer.children];
+    expect(viewerChildren.indexOf(filters)).toBeLessThan(viewerChildren.indexOf(split));
+    // The filter row owns the doc chips, the state filter, and the search.
+    expect(filters.querySelector(".doorstop-doc-chip")).not.toBeNull();
+    expect(filters.querySelector(".doorstop-state-filter")).not.toBeNull();
+    expect(filters.querySelector(".doorstop-search")).not.toBeNull();
+    // The project-actions row no longer carries any of them.
+    const actions = root.querySelector(".doorstop-project-actions");
+    expect(actions?.querySelector(".doorstop-doc-chip")).toBeNull();
+    expect(actions?.querySelector(".doorstop-state-filter")).toBeNull();
+    expect(actions?.querySelector(".doorstop-search")).toBeNull();
+  });
+
+  it("shows a muted palette placeholder with no selection; hides the palette in findings and with no documents", async () => {
+    // A tree with nothing selected: the palette is present at constant height
+    // with the placeholder row only.
+    const { body } = await mountBody(() => Promise.resolve(makeTreeResult()));
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+    const placeholder = root.querySelector(".doorstop-action-palette .doorstop-palette-placeholder");
+    expect(placeholder?.textContent).toBe("Select an item…");
+    expect(root.querySelectorAll(".doorstop-action-palette button")).toHaveLength(0);
+
+    // The findings view has no palette at all.
+    root.querySelector<HTMLElement>(".doorstop-view-findings")?.click();
+    await flush(body);
+    expect(root.querySelector(".doorstop-action-palette")).toBeNull();
+
+    // A workspace with zero documents has no palette either.
+    const noDocs = await mountBody(() => Promise.resolve(makeResult([], [])));
+    expect(noDocs.body.shadowRoot?.querySelector(".doorstop-action-palette")).toBeNull();
+  });
+
+  it("moves the action row out of the detail pane into the panel-level palette", async () => {
+    const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()));
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+    root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0002"]')?.click();
+    bindBody(body, controller, context);
+    await flush(body);
+
+    // The full action set lives in the palette section (placeholder replaced).
+    const palette = root.querySelector(".doorstop-action-palette");
+    expect(palette?.querySelector(".doorstop-palette-placeholder")).toBeNull();
+    expect(palette?.querySelector(".doorstop-review")).not.toBeNull();
+    expect(palette?.querySelector(".doorstop-clear")).not.toBeNull();
+    expect(palette?.querySelector(".doorstop-edit")).not.toBeNull();
+    expect(palette?.querySelector(".doorstop-unlink")).not.toBeNull();
+    expect(palette?.querySelector(".doorstop-link")).not.toBeNull();
+    expect(palette?.querySelector(".doorstop-menu-toggle")).not.toBeNull();
+
+    // The detail pane carries NO action buttons anymore (its remaining
+    // buttons are link-row NAVIGATION buttons, which stay).
+    const detailPane = root.querySelector(".doorstop-detail-pane");
+    for (const selector of [
+      ".doorstop-review",
+      ".doorstop-clear",
+      ".doorstop-edit",
+      ".doorstop-unlink",
+      ".doorstop-link",
+      ".doorstop-menu-toggle",
+      ".doorstop-target-input",
+      ".doorstop-op",
+      ".doorstop-actions",
+    ]) {
+      expect(detailPane?.querySelector(selector)).toBeNull();
+    }
+    expect(root.querySelector(".doorstop-actions")).toBeNull();
+  });
+
+  it("keeps the status bar (with its auto-expanded output) in the findings view", async () => {
+    const backend = vi.fn(() => Promise.resolve(makeRunResponse()));
+    const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()), {
+      backend,
+      provider: opendoorProvider,
+    });
+    body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
+    await flush(body);
+    // Switch to the findings view: the palette must vanish, the status bar
+    // (and its already-expanded output) must remain.
+    body.shadowRoot?.querySelector<HTMLElement>(".doorstop-view-findings")?.click();
+    await flush(body);
+    bindBody(body, controller, context);
+    await flush(body);
+    expect(body.shadowRoot?.querySelector(".doorstop-action-palette")).toBeNull();
+    expect(body.shadowRoot?.querySelector(".doorstop-status-bar")).not.toBeNull();
+    expect(body.shadowRoot?.querySelector(".doorstop-last-run")).not.toBeNull();
+  });
+});
+
 describe("DoorstopPanelBodyElement (item list + selection)", () => {
   it("renders level-ordered rows with state chips per ItemStateKey and selects on click", async () => {
     const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()));
@@ -1164,10 +1311,12 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     });
     expect(controller.lastRun?.errorMessage).toBeUndefined();
 
-    // The mirrored Last run section renders the badge, duration, and output.
+    // The mirrored status bar renders the badge, duration, and the
+    // AUTO-EXPANDED output body (no user interaction needed).
     bindBody(body, controller, context);
     await flush(body);
     const root = body.shadowRoot;
+    expect(root?.querySelector(".doorstop-status-bar")).not.toBeNull();
     expect(root?.querySelector(".doorstop-last-run")).not.toBeNull();
     expect(root?.querySelector(".doorstop-last-run-status")?.textContent).toBe("ok");
     expect(root?.querySelector(".doorstop-last-run-pre")?.textContent).toContain("Validated 4 items.");
@@ -1199,6 +1348,7 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     expect(killed.controller.lastRun?.signal).toBe("SIGTERM");
     bindBody(killed.body, killed.controller, killed.context);
     await flush(killed.body);
+    expect(killed.body.shadowRoot?.querySelector(".doorstop-status-bar")).not.toBeNull();
     expect(killed.body.shadowRoot?.querySelector(".doorstop-last-run-status")?.textContent).toBe(
       "killed (timeout)",
     );
@@ -1232,6 +1382,10 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     bindBody(body, controller, context);
     await flush(body);
     const root = body.shadowRoot;
+    // The error run is auto-expanded: the status bar shows the parsed error
+    // message without any interaction.
+    expect(root?.querySelector(".doorstop-status-bar")).not.toBeNull();
+    expect(root?.querySelector(".doorstop-last-run")).not.toBeNull();
     expect(root?.querySelector(".doorstop-last-run-status")?.textContent).toBe("error");
     expect(root?.querySelector(".doorstop-last-run-pre")?.textContent).toContain(
       "doorstop CLI not found",
@@ -1351,7 +1505,7 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     for (const button of buttons) expect(button?.disabled).toBe(false);
   });
 
-  it("keeps the Last run section across an invalidate and clears it only on dismiss", async () => {
+  it("keeps the status bar across an invalidate and clears it only on dismiss", async () => {
     const backend = vi.fn(() => Promise.resolve(makeRunResponse()));
     const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()), {
       backend,
@@ -1362,6 +1516,8 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     await flush(body);
     bindBody(body, controller, context);
     await flush(body);
+    // Auto-expanded: the output body is present without any user interaction.
+    expect(body.shadowRoot?.querySelector(".doorstop-status-bar")).not.toBeNull();
     expect(body.shadowRoot?.querySelector(".doorstop-last-run")).not.toBeNull();
 
     // A rescan (Refresh → invalidate → re-load) must NOT clear the run output.
@@ -1370,15 +1526,71 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     expect(controller.lastRun).toBeDefined();
     bindBody(body, controller, context);
     await flush(body);
+    expect(body.shadowRoot?.querySelector(".doorstop-status-bar")).not.toBeNull();
     expect(body.shadowRoot?.querySelector(".doorstop-last-run")).not.toBeNull();
 
-    // Dismiss removes it.
+    // Dismiss clears the run AND collapses the bar (existing clear-run
+    // semantics — controller.dismissRun() clears `lastRun`).
     body.shadowRoot?.querySelector<HTMLElement>(".doorstop-last-run-dismiss")?.click();
     expect(controller.lastRun).toBeUndefined();
     bindBody(body, controller, context);
     await flush(body);
+    expect(body.shadowRoot?.querySelector(".doorstop-status-bar")).toBeNull();
     expect(body.shadowRoot?.querySelector(".doorstop-last-run")).toBeNull();
     expect(body.shadowRoot?.querySelector(".doorstop-last-run-dismiss")).toBeNull();
+  });
+
+  it("re-expands the status bar when a NEW run after a Dismiss produces a message", async () => {
+    const backend = vi.fn(() => Promise.resolve(makeRunResponse()));
+    const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()), {
+      backend,
+      provider: opendoorProvider,
+    });
+
+    // Run 1 → auto-expanded.
+    body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
+    await flush(body);
+    bindBody(body, controller, context);
+    await flush(body);
+    expect(body.shadowRoot?.querySelector(".doorstop-last-run")).not.toBeNull();
+
+    // Dismiss → run cleared, bar collapsed-away.
+    body.shadowRoot?.querySelector<HTMLElement>(".doorstop-last-run-dismiss")?.click();
+    bindBody(body, controller, context);
+    await flush(body);
+    expect(body.shadowRoot?.querySelector(".doorstop-status-bar")).toBeNull();
+
+    // Run 2 (a NEW run object with output) re-expands the bar automatically.
+    body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
+    await flush(body);
+    bindBody(body, controller, context);
+    await flush(body);
+    expect(body.shadowRoot?.querySelector(".doorstop-status-bar")).not.toBeNull();
+    expect(body.shadowRoot?.querySelector(".doorstop-last-run")).not.toBeNull();
+    expect(body.shadowRoot?.querySelector(".doorstop-last-run-pre")?.textContent).toContain(
+      "Validated 4 items.",
+    );
+  });
+
+  it("stays collapsed to its status row when a run has nothing to display", async () => {
+    const backend = vi.fn(() =>
+      Promise.resolve(makeRunResponse({ stdout: "", stderr: "" })),
+    );
+    const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()), {
+      backend,
+      provider: opendoorProvider,
+    });
+
+    body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
+    await flush(body);
+    bindBody(body, controller, context);
+    await flush(body);
+    const root = body.shadowRoot;
+    // The status row is visible with no output body and no expand control.
+    expect(root?.querySelector(".doorstop-status-bar")).not.toBeNull();
+    expect(root?.querySelector(".doorstop-last-run")).toBeNull();
+    expect(root?.querySelector(".doorstop-status-bar [aria-expanded]")).toBeNull();
+    expect(root?.querySelector(".doorstop-last-run-status")?.textContent).toBe("ok");
   });
 
   it("renders truncation notices and the killed badge", async () => {
@@ -1403,12 +1615,17 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     bindBody(body, controller, context);
     await flush(body);
     const root = body.shadowRoot;
+    // The status bar row carries the killed badge and meta; the output body
+    // auto-expands below it with the truncation notices.
+    expect(root?.querySelector(".doorstop-status-bar")).not.toBeNull();
+    expect(root?.querySelector(".doorstop-last-run")).not.toBeNull();
     expect(root?.querySelector(".doorstop-last-run-status")?.textContent).toBe("killed (timeout)");
+    expect(root?.querySelector(".doorstop-last-run-meta")?.textContent).toContain("SIGTERM");
     expect(root?.querySelectorAll(".doorstop-last-run-notice")).toHaveLength(2);
     const sectionText = root?.querySelector(".doorstop-last-run")?.textContent ?? "";
     expect(sectionText).toContain("truncated by the host stream limit");
-    expect(sectionText).toContain("SIGTERM");
     expect(sectionText).toContain("partial output");
+    expect(sectionText).toContain("partial err");
   });
 
   it("passes commit: true on Review only when the workspace setting is on (omitted under the default)", async () => {
@@ -1485,6 +1702,8 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     bindBody(good.body, good.controller, good.context);
     await flush(good.body);
     const goodRoot = good.body.shadowRoot;
+    expect(goodRoot?.querySelector(".doorstop-status-bar")).not.toBeNull();
+    expect(goodRoot?.querySelector(".doorstop-last-run")).not.toBeNull();
     expect(goodRoot?.querySelector(".doorstop-last-run-status")?.textContent).toBe("ok");
     expect(goodRoot?.querySelector(".doorstop-last-run-commit")?.textContent).toBe("commit: abc1234");
 
@@ -1509,6 +1728,8 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     bindBody(failed.body, failed.controller, failed.context);
     await flush(failed.body);
     const failedRoot = failed.body.shadowRoot;
+    expect(failedRoot?.querySelector(".doorstop-status-bar")).not.toBeNull();
+    expect(failedRoot?.querySelector(".doorstop-last-run")).not.toBeNull();
     expect(failedRoot?.querySelector(".doorstop-last-run-status")?.textContent).toBe("ok");
     expect(failedRoot?.querySelector(".doorstop-last-run-commit")?.textContent).toBe(
       "commit: failed — fatal: not a git repository",
