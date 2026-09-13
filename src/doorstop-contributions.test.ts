@@ -309,6 +309,9 @@ describe("panel render wiring", () => {
       // Phase D step 15: the baseline-cache state the render wiring mirrors.
       "baselineVersion",
       "baselineInFlight",
+      // Phase D step 16: the git-status strip state the render wiring mirrors.
+      "gitStatusView",
+      "gitStatusInFlight",
     ];
     expect(bindingNames(updated)).toEqual(expectedNames);
     expect(updated.values).toHaveLength(expectedNames.length);
@@ -335,6 +338,11 @@ describe("panel render wiring", () => {
     expect(updated.values[12]).toBe(0);
     expect(updated.values[13]).toBe(controller.baselineInFlight);
     expect(updated.values[13]).toBeUndefined();
+    // The Phase D step 16 git-status strip state mirrors by identity / flag.
+    expect(updated.values[14]).toBe(controller.gitStatusView);
+    expect(updated.values[14]).toBeUndefined();
+    expect(updated.values[15]).toBe(controller.gitStatusInFlight);
+    expect(updated.values[15]).toBe(false);
   });
 });
 

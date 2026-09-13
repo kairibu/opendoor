@@ -84,11 +84,19 @@ import {
   DOORSTOP_RUN_OPERATION,
   parseDoorstopRunResponse,
   type DoorstopCommitOutcome,
+  type DoorstopGitStageResponse,
+  type DoorstopGitStatusResponse,
   type DoorstopRunRequest,
 } from "./doorstop-backend-contract.js";
 import { formatUnknownError } from "./doorstop-contract.js";
 import { computeItemStamp } from "./doorstop-state.js";
-import type { DoorstopWorkspaceController, DoorstopBaselineView, DoorstopLastRunView } from "./doorstop-panel-controller.js";
+import {
+  doorstopPaths,
+  type DoorstopBaselineView,
+  type DoorstopGitStatusView,
+  type DoorstopLastRunView,
+  type DoorstopWorkspaceController,
+} from "./doorstop-panel-controller.js";
 import type { DoorstopWorkspaceResult } from "./doorstop-panel.js";
 import { DEFAULT_OPENDOOR_SETTINGS } from "./doorstop-settings.js";
 import type { DiffLine, ItemFieldDiff } from "./doorstop-diff.js";
@@ -321,22 +329,47 @@ export function doorstopCommitAfterReview(result: DoorstopWorkspaceResult | unde
   return result?.settings?.commitAfterReview ?? DEFAULT_OPENDOOR_SETTINGS.commitAfterReview;
 }
 
-/** The one-line Last-run narration of a post-review git commit outcome
- *  (Phase C step 11): `commit: <short-sha>` / `commit: clean (already
- *  committed)` / `commit: skipped (not a git repository | review failed |
- *  deadline)` / `commit: failed — <stderr excerpt>`. The outcome is
- *  informational — it never flips the run's ok/failed badge (the review
- *  itself succeeded; the commit is narration). */
-export function commitOutcomeText(outcome: DoorstopCommitOutcome): string {
+/** The one-line Last-run narration of a git outcome: the review→commit
+ *  pipeline's post-review commit (plan Phase C step 11) and the two
+ *  project-scoped git runs' own outcome (plan-add-git-actions.md Phase C
+ *  step 12 / Phase D step 15). `op` picks the narrative voice — the two
+ *  outcomes SHARE the `clean`/`skipped`/`failed` statuses, and a stage
+ *  run's `clean` means "nothing to stage" while a commit run's `clean`
+ *  means "nothing staged", so the status alone cannot narrate correctly:
+ *
+ *  - non-git runs (a REVIEW run's `commit: true`): `commit: <short-sha>` /
+ *    `commit: clean (already committed)` / `commit: skipped (not a git
+ *    repository | review failed | deadline)` / `commit: failed — <stderr
+ *    excerpt>` — the pipeline's established voice.
+ *  - git-stage/git-commit runs: `staged <n> paths` / `committed <sha>` /
+ *    `clean — nothing to stage` (stage) / `clean — nothing staged`
+ *    (commit) / `skipped` / `failed — <stderr excerpt>` — git-CLI voice.
+ *
+ * The outcome is informational — for a REVIEW run it never flips the run's
+ * ok/failed badge (the review itself succeeded; the commit is narration);
+ * on the git-stage/git-commit RUNS the run's own `status` already reflects
+ * a `failed` outcome (Phase C step 12) and this line carries the
+ * count/sha/skip/error detail. */
+export function commitOutcomeText(op: DoorstopLastRunView["op"], outcome: DoorstopCommitOutcome | DoorstopGitStageResponse): string {
+  // The project-scoped git runs speak git-CLI voice; a review run's
+  // post-review commit keeps the `commit: …` pipeline voice. Threading the
+  // op in (rather than switching on the outcome alone) is what lets a
+  // stage's `clean` say "nothing to stage" where a commit's `clean` says
+  // "nothing staged" — the two response types are indistinguishable on
+  // those shared statuses.
+  const gitRun = op === "git-stage" || op === "git-commit";
   switch (outcome.status) {
+    case "staged":
+      return `staged ${String(outcome.staged ?? 0)} paths`;
     case "committed":
-      return `commit: ${outcome.sha ?? "<unknown sha>"}`;
+      return gitRun ? `committed ${outcome.sha ?? "<unknown sha>"}` : `commit: ${outcome.sha ?? "<unknown sha>"}`;
     case "clean":
-      return "commit: clean (already committed)";
+      if (!gitRun) return "commit: clean (already committed)";
+      return op === "git-stage" ? "clean — nothing to stage" : "clean — nothing staged";
     case "skipped":
-      return "commit: skipped (not a git repository | review failed | deadline)";
+      return gitRun ? "skipped" : "commit: skipped (not a git repository | review failed | deadline)";
     case "failed":
-      return `commit: failed — ${outcome.stderr ?? "git step errored"}`;
+      return gitRun ? `failed — ${outcome.stderr ?? "git step errored"}` : `commit: failed — ${outcome.stderr ?? "git step errored"}`;
   }
 }
 
@@ -351,6 +384,26 @@ export function lastRunHasMessage(lastRun: DoorstopLastRunView): boolean {
     (lastRun.errorMessage ?? "") !== "" ||
     lastRun.commit !== undefined
   );
+}
+
+/**
+ * The git status strip's compact readout text (plan-add-git-actions.md Phase
+ * D step 14): `⎇ <branch> · <staged> staged · <dirty> dirty · ↑<ahead>
+ * ↓<behind>`, OMITTING the zero/absent parts — a clean repo reads `⎇ main`;
+ * a repo ahead of its upstream shows `↑N` with no `↓` (git OMITS the zero
+ * side of the `[ahead N]` bracket, so `ahead`/`behind` are absent at 0 — the
+ * Phase B worker's finding, handled where the parser drops the zero side, and
+ * mirrored here by dropping the 0 counts the same way). A detached HEAD (no
+ * `branch`) renders the bare `⎇` glyph: provisioned as git, just branchless.
+ * Exported for the Phase F element tests (the `commitOutcomeText` idiom).
+ */
+export function gitStatusText(response: DoorstopGitStatusResponse): string {
+  const parts: string[] = [response.branch === undefined ? "⎇" : `⎇ ${response.branch}`];
+  if (response.staged > 0) parts.push(`${String(response.staged)} staged`);
+  if (response.dirty > 0) parts.push(`${String(response.dirty)} dirty`);
+  if ((response.ahead ?? 0) > 0) parts.push(`↑${String(response.ahead)}`);
+  if ((response.behind ?? 0) > 0) parts.push(`↓${String(response.behind)}`);
+  return parts.join(" · ");
 }
 
 /** Characters a publish target may contain and stay inert in any shell: the
@@ -519,6 +572,15 @@ export interface DoorstopPanelBodyElement extends LitElement {
   baselineVersion: number;
   /** Mirrored from the controller: UID whose baseline fetch is in flight. */
   baselineInFlight: string | undefined;
+  /** Mirrored from the controller (plan-add-git-actions Phase D step 16):
+   *  the git-status strip's cached view; `undefined` before the first fetch
+   *  lands (or after an invalidate cleared it). */
+  gitStatusView: DoorstopGitStatusView | undefined;
+  /** Mirrored from the controller: true while the git status fetch is in
+   *  flight (the strip's `aria-busy` — the fetch/render guards themselves
+   *  read the CONTROLLER's live flags, since the mirrored property may lag
+   *  a render). */
+  gitStatusInFlight: boolean;
 }
 
 /**
@@ -541,6 +603,13 @@ const validateIconSvg = svg`<svg width="14" height="14" viewBox="0 0 24 24" fill
 
 /** Toolbar icon: publish (upload arrow). */
 const publishIconSvg = svg`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>`;
+
+/** Toolbar icon: git stage (plus in a circle — the add-to-index action). */
+const gitStageIconSvg = svg`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/></svg>`;
+
+/** Toolbar icon: git commit (check in a circle — the record-the-index
+ *  action). */
+const gitCommitIconSvg = svg`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>`;
 
 /** Register the body element; safe to call more than once (plugin modules
  *  can be evaluated across reloads — each call is guarded per tag). */
@@ -606,6 +675,20 @@ function defineDoorstopPanelBodyElement(): void {
       @property({ attribute: false })
       baselineInFlight: string | undefined;
 
+      /** Git-status strip view, mirrored from the controller
+       *  (plan-add-git-actions Phase D step 16): the strip renders this; a
+       *  missing view renders nothing until the first fetch lands (the
+       *  label-cache's no-flash idiom). */
+      @property({ attribute: false })
+      gitStatusView: DoorstopGitStatusView | undefined;
+
+      /** Whether the git status fetch is in flight, mirrored from the
+       *  controller (the strip's `aria-busy` while a fetch runs; the fetch
+       *  guard in `ensureGitStatus` deliberately reads the CONTROLLER's live
+       *  flag instead — the mirrored property may lag a render). */
+      @property({ attribute: false })
+      gitStatusInFlight = false;
+
       /** Whether the Ask-agent menu is expanded. */
       @state()
       private askMenuOpen = false;
@@ -614,6 +697,20 @@ function defineDoorstopPanelBodyElement(): void {
        *  row; cleared on the next successful run). */
       @state()
       private targetError: string | undefined;
+
+      /** Inline error for the project-scoped git actions (the empty commit
+       *  message and the defensive empty-stage case; shown beside the git
+       *  controls in the project-actions row — the `targetError`-style alert
+       *  pattern, cleared on the next successful submit). */
+      @state()
+      private gitActionError: string | undefined;
+
+      /** The git commit input's current text (mirrored for the Commit button's
+       *  disabled gating — an empty input disables it). The input's value
+       *  itself stays uncontrolled (typed by the user, cleared after a
+       *  successful commit), like the Link/Unlink target inputs. */
+      @state()
+      private gitCommitMessage = "";
 
       /** Whether a publish ran without an available confirmation dialog
        *  (sandboxed plugin hosts may not expose window.confirm) — surfaced
@@ -644,6 +741,7 @@ function defineDoorstopPanelBodyElement(): void {
        *  uncontrolled (typed by the user; cleared after a run). */
       private readonly unlinkInputRef: Ref<HTMLInputElement> = createRef<HTMLInputElement>();
       private readonly linkInputRef: Ref<HTMLInputElement> = createRef<HTMLInputElement>();
+      private readonly gitCommitInputRef: Ref<HTMLInputElement> = createRef<HTMLInputElement>();
 
       static override styles = [
         css`
@@ -787,6 +885,64 @@ function defineDoorstopPanelBodyElement(): void {
           color: var(--pi-warning);
           padding: 1px 8px;
           font-size: 12px;
+        }
+
+        /* --- project-scoped git actions (plan-add-git-actions Phase D step 17) --- */
+        .doorstop-git-status {
+          /* The muted chip row: single line, ellipsis overflow at the row's
+             own cap (the toolbar row wraps, so the chip never squeezes the
+             title). The strip is a button — click re-fetches. text-overflow
+             lives on the inner .doorstop-git-status-text span, NOT here: it
+             only applies to BLOCK containers, and the button is inline-flex
+             (the anonymous text flex item would hard-clip at the 240px cap
+             with no ellipsis). This rule keeps overflow: hidden as the clip
+             fallback and the chip's pill. */
+          display: inline-flex;
+          align-items: center;
+          max-width: 240px;
+          overflow: hidden;
+          white-space: nowrap;
+          border: 1px solid var(--pi-border-muted);
+          border-radius: 999px;
+          background: transparent;
+          color: var(--pi-muted);
+          padding: 2px 9px;
+          font-size: 12px;
+        }
+
+        .doorstop-git-status-text {
+          /* The ellipsis clip for the chip's text (see the parent rule): a
+             BLOCK element inside the inline-flex button, with min-width: 0
+             so it may shrink below its content width (the flexbox default
+             min-width: auto would defeat the ellipsis — a flex item never
+             overflow-clips below its content). */
+          display: block;
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+
+        .doorstop-git-status:hover:not(:disabled) {
+          background: var(--pi-selection-bg);
+        }
+
+        .doorstop-git-status-error {
+          border-color: var(--pi-danger);
+          color: var(--pi-danger);
+        }
+
+        .doorstop-git-commit {
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+        }
+
+        .doorstop-git-commit-input {
+          /* Sized beside the existing toolbar buttons (the target inputs'
+             width idiom) — wide enough for a real commit message, still
+             one row in the toolbar. */
+          width: 170px;
         }
 
         /* --- Items / Findings view toggle (spec §7.2) --- */
@@ -1662,12 +1818,51 @@ function defineDoorstopPanelBodyElement(): void {
        * recreates it closed and the user's expand fires a real `toggle`.)
        */
       protected override updated(): void {
+        // Git status strip auto-fetch (plan-add-git-actions Phase D step 14
+        // + the Phase C hand-off note): fetch on the section's FIRST render
+        // and re-fetch after every `invalidate()` clears the cached view (a
+        // rescan or any run — stage and commit included — may change the
+        // workspace's dirtiness). The guard keeps this once-per-clearing and
+        // independent of the detail-section self-heal below.
+        this.ensureGitStatus();
         const details = this.shadowRoot?.querySelector<HTMLDetailsElement>(".doorstop-changes");
         if (details === null || details === undefined || !details.open) return;
         const item = this.selectedItem();
         if (item === undefined) return;
         if (this.controller?.baselineViewFor(item) !== undefined) return;
         void this.controller?.requestBaseline(item);
+      }
+
+      /**
+       * The git status strip's auto-fetch guard (plan-add-git-actions Phase
+       * D step 14 + the Phase C hand-off note): when the cached view is
+       * MISSING (the first render — `gitStatusView` starts `undefined` — or
+       * a post-`invalidate()` clearing) AND when it is an ORPHANED `loading`
+       * placeholder (a fetch that finished while DISCONNECTED had its
+       * landing dropped by the late-write guard, leaving `loading` with no
+       * fetch in flight — the reconnect-orphan recovery; the controller's
+       * `hostConnected()` clears the orphan, and this widened guard also
+       * covers any render that happens while the orphan is still in place),
+       * kick `controller.requestGitStatus()`. The `!gitStatusInFlight`
+       * check keeps this safe: `requestGitStatus` installs its `loading`
+       * view synchronously, so a `loading` view with NO in-flight fetch is
+       * always an orphan. The controller JOINS concurrent calls
+       * (`gitStatusRequest`), so even a redundant kick cannot stack a
+       * duplicate round-trip; the guard reads the CONTROLLER's live flags
+       * (the mirrored element properties may lag a render), and the
+       * `backendActive()` gate keeps unpaired installs untouched (the
+       * controls — and the fetch — are hidden there).
+       */
+      private ensureGitStatus(): void {
+        const controller = this.controller;
+        if (controller === undefined) return;
+        if (!this.backendActive()) return;
+        if (
+          (controller.gitStatusView === undefined || controller.gitStatusView.state === "loading") &&
+          !controller.gitStatusInFlight
+        ) {
+          void controller.requestGitStatus();
+        }
       }
 
       protected override render(): TemplateResult {
@@ -1707,9 +1902,102 @@ function defineDoorstopPanelBodyElement(): void {
               <button type="button" class="doorstop-refresh" title="Re-read the workspace" @click=${this.onRefreshClick}>${refreshIconSvg}Refresh</button>
               <button type="button" class="doorstop-validate" title="Run \`doorstop\` in the workspace (terminal when unpaired)" ?disabled=${this.runInProgress !== undefined} @click=${this.onValidateClick}>${validateIconSvg}Run validation</button>
               <button type="button" class="doorstop-publish" title=${`Publish the tree to ${publishTarget}`} ?disabled=${this.runInProgress !== undefined} @click=${this.onPublishClick}>${publishIconSvg}Publish HTML</button>
+              ${this.renderGitActions()}
             </div>
           </section>
         `;
+      }
+
+      /**
+       * The project-scoped git controls (plan-add-git-actions Phase D step
+       * 14) — the status strip, the Stage all button, and the commit
+       * input+button — placed after the Publish button inside the toolbar
+       * actions row. Gated on {@link DoorstopPanelBodyElement.backendActive}
+       * (hidden on unpaired installs): the strip's status data and the runs'
+       * git access are the backend's, not the browser's — the same gate the
+       * "Changes since review" section uses.
+       *
+       * The commit INPUT is disabled while a run is in flight alongside the
+       * buttons — the stricter reading of the plan's "the control … disabled
+       * while `runInProgress !== undefined`": typing during a run is blocked
+       * so a message typed but never submitted cannot be lost when the run's
+       * invalidate lands mid-typing.
+       */
+      private renderGitActions(): TemplateResult | typeof nothing {
+        if (!this.backendActive()) return nothing;
+        const hasDocuments = (this.result?.index.documents.length ?? 0) > 0;
+        return html`
+          ${this.renderGitStatus()}
+          <button
+            type="button"
+            class="doorstop-git-stage"
+            title="Stage all Doorstop-managed files (requirements, documents, configs)"
+            ?disabled=${this.runInProgress !== undefined || !hasDocuments}
+            @click=${this.onGitStageClick}
+          >${gitStageIconSvg}Stage all</button>
+          <div class="doorstop-git-commit">
+            <input
+              type="text"
+              class="doorstop-git-commit-input"
+              placeholder="Commit message"
+              aria-label="Git commit message"
+              ?disabled=${this.runInProgress !== undefined}
+              ${ref(this.gitCommitInputRef)}
+              @input=${this.onGitCommitInput}
+              @keydown=${this.onGitCommitKeydown}
+            />
+            <button
+              type="button"
+              class="doorstop-git-commit-button"
+              title="Commit the staged index with this message"
+              ?disabled=${this.runInProgress !== undefined || this.gitCommitMessage.trim() === ""}
+              @click=${this.onGitCommitClick}
+            >${gitCommitIconSvg}Commit</button>
+            ${this.gitActionError === undefined ? nothing : html`<span class="doorstop-op-error" role="alert">${this.gitActionError}</span>`}
+          </div>
+        `;
+      }
+
+      /**
+       * The git status strip (plan-add-git-actions Phase D step 14): the
+       * compact readout chip rendered from the controller's cached
+       * `gitStatusView`. A MISSING view renders nothing (the label-cache's
+       * no-flash idiom — the first fetch lands within a render or two); a
+       * LOADING view renders a muted "…" placeholder instead of blanking the
+       * strip area (the Phase C hand-off note — a re-fetch after an
+       * invalidate must never wipe the row). Clicking the chip re-fetches
+       * (the controller joins an in-flight fetch, so even a click during
+       * loading cannot stack a duplicate request).
+       */
+      private renderGitStatus(): TemplateResult | typeof nothing {
+        const view = this.gitStatusView;
+        if (view === undefined) return nothing;
+        const refresh = (): void => { void this.controller?.requestGitStatus(); };
+        // The strip mirrors `gitStatusInFlight` onto `aria-busy` (the only
+        // render-side consumer of the mirrored flag — honest to assistive
+        // tech while a fetch runs).
+        switch (view.state) {
+          case "loading":
+            return html`<button
+              type="button"
+              class="doorstop-git-status"
+              title="Refreshing git status…"
+              aria-busy=${this.gitStatusInFlight}
+              @click=${refresh}
+            ><span class="doorstop-git-status-text">⎇ …</span></button>`;
+          case "no-git":
+            return html`<button type="button" class="doorstop-git-status" title="Not a git repository — click to re-check" aria-busy=${this.gitStatusInFlight} @click=${refresh}><span class="doorstop-git-status-text">no git</span></button>`;
+          case "error":
+            return html`<button
+              type="button"
+              class="doorstop-git-status doorstop-git-status-error"
+              title=${`Git status unavailable — ${view.errorMessage ?? "request failed"} — click to retry`}
+              aria-busy=${this.gitStatusInFlight}
+              @click=${refresh}
+            ><span class="doorstop-git-status-text">git status error — retry</span></button>`;
+          case "ready":
+            return html`<button type="button" class="doorstop-git-status" title="Git status — click to refresh" aria-busy=${this.gitStatusInFlight} @click=${refresh}><span class="doorstop-git-status-text">${gitStatusText(view.response)}</span></button>`;
+        }
       }
 
       // --- list filters (above the item list) ---------------------------------------
@@ -1793,7 +2081,7 @@ function defineDoorstopPanelBodyElement(): void {
           <div class="doorstop-last-run">
             ${lastRun.commit === undefined
               ? nothing
-              : html`<p class="doorstop-last-run-commit doorstop-muted">${commitOutcomeText(lastRun.commit)}</p>`}
+              : html`<p class="doorstop-last-run-commit doorstop-muted">${commitOutcomeText(lastRun.op, lastRun.commit)}</p>`}
             ${lastRun.status === "error"
               ? html`<pre class="doorstop-last-run-pre">${lastRun.errorMessage ?? ""}</pre>`
               : nothing}
@@ -2540,6 +2828,95 @@ function defineDoorstopPanelBodyElement(): void {
           false,
         );
       };
+
+      /** The git commit input's current text, mirrored into state for the
+       *  Commit button's disabled gating (empty input → disabled). */
+      private onGitCommitInput = (event: Event): void => {
+        this.gitCommitMessage = (event.target as HTMLInputElement).value;
+      };
+
+      /**
+       * Stage all (plan-add-git-actions Phase D step 15): stage every
+       * Doorstop-managed path of the loaded index via
+       * `controller.runGitStage(doorstopPaths(result))`. Early-returns while
+       * any run is in flight (the Phase C hand-off note — the button's
+       * disabled state covers pointer clicks; this guard covers every call
+       * path). An empty path list is DEFENSIVE only (the button is disabled
+       * without documents, and every indexed document/item contributes a
+       * path) — surfaced as an inline error, never a silent return.
+       */
+      private onGitStageClick = (): void => {
+        const controller = this.controller;
+        if (controller === undefined) return;
+        if (controller.runInProgress !== undefined) return;
+        const result = this.result;
+        if (result === undefined) {
+          this.gitActionError = "The workspace is not loaded — refresh first";
+          return;
+        }
+        const paths = doorstopPaths(result);
+        if (paths.length === 0) {
+          this.gitActionError = "Nothing to stage — the workspace has no Doorstop-managed files";
+          return;
+        }
+        this.gitActionError = undefined;
+        void controller.runGitStage(paths);
+      };
+
+      /** Commit clicked (the button submits the commit control). */
+      private onGitCommitClick = (): void => {
+        this.gitCommitSubmit();
+      };
+
+      /** Enter submits the commit; Escape clears the input AND a visible
+       *  inline error (the target-input keydown idiom, plus the error — a
+       *  dismissed attempt must not leave its alert behind). */
+      private onGitCommitKeydown = (event: KeyboardEvent): void => {
+        const input = this.gitCommitInputRef.value;
+        if (input === undefined) return;
+        if (event.key === "Enter") {
+          event.preventDefault();
+          this.gitCommitSubmit();
+        } else if (event.key === "Escape") {
+          input.value = "";
+          this.gitCommitMessage = "";
+          this.gitActionError = undefined;
+        }
+      };
+
+      /**
+       * The commit submit path (plan-add-git-actions Phase D step 15): read
+       * + trim the message; an EMPTY message surfaces an inline error (the
+       * `targetError`-style alert pattern — the browser must never send an
+       * empty message: the server rejects it, and git with an empty `-m`
+       * would hang the exec until the deadline) and focuses the input;
+       * otherwise the commit runs through
+       * `controller.runGitCommit(message)` (the staged index, no pathspec,
+       * no add — whatever the index holds). Early-returns while any run is
+       * in flight. The input is cleared on SUCCESS (`status: "ok"` —
+       * committed / clean / skipped outcomes); a `failed` commit (hook
+       * stderr, missing identity) keeps the message for a corrected retry.
+       */
+      private gitCommitSubmit(): void {
+        const controller = this.controller;
+        if (controller === undefined) return;
+        if (controller.runInProgress !== undefined) return;
+        const input = this.gitCommitInputRef.value;
+        const message = input?.value.trim() ?? "";
+        if (message === "") {
+          this.gitActionError = "Enter a commit message";
+          input?.focus();
+          return;
+        }
+        this.gitActionError = undefined;
+        void controller.runGitCommit(message).then(() => {
+          const lastRun = controller.lastRun;
+          if (lastRun?.op === "git-commit" && lastRun.status === "ok" && input !== undefined) {
+            input.value = "";
+            this.gitCommitMessage = "";
+          }
+        });
+      }
 
       private onStateFilterChange = (event: Event): void => {
         const value = (event.target as HTMLSelectElement).value;

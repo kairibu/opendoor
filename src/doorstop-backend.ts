@@ -1,13 +1,16 @@
 // ---------------------------------------------------------------------------
 // Opendoor server-side request backend (plan-opendoor-server-plugin step 2 +
-// plan-review-baseline-and-diff Phase B steps 5–7, chain E2 server half):
-// the TWO request handlers (`doorstop.run` and `doorstop.item-baseline`)
-// routed through `workspaceProvider.request`. The browser never sends shell
-// strings or raw argv — it sends the STRUCTURED requests (doorstop-backend-
-// contract.ts) and this module builds the argv, runs the doorstop CLI and
-// (for the review→commit pipeline and the baseline fetch) git through the
-// host-bounded `context.execFile`, and returns the validated response shapes
-// as `JsonValue` (the browser re-parses them with the contract parsers).
+// plan-review-baseline-and-diff Phase B steps 5–7, chain E2 server half +
+// plan-add-git-actions.md Phase B steps 6–8, chain E2 server half): the
+// FIVE request handlers — `doorstop.run`, `doorstop.item-baseline`, and the
+// project-scoped git trio `doorstop.git-status` / `doorstop.git-stage` /
+// `doorstop.git-commit` — routed through `workspaceProvider.request`. The
+// browser never sends shell strings or raw argv — it sends the STRUCTURED
+// requests (doorstop-backend-contract.ts) and this module builds the argv,
+// runs the doorstop CLI and (for the review→commit pipeline, the baseline
+// fetch, and the git trio) git through the host-bounded `context.execFile`,
+// and returns the validated response shapes as `JsonValue` (the browser
+// re-parses them with the contract parsers).
 //
 // Error taxonomy (mirrors plan §"Error taxonomy"): malformed input (unknown
 // op, invalid UID/publish-target grammar) throws BEFORE any exec — and before
@@ -70,6 +73,24 @@
 // returns the `{ git, source, candidates }` shape — read-only and
 // best-effort, never an infrastructure error (the contract response has no
 // error channel).
+//
+// Git actions trio (plan-add-git-actions.md Phase B steps 6–8): the
+// project-scoped `doorstop.git-status` readout (read-only and best-effort,
+// the baseline handler's exact philosophy — any failure degrades to
+// `{ git: false }`), the `doorstop.git-stage` Stage-all run (repo check →
+// a `-z` porcelain status over the literalized Doorstop paths (VERBATIM
+// paths; the only plain-porcelain form that never re-quotes — a `M <path>`
+// selection would silently drop non-ASCII/space paths) → `git add --
+// :(literal)…` for the worktree-changed subset), and the
+// `doorstop.git-commit` run (`git diff --cached --quiet` → `git commit -m
+// <message>` with NO pathspec and NO add — the staged index is the
+// content, whatever it holds → `rev-parse --short HEAD`). Both runs are
+// MUTATING and narrate their outcome (reusing `DoorstopCommitOutcome` for
+// commit); all three reuse the review→commit infra — `runGit` (`GIT_*`
+// hygiene, `settings.gitPath`), `runSerialized` (per-workspace
+// serialization), the shared `startedAt` deadline budget,
+// `literalPathspec`, `gitStepFailure`, and `commitStderrExcerpt` — and
+// resolve on every git outcome, rejecting only for a host-attributed abort.
 // ---------------------------------------------------------------------------
 
 import { readdir } from "node:fs/promises";
@@ -87,13 +108,24 @@ import {
   DOORSTOP_BASELINE_GREP_LIMIT,
   DOORSTOP_BASELINE_HISTORY_LIMIT,
   DOORSTOP_BASELINE_OPERATION,
+  DOORSTOP_GIT_COMMIT_OPERATION,
+  DOORSTOP_GIT_STAGE_OPERATION,
+  DOORSTOP_GIT_STATUS_FILES_MAX,
+  DOORSTOP_GIT_STATUS_OPERATION,
   DOORSTOP_RUN_OPERATION,
   isValidDoorstopItemPath,
   parseDoorstopBaselineRequest,
+  parseDoorstopGitCommitRequest,
+  parseDoorstopGitStageRequest,
+  parseDoorstopGitStatusRequest,
   parseDoorstopRunRequest,
   type DoorstopBaselineCandidate,
   type DoorstopBaselineResponse,
   type DoorstopCommitOutcome,
+  type DoorstopGitFileState,
+  type DoorstopGitStageResponse,
+  type DoorstopGitStatusFile,
+  type DoorstopGitStatusResponse,
   type DoorstopRunRequest,
   type DoorstopRunResponse,
 } from "./doorstop-backend-contract.js";
@@ -445,6 +477,38 @@ async function runGit(
   }
 }
 
+/** Whether a `rev-parse --is-inside-work-tree` exec proved the cwd sits in
+ *  a git work tree: exit 0 AND the FIRST stdout line is exactly `true`. A
+ *  bare repository (or a `.git` directory) prints `false` with EXIT 0 — an
+ *  empty-output check would wrongly PASS those, and the NEXT git step
+ *  would surface `failed` ("this operation must be run in a work tree")
+ *  instead of the plan's `skipped` / `{ git: false }`. First-line, not
+ *  whole-output: the sites appending `--show-prefix` (baseline/status)
+ *  print `true` on line one and the cwd→root prefix on line two — a
+ *  whole-output trim would read a nested workspace's `"true\nreqs/\n"` as
+ *  "not true" and wrongly degrade it. */
+function isWorkTreeResult(result: ServerPluginExecFileResult): boolean {
+  return result.exitCode === 0 && result.stdout.split(/\r?\n/, 1)[0] === "true";
+}
+
+/** The short sha from a successful `git commit`'s own FIRST stdout line —
+ *  `[main abc1234] message` (branch), `[detached HEAD abc1234] …`, or
+ *  `[main (root-commit) abc1234] …` (the first commit) — the fallback when
+ *  a post-commit `rev-parse --short HEAD` fails or is skipped by the
+ *  deadline budget: the commit ALREADY LANDED, so the outcome must stay
+ *  `committed` (narrating a landed user commit as `failed`/`skipped` while
+ *  the strip silently shows it committed is dishonest narration; a dropped
+ *  rev-parse is an instrumentation failure, not an outcome failure).
+ *  `undefined` when the first line carries no bracket sha (defensive — git
+ *  always prints one on success). The greedy `.*` backtracks to the LAST
+ *  `\b<hex>]` in the line, which is the sha token: git puts the sha last
+ *  inside the bracket, before the message. */
+function commitBracketSha(commitStdout: string): string | undefined {
+  const firstLine = commitStdout.split(/\r?\n/, 1)[0] ?? "";
+  const match = /^\[.*\b([0-9a-f]{7,40})\](?:.*)$/.exec(firstLine);
+  return match?.[1];
+}
+
 /** A git step resolved with a non-zero exit (or no exit at all) where the
  *  pipeline requires success: throw the stderr (or a synthesized line when
  *  the exec was killed with no output) so the pipeline's single catch folds
@@ -493,9 +557,10 @@ async function reviewCommitPipeline(
       signal,
       gitExecTimeoutMs(settings, startedAt),
     );
-    // Not a git repository (non-zero exit or empty output) → nothing to
+    // Not a git repository (non-zero exit, or stdout other than a literal
+    // `true` — a bare repo/`.git` prints `false` with EXIT 0) → nothing to
     // commit; the browser still sees the review result.
-    if (inWorkTree.exitCode !== 0 || inWorkTree.stdout.trim() === "") return { status: "skipped" };
+    if (!isWorkTreeResult(inWorkTree)) return { status: "skipped" };
 
     // The item file path: resolved by a bounded workspace walk (the request
     // carries only the uid; the item file is named after it), then passed
@@ -619,7 +684,7 @@ export async function requestDoorstopBaseline(
       request.signal,
       startedAt,
     );
-    if (inWorkTree === undefined || inWorkTree.exitCode !== 0 || inWorkTree.stdout.trim() === "") {
+    if (inWorkTree === undefined || !isWorkTreeResult(inWorkTree)) {
       return baselineResponse(false, "none", []);
     }
     // The rev-parse second line is the cwd→repo-root prefix ("sub/dir/",
@@ -840,4 +905,602 @@ function itemFileBase(name: string): string | undefined {
   const extension = name.slice(dot).toLowerCase();
   if (extension !== ".yml" && extension !== ".yaml" && extension !== ".md") return undefined;
   return name.slice(0, dot);
+}
+
+// ---------------------------------------------------------------------------
+// Git status / stage / commit handlers (plan-add-git-actions.md Phase B
+// steps 6–8): the project-scoped git trio served to the Requirements
+// panel's project-actions group. All three reuse the review→commit
+// infrastructure wholesale — runGit (GIT_* hygiene, settings.gitPath,
+// deadline-budgeted timeout), runSerialized (per-workspace serialization,
+// never racing a doorstop CLI run), literalPathspec (:(literal) magic),
+// gitStepFailure, commitStderrExcerpt, and the shared `startedAt` budget.
+//
+//   doorstop.git-status  read-only and BEST-EFFORT (the baseline handler's
+//                        philosophy): any failure — non-repo, killed exec,
+//                        missing binary, exhausted budget — degrades to
+//                        the `{ git: false }` contract shape; the response
+//                        has no error channel, so the strip never sees a
+//                        fetch "fail".
+//   doorstop.git-stage   a MUTATING run (Stage all): repo check → `-z`
+//                        porcelain over the literalized Doorstop paths
+//                        (no worktree-column change → `clean`) → `git add
+//                        -- :(literal)<worktree-changed paths>` (git ≥ 2.x
+//                        stages named-path deletions too; an
+//                        already-staged deletion is SKIPPED — its path
+//                        exists in neither index nor worktree, re-adding
+//                        it would abort the whole add). Outcome is
+//                        narration — `skipped` on non-repo / exhausted
+//                        budget, `failed` + bounded stderr excerpt on any
+//                        git error, both resolving; only a host-attributed
+//                        ABORT rethrows (module header taxonomy).
+//   doorstop.git-commit  a MUTATING run (Commit): repo check → `git diff
+//                        --cached --quiet` (exit 0 → `clean`) → `git commit
+//                        -m <message>` (NO pathspec, NO add — the staged
+//                        index is the content, whatever it holds) → `git
+//                        rev-parse --short HEAD`. The outcome reuses
+//                        {@link DoorstopCommitOutcome} verbatim; same
+//                        failure taxonomy as stage.
+// ---------------------------------------------------------------------------
+
+/**
+ * The `doorstop.git-status` handler (plan step 6): repo check via
+ * `rev-parse --is-inside-work-tree --show-prefix`, then `git status
+ * --porcelain=v1 -z -b`, mapped onto the contract's `{ git, branch?,
+ * ahead?, behind?, staged, dirty, files }` shape — the readout the
+ * project-actions status strip renders. Read-only and BEST-EFFORT: ANY
+ * failure (non-repo, killed exec, missing git binary, host abort,
+ * exhausted budget) resolves `{ git: false, staged: 0, dirty: 0, files:
+ * [] }` instead of rejecting — the response has no error channel (the
+ * baseline handler's exact philosophy; `baselineGit` supplies the
+ * never-reject runner). A host-attributed ABORT is deliberately NOT
+ * rethrown here (unlike the stage/commit handlers): the readout is
+ * best-effort and a cancelled fetch is a dropped view, not a lost
+ * mutation — do not "fix" this into a rejection. Shares the per-workspace
+ * serialization and the `startedAt` deadline budget.
+ */
+export async function requestDoorstopGitStatus(
+  context: ServerPluginActivationContext,
+  request: ProviderRequestContext,
+): Promise<JsonValue> {
+  // Same operation guard as the run/baseline handlers (the server-plugin
+  // dispatcher routes by operation; this keeps DIRECT calls pinned to the
+  // status contract — a mismatched operation is rejected before any exec).
+  if (request.operation !== DOORSTOP_GIT_STATUS_OPERATION) {
+    throw unsupportedBackendOperationError(request.operation);
+  }
+  // STRICT parse before any exec AND before queueing (the run/baseline
+  // idiom): the status request is `{}` by contract; junk throws.
+  parseDoorstopGitStatusRequest(request.input);
+  const settings = parseDoorstopBackendSettings(context.settings);
+  const cwd = request.workspace.path;
+  return runSerialized(context, cwd, async () => {
+    const startedAt = Date.now();
+    // Repo check. The `--show-prefix` line is unused by the status readout
+    // (porcelain paths are cwd-relative when run from the workspace root);
+    // the trigger is the `--is-inside-work-tree` exit code/output.
+    const inWorkTree = await baselineGit(
+      context,
+      settings,
+      cwd,
+      ["rev-parse", "--is-inside-work-tree", "--show-prefix"],
+      request.signal,
+      startedAt,
+    );
+    if (inWorkTree === undefined || !isWorkTreeResult(inWorkTree)) {
+      return gitStatusResponse(false, undefined, undefined, undefined, 0, 0, []);
+    }
+    // The porcelain fetch (`-v1` v1 format, `-z` NUL-separated records so
+    // filenames with spaces survive, `-b` branch line + ahead/behind). A
+    // failed porcelain exec (killed/abort/ENOENT) degrades identically — a
+    // missing readout is `no git`, never an error.
+    const porcelain = await baselineGit(
+      context,
+      settings,
+      cwd,
+      ["status", "--porcelain=v1", "-z", "-b"],
+      request.signal,
+      startedAt,
+    );
+    if (porcelain === undefined || porcelain.exitCode !== 0) {
+      return gitStatusResponse(false, undefined, undefined, undefined, 0, 0, []);
+    }
+    const parsed = parsePorcelainV1Status(porcelain.stdout);
+    // The counts are computed from the FULL output; only `files` is capped
+    // at DOORSTOP_GIT_STATUS_FILES_MAX so the response stays bounded while
+    // the counts stay honest above the cap (contract JSDoc).
+    return gitStatusResponse(
+      true,
+      parsed.branch,
+      parsed.ahead,
+      parsed.behind,
+      parsed.staged,
+      parsed.dirty,
+      parsed.files.slice(0, DOORSTOP_GIT_STATUS_FILES_MAX),
+    );
+  });
+}
+
+/** The `doorstop.git-status` response literal, pinned to the contract shape
+ *  (the host bridge type is `JsonValue`; see doorstopRunResponse for the
+ *  object-spread idiom). `branch`/`ahead`/`behind` are OMITTED when absent
+ *  (exactOptionalPropertyTypes — the strict response parser couples them to
+ *  `git: true`). */
+function gitStatusResponse(
+  git: boolean,
+  branch: string | undefined,
+  ahead: number | undefined,
+  behind: number | undefined,
+  staged: number,
+  dirty: number,
+  files: readonly DoorstopGitStatusFile[],
+): JsonValue {
+  return {
+    git,
+    ...(branch === undefined ? {} : { branch }),
+    ...(ahead === undefined ? {} : { ahead }),
+    ...(behind === undefined ? {} : { behind }),
+    staged,
+    dirty,
+    // Each file is spread into a fresh object so the values admit the host
+    // bridge's JsonObject index signature (the interface-typed elements
+    // themselves lack it); `satisfies` keeps the whole shape pinned.
+    files: files.map((file) => ({ ...file })),
+  } satisfies DoorstopGitStatusResponse;
+}
+
+/** One decoded `git status --porcelain=v1 -z -b` output — the branch header
+ *  state plus every changed file's two-column pair. Purely a pure function
+ *  of the stdout: unit-testable without any exec. */
+interface PorcelainV1Status {
+  /** The current branch; absent on a detached HEAD (`HEAD (no branch)`). */
+  branch?: string;
+  /** Commits ahead of the upstream; absent without an upstream. */
+  ahead?: number;
+  /** Commits behind the upstream; absent without an upstream. */
+  behind?: number;
+  /** Every changed file, BEFORE the response's 200-file cap. */
+  files: DoorstopGitStatusFile[];
+  /** Count of files whose index (X) column is not unmodified/untracked/
+   *  ignored — the changes a commit will record. */
+  staged: number;
+  /** Count of files with any non-unmodified state (either column). */
+  dirty: number;
+}
+
+/** Decode porcelain v1 `-z -b` stdout into the contract's file states. The
+ *  `-z` form NUL-terminates every record (the `## ` header included), so
+ *  filenames with spaces survive untouched; a rename/copy prints its NEW
+ *  path as an `XY <path>` record followed by a SEPARATE record holding the
+ *  old (source) path, which is consumed here, never parsed as an entry of
+ *  its own. The header decodes the branch and the `[ahead N, behind M]` /
+ *  `[ahead N]` / `[behind M]` / `[gone]` suffixes; a detached HEAD
+ *  (`HEAD (no branch)`) reports no branch, and an unborn branch
+ *  (`No commits yet on <name>`) reports the name. */
+function parsePorcelainV1Status(stdout: string): PorcelainV1Status {
+  const output = stdout.split("\0");
+  // `-z` NUL-terminates every record, leaving one trailing empty string.
+  const records = output[output.length - 1] === "" ? output.slice(0, -1) : output;
+  let branch: string | undefined;
+  let ahead: number | undefined;
+  let behind: number | undefined;
+  const files: DoorstopGitStatusFile[] = [];
+  let staged = 0;
+  let dirty = 0;
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    if (record === undefined) continue;
+    // Header: the FIRST record, present only with `-b`.
+    if (index === 0 && record.startsWith("## ")) {
+      const header = parsePorcelainBranchHeader(record.slice(3));
+      branch = header.branch;
+      ahead = header.ahead;
+      behind = header.behind;
+      continue;
+    }
+    // Per-file: `XY <path>` — a single space separates the two state
+    // columns in porcelain v1. The `s` flag lets `.*` span newlines inside
+    // paths (records are NUL-delimited, never line-delimited).
+    const entry = /^(.{2}) (.*)$/s.exec(record);
+    if (entry === null) continue; // defensive: no XY + space shape
+    const xCode = entry[1]?.[0];
+    const yCode = entry[1]?.[1];
+    const indexState = gitFileStateFromPorcelainXy(xCode);
+    const workingTreeState = gitFileStateFromPorcelainXy(yCode);
+    files.push({ path: entry[2] ?? "", index: indexState, workingTree: workingTreeState });
+    // Staged = the changes a commit will record: the index column is
+    // neither blank (' ' → unmodified), untracked ('?'), nor ignored ('!')
+    // — the contract's counting rule. `staged`/`dirty` count the FULL
+    // output; the response caps only `files`.
+    if (indexState !== "unmodified" && indexState !== "untracked" && indexState !== "ignored") {
+      staged += 1;
+    }
+    if (indexState !== "unmodified" || workingTreeState !== "unmodified") {
+      dirty += 1;
+    }
+    // A rename/copy `-z` entry is followed by a separate record with the
+    // SOURCE path — consumed here, never parsed as an entry of its own.
+    if (xCode === "R" || xCode === "C") index += 1;
+  }
+  // Optional fields are omitted, never set to undefined
+  // (exactOptionalPropertyTypes — the git-contract idiom).
+  return {
+    ...(branch === undefined ? {} : { branch }),
+    ...(ahead === undefined ? {} : { ahead }),
+    ...(behind === undefined ? {} : { behind }),
+    files,
+    staged,
+    dirty,
+  };
+}
+
+/** Map one porcelain v1 XY column character onto the contract's file-state
+ *  vocabulary (the host git plugin's nine states, verbatim): the blank
+ *  column → unmodified, `M` → modified, `T` (typechange — no enum state of
+ *  its own) → modified, `A` → added, `D` → deleted, `R` → renamed, `C` →
+ *  copied, `U` → conflicted, `?` → untracked, `!` → ignored. Only these
+ *  ten characters can appear in a well-formed porcelain v1 XY pair; a
+ *  defensive unknown maps to unmodified (nothing else is honest against
+ *  the closed 9-state vocabulary). */
+function gitFileStateFromPorcelainXy(code: string | undefined): DoorstopGitFileState {
+  switch (code) {
+    case "M":
+    case "T":
+      return "modified";
+    case "A":
+      return "added";
+    case "D":
+      return "deleted";
+    case "R":
+      return "renamed";
+    case "C":
+      return "copied";
+    case "U":
+      return "conflicted";
+    case "?":
+      return "untracked";
+    case "!":
+      return "ignored";
+    default:
+      return "unmodified"; // " " and any defensive unknown
+  }
+}
+
+/** Decode the `## ` status header (with the prefix already stripped):
+ *  `<branch>` (no upstream), `<branch>...<upstream>` with an
+ *  `[ahead N, behind M]` / `[ahead N]` / `[behind M]` / `[gone]` suffix,
+ *  `HEAD (no branch)` (detached — no branch), and `No commits yet on
+ *  <branch>` (unborn). */
+function parsePorcelainBranchHeader(header: string): { branch?: string; ahead?: number; behind?: number } {
+  let branchPart = header;
+  // Unborn branch: git prints `No commits yet on <name>` instead of <name>.
+  if (branchPart.startsWith("No commits yet on ")) {
+    branchPart = branchPart.slice("No commits yet on ".length);
+  }
+  // Detached HEAD: `HEAD (no branch)` — the readout renders the sha
+  // instead of a branch name, so no `branch` is reported (absent).
+  if (branchPart === "HEAD (no branch)" || branchPart === "HEAD") return {};
+  const upstreamDot = branchPart.indexOf("...");
+  const branch = upstreamDot === -1 ? branchPart : branchPart.slice(0, upstreamDot);
+  let ahead: number | undefined;
+  let behind: number | undefined;
+  if (upstreamDot !== -1) {
+    // The bracket suffix is `[ahead N, behind M]` (a single side when the
+    // other is zero) or `[gone]` (upstream deleted — no counts).
+    const bracket = /^.*\[(.*)\]$/.exec(branchPart.slice(upstreamDot + 3));
+    if (bracket !== null && bracket[1] !== undefined) {
+      for (const part of bracket[1].split(",")) {
+        const aheadMatch = /^ahead (\d+)$/.exec(part.trim());
+        const behindMatch = /^behind (\d+)$/.exec(part.trim());
+        if (aheadMatch !== null) ahead = Number(aheadMatch[1]);
+        if (behindMatch !== null) behind = Number(behindMatch[1]);
+      }
+    }
+  }
+  // Optional fields are omitted, never set to undefined
+  // (exactOptionalPropertyTypes — the git-contract idiom).
+  return {
+    branch,
+    ...(ahead === undefined ? {} : { ahead }),
+    ...(behind === undefined ? {} : { behind }),
+  };
+}
+
+/** The request paths a stage's `-z` porcelain output still needs `git
+ *  add`ed — every record whose WORKTREE (Y) column is non-blank, mapped
+ *  back onto the request set (the pathspecs already constrain the porcelain
+ *  to the request paths; the guard keeps the add set exactly them). A blank
+ *  Y column means the worktree already matches the index — nothing to add,
+ *  and a STAGED DELETION (`D `) must be skipped in particular: its path
+ *  exists in NEITHER the index NOR the worktree, and `git add` on it
+ *  aborts the WHOLE add with "did not match any files" (the idempotency
+ *  break a second Stage-all click over an already-staged deletion would
+ *  hit). Rename/copy records in `-z` mode print the NEW path followed by a
+ *  SEPARATE bare record with the SOURCE path (`R  new\0old\0`): the source
+ *  path is already fully recorded by the index (git mv) and adding it
+ *  would fatal, so it is stepped past (the status parser's identical idiom)
+ *  and only the record's own (new) path — when itself a request path — is
+ *  staged. Pure function of stdout — unit-testable without any exec. */
+function stageAddTargets(stdout: string, paths: readonly string[]): string[] {
+  const output = stdout.split("\0");
+  // `-z` NUL-terminates every record, leaving one trailing empty string.
+  const records = output[output.length - 1] === "" ? output.slice(0, -1) : output;
+  const requestSet = new Set(paths);
+  const targets = new Set<string>();
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    if (record === undefined) continue;
+    // Per-file record: `XY <path>` — one space separates the two state
+    // columns in porcelain v1. The `s` flag lets `.*` span newlines inside
+    // paths (records are NUL-delimited, never line-delimited).
+    const entry = /^(.{2}) (.*)$/s.exec(record);
+    if (entry === null) continue; // defensive: no XY + space shape
+    const xCode = entry[1]?.[0];
+    const yCode = entry[1]?.[1];
+    // A rename/copy record is followed by the bare SOURCE path record
+    // (`R  new\0old\0`); step past it before it can masquerade as an
+    // entry (parsePorcelainV1Status's identical consume idiom).
+    if (xCode === "R" || xCode === "C") index += 1;
+    // Blank worktree column → the worktree matches the index (or the path
+    // is a staged deletion) → nothing to add.
+    if (yCode === undefined || yCode === " ") continue;
+    const path = entry[2] ?? "";
+    if (requestSet.has(path)) targets.add(path);
+  }
+  return [...targets];
+}
+
+/**
+ * The `doorstop.git-stage` handler (plan step 7) — Stage all. Validates the
+ * request (a NON-EMPTY array of literal-grammar Doorstop paths) BEFORE any
+ * exec and before queueing, then — each step budgeted and skipped on
+ * exhaustion, inside `runSerialized` — a repo check, a `-z` porcelain
+ * status over the literalized pathspecs (no entry with a worktree-column
+ * change → `clean`: every Doorstop-managed file already matches
+ * index/HEAD, nothing to stage), and `git add -- :(literal)<selected
+ * paths>` for exactly the REQUEST paths whose porcelain Y (worktree)
+ * column is non-blank (git ≥ 2.x `add` stages named-path deletions too, so
+ * a deleted item file is staged for removal). An already-staged entry is
+ * SKIPPED — a staged deletion (`D `) in particular: its path exists in
+ * neither the index nor the worktree, and re-adding it would abort the
+ * WHOLE add with "did not match any files" (the stage's idempotency
+ * promise: "Stage all is idempotent, and cheap to repeat" — a second
+ * click over an already-staged deletion reports `clean`, never a fatal
+ * add). The response's `staged` count narrates the SELECTED paths (what
+ * the add covered), never the raw record count. The outcome is NARRATION
+ * (Stage all is a mutating run — the Last run status bar renders it): the
+ * response RESOLVES on every git outcome — `skipped` for non-repo /
+ * exhausted budget, `failed` + bounded stderr excerpt for a git error,
+ * both folded by the catch — and only a host-attributed ABORT rethrows
+ * (the reviewCommitPipeline catch's exact taxonomy).
+ */
+export async function requestDoorstopGitStage(
+  context: ServerPluginActivationContext,
+  request: ProviderRequestContext,
+): Promise<JsonValue> {
+  if (request.operation !== DOORSTOP_GIT_STAGE_OPERATION) {
+    throw unsupportedBackendOperationError(request.operation);
+  }
+  // STRICT parse before any exec AND before queueing (the run/baseline
+  // idiom): an empty or out-of-grammar path list never reaches git.
+  const stage = parseDoorstopGitStageRequest(request.input);
+  const settings = parseDoorstopBackendSettings(context.settings);
+  const cwd = request.workspace.path;
+  return runSerialized(context, cwd, async () => {
+    const startedAt = Date.now();
+    try {
+      // 1. Repo check — a non-repo workspace has nothing to stage.
+      if (remainingBudgetMs(startedAt) <= 0) return stageResponse("skipped");
+      const inWorkTree = await runGit(
+        context,
+        settings,
+        cwd,
+        ["rev-parse", "--is-inside-work-tree"],
+        request.signal,
+        gitExecTimeoutMs(settings, startedAt),
+      );
+      if (!isWorkTreeResult(inWorkTree)) return stageResponse("skipped");
+
+      // 2. What actually changed among the managed paths: every path is
+      // LITERALIZED (`:(literal)` magic — a crafted path can never widen
+      // the matched set beyond the Doorstop files). The porcelain fetch is
+      // `-z` — NUL-delimited records with VERBATIM paths, the only format
+      // plain porcelain never re-quotes (`core.quotePath` C-escapes
+      // non-ASCII, and spaces are always quoted — either would silently
+      // drop such paths from the selection below). No entry with a
+      // WORKTREE (Y-column) change → every managed file already matches
+      // index/HEAD: `clean`, no add.
+      if (remainingBudgetMs(startedAt) <= 0) return stageResponse("skipped");
+      const pathspecs = stage.paths.map(literalPathspec);
+      const status = await runGit(
+        context,
+        settings,
+        cwd,
+        ["status", "--porcelain", "-z", "--", ...pathspecs],
+        request.signal,
+        gitExecTimeoutMs(settings, startedAt),
+      );
+      if (status.exitCode !== 0) {
+        gitStepFailure(status, ["status", "--porcelain", "-z", "--", ...pathspecs]);
+      }
+      // The add set is the REQUEST paths with a worktree change (the paths
+      // are in the output — parsed back verbatim; stageAddTargets). An
+      // entry whose Y column is blank needs no add, and a STAGED DELETION
+      // (`D `) must be skipped in particular: its path exists in NEITHER
+      // the index NOR the worktree, and `git add` on it aborts the WHOLE
+      // add with "did not match any files" — exactly the idempotency break
+      // a second Stage-all click over an already-staged deletion would hit
+      // ("Stage all is idempotent, and cheap to repeat" is the plan's
+      // promise). The narrated `staged` count is the SELECTED paths (what
+      // the add covers), never the raw record count — a re-click on an
+      // already-staged set reports `clean`.
+      const addPaths = stageAddTargets(status.stdout, stage.paths);
+      if (addPaths.length === 0) return stageResponse("clean");
+
+      // 3. Stage them: `git add -- <literal selected paths>` —
+      // modifications, additions, AND deletions (git ≥ 2.x `add` stages
+      // removals for named paths, so a deleted item file is staged for
+      // removal too). Every selected path has a real Y-column change (it
+      // exists in the index or the worktree), so this single add exec can
+      // never abort on a pathspec that "did not match any files".
+      if (remainingBudgetMs(startedAt) <= 0) return stageResponse("skipped");
+      const add = await runGit(
+        context,
+        settings,
+        cwd,
+        ["add", "--", ...addPaths.map(literalPathspec)],
+        request.signal,
+        gitExecTimeoutMs(settings, startedAt),
+      );
+      if (add.exitCode !== 0) gitStepFailure(add, ["add", "--", ...addPaths.map(literalPathspec)]);
+      return stageResponse("staged", addPaths.length);
+    } catch (error) {
+      // Any git failure — a non-zero exit, a killed exec, or a missing git
+      // binary (ENOENT → the "git not found" message) — collapses into the
+      // bounded `failed` outcome; the response RESOLVES (narration). A
+      // host-attributed ABORT rethrows untouched (module header taxonomy).
+      if (request.signal.aborted) throw error;
+      return stageResponse("failed", undefined, commitStderrExcerpt(formatUnknownError(error)));
+    }
+  });
+}
+
+/** The `doorstop.git-stage` response literal, pinned to the contract shape
+ *  (see doorstopRunResponse for the JsonValue idiom). `staged`/`stderr`
+ *  are OMITTED except on the status that declares them — the strict
+ *  response parser's field/status coupling. */
+function stageResponse(status: DoorstopGitStageResponse["status"], staged?: number, stderr?: string): JsonValue {
+  return {
+    status,
+    ...(staged === undefined ? {} : { staged }),
+    ...(stderr === undefined ? {} : { stderr }),
+  } satisfies DoorstopGitStageResponse;
+}
+
+/**
+ * The `doorstop.git-commit` handler (plan step 8) — Commit. Validates the
+ * message (the commit-message grammar: non-blank, single line, ≤ 2 000
+ * chars) BEFORE any exec and before queueing — the browser never sends an
+ * empty/whitespace-only message (git would open `$EDITOR` and hang the
+ * exec), so a malformed message never reaches git — then, budgeted and in
+ * `runSerialized`: a repo check; `git diff --cached --quiet` (exit 0 →
+ * nothing staged → `clean`; exit 1 → staged changes exist → proceed; any
+ * other exit or a killed exec → a real git error, never "clean");
+ * `git commit -m <message>` with NO pathspec and NO add — the commit
+ * records WHATEVER the staged index holds (Stage all's paths, the user's
+ * own staged files, review-pipeline commits); unstaged WIP is never swept
+ * in; and `git rev-parse --short HEAD` for the `committed` sha — a
+ * rev-parse that fails or is skipped AFTER the commit landed falls back to
+ * the short sha `git commit` itself printed (`[branch abc1234] …`), so a
+ * landed commit is never narrated `failed`/`skipped` (a dropped
+ * rev-parse is an instrumentation failure, not an outcome failure). The
+ * outcome reuses {@link DoorstopCommitOutcome} verbatim — a failing
+ * pre-commit hook (its stderr surfaces verbatim in the excerpt) or a
+ * missing `user.name`/`user.email` identity (git's own stderr names the
+ * remedy) both resolve as `failed`; only a host-attributed ABORT rethrows.
+ */
+export async function requestDoorstopGitCommit(
+  context: ServerPluginActivationContext,
+  request: ProviderRequestContext,
+): Promise<JsonValue> {
+  if (request.operation !== DOORSTOP_GIT_COMMIT_OPERATION) {
+    throw unsupportedBackendOperationError(request.operation);
+  }
+  // STRICT parse before any exec AND before queueing (the run/baseline
+  // idiom): an out-of-grammar message never reaches git.
+  const commitRequest = parseDoorstopGitCommitRequest(request.input);
+  const settings = parseDoorstopBackendSettings(context.settings);
+  const cwd = request.workspace.path;
+  return runSerialized(context, cwd, async () => {
+    const startedAt = Date.now();
+    try {
+      // 1. Repo check — a non-repo workspace has nothing to commit.
+      if (remainingBudgetMs(startedAt) <= 0) return commitResponse({ status: "skipped" });
+      const inWorkTree = await runGit(
+        context,
+        settings,
+        cwd,
+        ["rev-parse", "--is-inside-work-tree"],
+        request.signal,
+        gitExecTimeoutMs(settings, startedAt),
+      );
+      if (!isWorkTreeResult(inWorkTree)) {
+        return commitResponse({ status: "skipped" });
+      }
+
+      // 2. Nothing staged → `clean` (`git diff --cached --quiet` exit 0).
+      // Exit 1 means staged changes exist → proceed; any other exit code
+      // (or a killed exec — exitCode null) is a real git error, not
+      // "clean".
+      if (remainingBudgetMs(startedAt) <= 0) return commitResponse({ status: "skipped" });
+      const staged = await runGit(
+        context,
+        settings,
+        cwd,
+        ["diff", "--cached", "--quiet"],
+        request.signal,
+        gitExecTimeoutMs(settings, startedAt),
+      );
+      if (staged.exitCode === 0) return commitResponse({ status: "clean" });
+      if (staged.exitCode !== 1) gitStepFailure(staged, ["diff", "--cached", "--quiet"]);
+
+      // 3. The commit itself: NO pathspec, NO add — the index is the
+      // content, whatever it holds. The message travels as execFile argv
+      // (never a shell string), so no quoting/injection concern here.
+      if (remainingBudgetMs(startedAt) <= 0) return commitResponse({ status: "skipped" });
+      const commit = await runGit(
+        context,
+        settings,
+        cwd,
+        ["commit", "-m", commitRequest.message],
+        request.signal,
+        gitExecTimeoutMs(settings, startedAt),
+      );
+      if (commit.exitCode !== 0) gitStepFailure(commit, ["commit", "-m", commitRequest.message]);
+
+      // 4. The abbreviated HEAD sha for the `committed` narration. The
+      // commit ALREADY LANDED (step 3 exited 0): a rev-parse that fails or
+      // is skipped by the deadline budget must NOT narrate the commit as
+      // `skipped`/`failed` while it exists — `git commit` printed the short
+      // sha in its own first stdout bracket (`[main abc1234] …`), which
+      // becomes the fallback; only when even that is missing (defensive)
+      // does the step fail/skip.
+      if (remainingBudgetMs(startedAt) <= 0) {
+        const fallback = commitBracketSha(commit.stdout);
+        return fallback === undefined
+          ? commitResponse({ status: "skipped" })
+          : commitResponse({ status: "committed", sha: fallback });
+      }
+      const head = await runGit(
+        context,
+        settings,
+        cwd,
+        ["rev-parse", "--short", "HEAD"],
+        request.signal,
+        gitExecTimeoutMs(settings, startedAt),
+      );
+      const fromHead = head.exitCode === 0 ? head.stdout.trim() : "";
+      if (fromHead !== "") return commitResponse({ status: "committed", sha: fromHead });
+      const fallback = commitBracketSha(commit.stdout);
+      if (fallback !== undefined) return commitResponse({ status: "committed", sha: fallback });
+      gitStepFailure(head, ["rev-parse", "--short", "HEAD"]);
+    } catch (error) {
+      // Any git failure collapses into the bounded `failed` outcome; the
+      // response RESOLVES (narration). A host-attributed ABORT rethrows
+      // untouched (module header taxonomy).
+      if (request.signal.aborted) throw error;
+      return commitResponse({ status: "failed", stderr: commitStderrExcerpt(formatUnknownError(error)) });
+    }
+  });
+}
+
+/** The `doorstop.git-commit` response literal — the review→commit
+ *  {@link DoorstopCommitOutcome} shape reused verbatim (see
+ *  doorstopRunResponse for the JsonValue idiom): `sha` on `committed`
+ *  only, `stderr` on `failed` only, both omitted otherwise. */
+function commitResponse(outcome: DoorstopCommitOutcome): JsonValue {
+  // The spread yields a fresh object so the value admits the host bridge's
+  // JsonObject index signature (the interface itself lacks it); `satisfies`
+  // keeps the shape pinned to the contract.
+  return { ...outcome } satisfies DoorstopCommitOutcome;
 }

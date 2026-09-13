@@ -1,9 +1,11 @@
 // ---------------------------------------------------------------------------
-// Opendoor paired-server contract: the TWO backend operation names
-// (`doorstop.run` and `doorstop.item-baseline`), their request/response
-// shapes, and runtime parse validators shared by the browser bundle (panel
-// dispatcher) and the server bundle (`doorstop-backend.ts` request handler),
-// plus the UID/publish-target/item-path grammars both sides validate with.
+// Opendoor paired-server contract: the FIVE backend operation names
+// (`doorstop.run`, `doorstop.item-baseline`, and the three project-scoped
+// git operations `doorstop.git-status` / `doorstop.git-stage` /
+// `doorstop.git-commit`), their request/response shapes, and runtime parse
+// validators shared by the browser bundle (panel dispatcher) and the server
+// bundle (`doorstop-backend.ts` request handler), plus the UID/publish-
+// target/item-path/commit-message grammars both sides validate with.
 //
 // This follows the git-plugin contract idiom exactly
 // (pi-web-plugins/git/browser/git-contract.ts, shipped as
@@ -34,12 +36,17 @@
 // second copy anywhere. `isValidDoorstopItemPath` is the NEW review/
 // baseline-safe item-path rule (plan Phase A step 4), shared by the
 // baseline request parser and the Phase B review-commit pathspec — no
-// second copy anywhere either.
+// second copy anywhere either. `isValidGitCommitMessage` is the NEW
+// git-actions commit-message rule (plan-add-git-actions.md Phase A step 4),
+// shared by the `doorstop.git-commit` request parser — no second copy
+// anywhere either.
 //
 // Conventions (strictest tsconfig flags incl. `exactOptionalPropertyTypes`):
 // typed fields are REQUIRED and always present unless documented optional
-// (the review variant's `commit` flag, the response's `commit` outcome, and
-// the outcome's `sha`/`stderr` excerpts). With `exactOptionalPropertyTypes`
+// (the review variant's `commit` flag, the response's `commit` outcome, the
+// outcome's `sha`/`stderr` excerpts, the git status response's
+// `branch`/`ahead`/`behind`, and the git stage response's `staged`/
+// `stderr`). With `exactOptionalPropertyTypes`
 // the parsers OMIT absent optional fields — never set them to `undefined`
 // (the git-contract `...(x === undefined ? {} : { x })` idiom). The host
 // JSON bridge carries `null` for
@@ -599,3 +606,428 @@ export function parseDoorstopBaselineResponse(value: unknown): DoorstopBaselineR
     candidates: requireArrayValue(record["candidates"], "candidates").map(parseDoorstopBaselineCandidate),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Git operations — `doorstop.git-status`, `doorstop.git-stage`,
+// `doorstop.git-commit` (plan-add-git-actions.md Phase A steps 1–5): the
+// project-scoped git trio behind the Requirements panel's project-actions
+// group. Status is READ-ONLY and best-effort — a `git` flag, not an error
+// channel (the baseline idiom); stage and commit are mutating runs whose
+// outcomes reuse the review→commit `DoorstopCommitOutcome` grammar
+// (`status`/`sha`/`stderr`). The stage request is a path ARRAY — the same
+// operation backs the future per-item staging palette with `{ paths:
+// [item.path] }`, no new operation, no contract change.
+// ---------------------------------------------------------------------------
+
+/** The third backend operation — the read-only git status readout:
+ *  `backend.request(DOORSTOP_GIT_STATUS_OPERATION, {})`. The server runs
+ *  `rev-parse --is-inside-work-tree --show-prefix` (repo check) and
+ *  `status --porcelain=v1 -z -b` (branch line + ahead/behind + per-file XY
+ *  states) and returns the {@link DoorstopGitStatusResponse} shape backing
+ *  the project-actions status strip. Matches the host's `^[a-z][a-z0-9.-]*$`
+ *  operation grammar. */
+export const DOORSTOP_GIT_STATUS_OPERATION = "doorstop.git-status";
+
+/** One `doorstop.git-status` request: the status fetch carries NO fields —
+ *  every workspace state the readout needs is derived server-side from the
+ *  workspace path. (A field here is a forward-compat hook, never a current
+ *  parameter; the parser accepts `{}` and tolerates extra keys.) */
+export interface DoorstopGitStatusRequest {}
+
+/** One git status file state — the porcelain XY columns decoded to the host
+ *  git plugin's `GitStatusFile` vocabulary (its `parseGitFileState` shape,
+ *  verbatim; the server's status handler maps the XY codes onto exactly
+ *  these states). `index` carries the staged X column, `workingTree` the
+ *  unstaged Y column. */
+export type DoorstopGitFileState =
+  | "unmodified"
+  | "modified"
+  | "added"
+  | "deleted"
+  | "renamed"
+  | "copied"
+  | "untracked"
+  | "ignored"
+  | "conflicted";
+
+/** One changed file in a status response, carrying BOTH porcelain columns
+ *  kept SEPARATE (the host git plugin's `GitStatusFile` shape): `index` is
+ *  the staged state (X), `workingTree` the unstaged state (Y). A single
+ *  collapsed `state` field would force a BREAKING contract change when
+ *  per-item staging lands (that UI must distinguish "has unstaged changes —
+ *  stage it" from "staged, awaiting commit"); carrying both columns now
+ *  costs one extra field and keeps every future consumer parse-compatible. */
+export interface DoorstopGitStatusFile {
+  path: string;
+  index: DoorstopGitFileState;
+  workingTree: DoorstopGitFileState;
+}
+
+/** The backend's structured result for one `doorstop.git-status` request —
+ *  read-only and best-effort, NEVER an infrastructure error (the baseline
+ *  handler's exact philosophy): `git: false` when the workspace is not a
+ *  git repository (every other field at its default/empty value), and the
+ *  browser shows the strip's "no git" text instead of an error.
+ *
+ * `staged` counts files whose INDEX column changed (X not in `' '`, `'?'`,
+ *  `'!'` — the changes a commit will record); `dirty` counts files with any
+ *  non-unmodified state (staged OR working-tree). Both counts cover the
+ *  FULL porcelain output — `files` is capped at {@link
+ *  DOORSTOP_GIT_STATUS_FILES_MAX} entries so the response stays bounded
+ *  while the counts stay honest above the cap. */
+export interface DoorstopGitStatusResponse {
+  /** false → not a git repository; every other field is default/empty. */
+  git: boolean;
+  /** Current branch; ABSENT on a detached HEAD (porcelain `-b` prints
+   *  `HEAD (no branch)` — the server reports no `branch`). */
+  branch?: string;
+  /** Commits ahead of the upstream; absent without an upstream. */
+  ahead?: number;
+  /** Commits behind the upstream; absent without an upstream. */
+  behind?: number;
+  /** Files with an index change (X column not `' '`, `'?'`, `'!'`). */
+  staged: number;
+  /** Files with any non-unmodified state (either column). */
+  dirty: number;
+  /** Per-file { path, index (staged X), workingTree (unstaged Y) }; capped
+   *  at {@link DOORSTOP_GIT_STATUS_FILES_MAX} (the counts above remain
+   *  full-output). */
+  files: readonly DoorstopGitStatusFile[];
+}
+
+/** Cap on the status response's `files` array: the `staged`/`dirty` counts
+ *  are computed from the FULL porcelain output, `files` holds the first 200
+ *  entries — bounded responses, honest counts. */
+export const DOORSTOP_GIT_STATUS_FILES_MAX = 200;
+
+/** The recognized git file states (strict-enum style: unknown values throw,
+ *  nothing is defaulted — the git plugin's `parseGitFileState` idiom). */
+const DOORSTOP_GIT_FILE_STATES = new Set<DoorstopGitFileState>([
+  "unmodified",
+  "modified",
+  "added",
+  "deleted",
+  "renamed",
+  "copied",
+  "untracked",
+  "ignored",
+  "conflicted",
+]);
+
+/** Validate that `value` is one of the known file states (a non-string is
+ *  junk, not a state — nothing is coerced). */
+function parseDoorstopGitFileState(value: unknown): DoorstopGitFileState {
+  if (typeof value !== "string" || !DOORSTOP_GIT_FILE_STATES.has(value as DoorstopGitFileState)) {
+    throw new Error(`Invalid doorstop git file state: ${JSON.stringify(value)}`);
+  }
+  return value as DoorstopGitFileState;
+}
+
+/** Guard: `record[key]` must be a finite NON-NEGATIVE number when present
+ *  (a COUNT — the status response's optional `ahead`/`behind` and the
+ *  stage response's optional `staged` count are commit/file counts; a
+ *  negative value is impossible and rejected, the module's standing
+ *  nothing-coerced rule); `undefined` passes (the git-contract
+ *  `optionalNumber` idiom). */
+function optionalNumber(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`Expected finite number field: ${key}`);
+  }
+  if (value < 0) {
+    throw new Error(`Expected non-negative count field: ${key}`);
+  }
+  return value;
+}
+
+/** Guard: `record[key]` must be a finite NON-NEGATIVE number — the status
+ *  response's REQUIRED `staged`/`dirty` counts (the same rule as
+ *  {@link optionalNumber}'s count guard; `Number.isFinite` alone would let
+ *  an impossible `-3` file count through). */
+function requireCount(record: Record<string, unknown>, key: string): number {
+  const value = requireFiniteNumber(record, key);
+  if (value < 0) {
+    throw new Error(`Expected non-negative count field: ${key}`);
+  }
+  return value;
+}
+
+/** Parse and validate one status file record (two strict file states and a
+ *  path string; extra keys tolerated, git-contract forward-compat idiom). */
+function parseDoorstopGitStatusFile(value: unknown): DoorstopGitStatusFile {
+  const record = requireRecord(value, "Doorstop git status file");
+  return {
+    path: requireString(record, "path"),
+    index: parseDoorstopGitFileState(record["index"]),
+    workingTree: parseDoorstopGitFileState(record["workingTree"]),
+  };
+}
+
+/**
+ * Parse and validate a `doorstop.git-status` request: the status fetch
+ * carries NO fields, so any object parses (extra keys tolerated, forward
+ * compatibility — the git-contract request idiom); non-object junk throws.
+ */
+export function parseDoorstopGitStatusRequest(value: unknown): DoorstopGitStatusRequest {
+  requireRecord(value, "Doorstop git status request");
+  return {};
+}
+
+/**
+ * Parse and validate a `doorstop.git-status` response — strict, the
+ * module's standing rule: junk of any kind (non-object input, a non-string
+ * `branch`, a non-finite `ahead`/`behind`, a wrongly-typed `git`/`staged`/
+ * `dirty`, a non-array `files`, a `files` entry with a missing or
+ * wrong-typed field, or an unknown file state) throws; nothing is coerced
+ * or defaulted. The optional `branch`/`ahead`/`behind` are omitted from the
+ * result when absent (exactOptionalPropertyTypes idiom), and they are
+ * coupled to `git` exactly like the stage/commit parsers couple their
+ * optional fields to their status: `{ git: false, branch }` — branch /
+ * upstream fields on a non-git workspace — is a malformed response and
+ * throws (the interface documents every other field as default/empty on
+ * `git: false`).
+ */
+export function parseDoorstopGitStatusResponse(value: unknown): DoorstopGitStatusResponse {
+  const record = requireRecord(value, "Doorstop git status response");
+  const branch = optionalString(record, "branch");
+  const ahead = optionalNumber(record, "ahead");
+  const behind = optionalNumber(record, "behind");
+  const git = requireBoolean(record, "git");
+  // The JSDoc on {@link DoorstopGitStatusResponse} couples the optional
+  // fields to `git`: not-a-repository means the branch/upstream fields are
+  // ALL ABSENT (every other field at its default/empty value). Enforce
+  // that coupling strictly — `{ git: false, branch }` is a malformed
+  // response, never a silently-ignored field (the sibling stage/commit
+  // parser idiom: optional fields only on the status that declares them).
+  if (!git && (branch !== undefined || ahead !== undefined || behind !== undefined)) {
+    throw new Error(
+      `Only a git repository may carry "branch"/"ahead"/"behind" (git: ${JSON.stringify(git)})`,
+    );
+  }
+  return {
+    git,
+    ...(branch === undefined ? {} : { branch }),
+    ...(ahead === undefined ? {} : { ahead }),
+    ...(behind === undefined ? {} : { behind }),
+    staged: requireCount(record, "staged"),
+    dirty: requireCount(record, "dirty"),
+    files: requireArrayValue(record["files"], "files").map(parseDoorstopGitStatusFile),
+  };
+}
+
+/** The fourth backend operation — the project-scoped stage-all action:
+ *  `backend.request(DOORSTOP_GIT_STAGE_OPERATION, { paths })`. The server
+ *  checks the repo, lists the given (literalized) pathspecs, and `git add`s
+ *  whatever changed among them — modifications, additions, AND deletions
+ *  (git ≥ 2.x `add` stages removals for named paths, so a deleted item file
+ *  is staged for removal too). The path ARRAY makes the operation generic:
+ *  per-item staging (the future item-action-palette feature) is the same
+ *  operation with `{ paths: [item.path] }` — no new operation, no contract
+ *  change, no server edit. */
+export const DOORSTOP_GIT_STAGE_OPERATION = "doorstop.git-stage";
+
+/** One stage request: the Doorstop-managed workspace-relative paths to
+ *  stage (the root `.doorstop.yml`, each document's config file, each item
+ *  file). NEVER empty — the panel disables Stage all when the loaded index
+ *  has no documents, so an empty stage request is a contradiction the
+ *  browser never emits (the same strict parity as the clear request's
+ *  `parents` guard); the request parser rejects it. Each path is validated
+ *  by {@link isValidDoorstopItemPath} and deduplicated by the parser. */
+export interface DoorstopGitStageRequest {
+  paths: readonly string[];
+}
+
+/** The backend's structured result for one `doorstop.git-stage` request.
+ *  The outcome is NARRATION (Stage all is a mutating run — the Last run
+ *  status bar narrates it), so the response RESOLVES with this shape on
+ *  every outcome and never surfaces as an infrastructure error. */
+export interface DoorstopGitStageResponse {
+  /** staged → paths were staged (`staged` count set); clean → nothing to
+   *  stage (every Doorstop-managed file already matches the index/HEAD);
+   *  skipped → not a git repository / deadline budget exhausted; failed →
+   *  a git step errored (`stderr` excerpt). */
+  status: "staged" | "clean" | "skipped" | "failed";
+  /** Number of changed paths the `add` covered ("staged" only). */
+  staged?: number;
+  /** Bounded stderr excerpt (≤ ~2 KiB; "failed" only). */
+  stderr?: string;
+}
+
+/** The recognized stage statuses (strict-enum style — the commit outcome's
+ *  status set with `staged` in `committed`'s slot). */
+const DOORSTOP_GIT_STAGE_STATUSES = new Set<DoorstopGitStageResponse["status"]>([
+  "staged",
+  "clean",
+  "skipped",
+  "failed",
+]);
+
+/** Validate that `value` is one of the known stage statuses. */
+function parseDoorstopGitStageStatus(value: string): DoorstopGitStageResponse["status"] {
+  if (!DOORSTOP_GIT_STAGE_STATUSES.has(value as DoorstopGitStageResponse["status"])) {
+    throw new Error(`Invalid doorstop git stage status: ${JSON.stringify(value)}`);
+  }
+  return value as DoorstopGitStageResponse["status"];
+}
+
+/**
+ * Parse and validate a `doorstop.git-stage` request. Throws on junk:
+ * non-object input, a missing or non-array `paths` field, an EMPTY `paths`
+ * array (strict parity with the element guard: the Stage all button is
+ * disabled when the loaded index has no documents — an empty stage request
+ * is a contradiction the browser never emits, surfaced instead of silently
+ * ignored), or any path outside the workspace-relative item-path grammar
+ * ({@link isValidDoorstopItemPath}). Duplicate paths are deduplicated by
+ * the parser (first occurrence order preserved) so the server stages each
+ * unique path exactly once. Extra keys are tolerated.
+ */
+export function parseDoorstopGitStageRequest(value: unknown): DoorstopGitStageRequest {
+  const record = requireRecord(value, "Doorstop git stage request");
+  const paths = requireStringArray(record, "paths");
+  // Strict parity with the element guard: the Stage all button is disabled
+  // when the loaded index has no documents, so an empty stage request is a
+  // contradiction the browser never emits — surface it instead of running
+  // a bare `git add` over nothing.
+  if (paths.length === 0) {
+    throw new Error("Invalid doorstop.git-stage request: at least one path is required");
+  }
+  const seen = new Set<string>();
+  const uniquePaths: string[] = [];
+  for (const path of paths) {
+    if (!isValidDoorstopItemPath(path)) {
+      throw new Error(`Invalid doorstop item path in field: paths`);
+    }
+    if (!seen.has(path)) {
+      seen.add(path);
+      uniquePaths.push(path);
+    }
+  }
+  return { paths: uniquePaths };
+}
+
+/**
+ * Parse and validate a `doorstop.git-stage` response — strict, with the
+ * same field/status coupling {@link parseDoorstopCommitOutcome} enforces:
+ * a `staged` count on any status but `"staged"`, or a `stderr` excerpt on
+ * any status but `"failed"`, is a malformed response and throws (nothing
+ * is coerced or defaulted; extra keys tolerated).
+ */
+export function parseDoorstopGitStageResponse(value: unknown): DoorstopGitStageResponse {
+  const record = requireRecord(value, "Doorstop git stage response");
+  const status = parseDoorstopGitStageStatus(requireString(record, "status"));
+  const staged = optionalNumber(record, "staged");
+  const stderr = optionalString(record, "stderr");
+  // The JSDoc on {@link DoorstopGitStageResponse} couples the fields to
+  // their statuses: `staged` is "staged" only, `stderr` is "failed" only.
+  // Enforce that coupling strictly — `{ status: "clean", staged }`, a
+  // stray excerpt on a successful stage, etc., are malformed responses.
+  if (status !== "staged" && staged !== undefined) {
+    throw new Error(`Only a "staged" outcome may carry "staged" (status: ${JSON.stringify(status)})`);
+  }
+  if (status !== "failed" && stderr !== undefined) {
+    throw new Error(`Only a "failed" outcome may carry "stderr" (status: ${JSON.stringify(status)})`);
+  }
+  return {
+    status,
+    ...(staged === undefined ? {} : { staged }),
+    ...(stderr === undefined ? {} : { stderr }),
+  };
+}
+
+/** The fifth backend operation — the project-scoped commit action:
+ *  `backend.request(DOORSTOP_GIT_COMMIT_OPERATION, { message })`. The
+ *  server checks the repo, verifies the index holds changes
+ *  (`git diff --cached --quiet`), and runs `git commit -m <message>` — NO
+ *  pathspec, NO add: the commit records WHATEVER the staged index holds
+ *  (Stage all's paths, the user's own staged files, review-pipeline
+ *  commits), exactly like a CLI `git commit`; unstaged WIP is never swept
+ *  in. The response REUSES {@link DoorstopCommitOutcome} verbatim. */
+export const DOORSTOP_GIT_COMMIT_OPERATION = "doorstop.git-commit";
+
+/** One commit request: the message to record with the staged index,
+ *  validated by {@link isValidGitCommitMessage} — EMPTY and whitespace-only
+ *  are rejected (git with an empty `-m` opens `$EDITOR` and would hang the
+ *  exec until the deadline budget kills it; git itself aborts a
+ *  whitespace-only message after cleanup — the browser must never send
+ *  either). Injection safety needs no grammar here: the message travels as
+ *  execFile **argv**, never a shell string; the grammar is UX/hygiene only.
+ *  There is NO scope field — the commit records the staged index, period;
+ *  scope is decided at staging time (Stage all, the user's own `git add`,
+ *  or the review→commit pipeline). */
+export interface DoorstopGitCommitRequest {
+  message: string;
+}
+
+/** The backend's structured result for one `doorstop.git-commit` request —
+ *  {@link DoorstopCommitOutcome} reused verbatim (`committed`/`clean`/
+ *  `skipped`/`failed` + `sha`/`stderr`), narrated by the Last run status
+ *  bar; the response always RESOLVES. */
+export type DoorstopGitCommitResponse = DoorstopCommitOutcome;
+
+/**
+ * Whether `value` is a valid git commit message per the operation grammar
+ * — the same validator idiom as {@link isValidDoorstopUid} /
+ * {@link isValidDoorstopItemPath}: NON-BLANK (not empty, and not
+ * whitespace-only), at most 2 000 characters, and SINGLE LINE (no C0
+ * controls U+0000–U+001F — newlines included — no DEL, no C1 controls
+ * U+007F–U+009F, and no Unicode line separators U+2028/U+2029 — the exact
+ * control character class of {@link isValidDoorstopItemPath}). Empty is
+ * rejected because git with an empty `-m` opens `$EDITOR` and would hang
+ * the exec until the deadline budget kills it; whitespace-only is rejected
+ * too — git itself aborts such a message after cleanup when it arrives
+ * (constant `-m "   "` yields "Aborting commit due to empty commit
+ * message"), and the browser's element guard trims before sending, so
+ * neither should ever arrive here (and the server's
+ * `parseDoorstopGitCommitRequest` TRIMS the message it returns, so the
+ * contract and the element guard agree in both directions — a padded
+ * message commits trimmed, never padded). The grammar is UX/hygiene only: the
+ * message travels as execFile **argv**, never a shell string, so injection
+ * safety needs no grammar here.
+ */
+export function isValidGitCommitMessage(value: string): boolean {
+  if (value === "") return false;
+  // Length cap (plan: ≤ 2 000 chars).
+  if (value.length > 2000) return false;
+  // Whitespace-only ("   "): git itself aborts a message that is empty
+  // after cleanup, and the browser's element guard trims before checking
+  // empty — reject it here so the contract and the element guard agree
+  // (the empty-message rule has exactly one unambiguous reading).
+  if (value.trim() === "") return false;
+  // Single line: C0 controls (incl. \n and \r), DEL, the C1 controls, and
+  // the Unicode line separators — same class as the item-path rule.
+  if (/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(value)) return false;
+  return true;
+}
+
+/**
+ * Parse and validate a `doorstop.git-commit` request. Throws on junk: a
+ * missing or wrongly-typed `message`, or a message outside the commit
+ * message grammar ({@link isValidGitCommitMessage}). The message is
+ * TRIMMED in the parsed result — the element guard trims before sending,
+ * so a padded message only arrives from a non-compliant caller (git would
+ * commit the padding verbatim), and a server-side trim makes the contract
+ * and the element guard agree in both directions. Extra keys are
+ * tolerated.
+ */
+export function parseDoorstopGitCommitRequest(value: unknown): DoorstopGitCommitRequest {
+  const record = requireRecord(value, "Doorstop git commit request");
+  const message = requireString(record, "message");
+  if (!isValidGitCommitMessage(message)) {
+    throw new Error(
+      "Invalid git commit message — must be a non-blank single line of at most 2000 characters",
+    );
+  }
+  return { message: message.trim() };
+}
+
+/**
+ * Strict response parser for `doorstop.git-commit` — exactly
+ * {@link parseDoorstopCommitOutcome} (the commit operation reuses the
+ * review→commit {@link DoorstopCommitOutcome} shape verbatim, and the
+ * field/status coupling — `sha` only on `committed`, `stderr` only on
+ * `failed` — is already enforced there), exported under the operation's own
+ * name so the dispatch side reads symmetrically with the status/stage
+ * parsers. One parser, no second copy.
+ */
+export const parseDoorstopGitCommitResponse = parseDoorstopCommitOutcome;

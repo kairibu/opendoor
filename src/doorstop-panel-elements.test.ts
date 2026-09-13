@@ -18,7 +18,12 @@
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { TerminalCommandRun, TerminalCommandRunHandle, Workspace, WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
 import type { DoorstopDocumentConfig, DoorstopIndex, ItemRecord, ItemStateKey } from "./doorstop-contract.js";
-import type { DoorstopRunResponse, DoorstopBaselineResponse } from "./doorstop-backend-contract.js";
+import {
+  DOORSTOP_GIT_STATUS_OPERATION,
+  type DoorstopBaselineResponse,
+  type DoorstopGitStatusResponse,
+  type DoorstopRunResponse,
+} from "./doorstop-backend-contract.js";
 import { buildDoorstopIndex } from "./doorstop-model.js";
 import { computeItemStamp, computeItemStates } from "./doorstop-state.js";
 import {
@@ -296,6 +301,37 @@ function makeBaselineResponse(overrides: Partial<DoorstopBaselineResponse> = {})
     candidates: [],
     ...overrides,
   };
+}
+
+/** A canned git-status response for the backend spies (plan-add-git-actions
+ *  Phase D step 14): the mount-time `doorstop.git-status` auto-fetch fires
+ *  on every backend-active mount, and answering it with a VALID status
+ *  response keeps the strip's cached view honest on every mount (a
+ *  run-shaped response would reject into a transient error view — harmless
+ *  to assertions, but wrong). Callers override only the fields their
+ *  scenario cares about. */
+function makeGitStatusResponse(overrides: Partial<DoorstopGitStatusResponse> = {}): DoorstopGitStatusResponse {
+  return {
+    git: true,
+    branch: "main",
+    ahead: 0,
+    behind: 0,
+    staged: 0,
+    dirty: 0,
+    files: [],
+    ...overrides,
+  };
+}
+
+/** Wrap a backend spy so the mount-time `doorstop.git-status` auto-fetch
+ *  answers with a valid {@link makeGitStatusResponse} while every other
+ *  operation delegates to `impl`. Use for every backend-active mount: the
+ *  strip's cached view stays `"ready"` instead of landing on the transient
+ *  error view a run-shaped or `undefined` answer would produce. */
+function withGitStatusBackend(impl: (operation: string, input: unknown) => unknown | Promise<unknown>): Mock {
+  return vi.fn((operation: string, input: unknown) =>
+    operation === DOORSTOP_GIT_STATUS_OPERATION ? Promise.resolve(makeGitStatusResponse()) : impl(operation, input),
+  );
 }
 
 /** Mount the body element over a controller driven by the given job, mirror
@@ -1293,7 +1329,7 @@ describe("DoorstopPanelBodyElement (terminal actions: exact command lines + meta
 
 describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
   it("dispatches through the backend and commits lastRun when the opendoor provider owns the workspace", async () => {
-    const backend = vi.fn(() => Promise.resolve(makeRunResponse()));
+    const backend = withGitStatusBackend(() => Promise.resolve(makeRunResponse()));
     const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()), {
       backend,
       provider: opendoorProvider,
@@ -1304,8 +1340,13 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     await flush(body);
 
     // The structured request went to the backend; the terminal was NOT used;
-    // one rescan followed; the in-flight marker cleared.
-    expect(backend).toHaveBeenCalledTimes(1);
+    // one rescan followed; the in-flight marker cleared. The first backend
+    // call is the ONE mount-time `doorstop.git-status` auto-fetch (the
+    // strip's first-render fetch, Phase D step 14 — answered with a valid
+    // status response via `withGitStatusBackend` so the strip's cached view
+    // stays honest); the second is the validate run.
+    expect(backend).toHaveBeenCalledTimes(2);
+    expect(backend).toHaveBeenCalledWith("doorstop.git-status", {});
     expect(backend).toHaveBeenCalledWith("doorstop.run", { op: "validate" });
     expect(context.terminal.runCommand).not.toHaveBeenCalled();
     expect(invalidate).toHaveBeenCalledTimes(1);
@@ -1337,7 +1378,7 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
 
   it("maps exit codes and killing signals onto the run status", async () => {
     // exit ≠ 0 → failed (findings are output, not infrastructure errors).
-    const backendFailed = vi.fn(() => Promise.resolve(makeRunResponse({ exitCode: 3 })));
+    const backendFailed = withGitStatusBackend(() => Promise.resolve(makeRunResponse({ exitCode: 3 })));
     const failed = await mountBody(() => Promise.resolve(makeTreeResult()), {
       backend: backendFailed,
       provider: opendoorProvider,
@@ -1348,7 +1389,7 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     expect(failed.controller.lastRun?.exitCode).toBe(3);
 
     // signal !== null → killed (partial output preserved, surfaced not thrown).
-    const backendKilled = vi.fn(() =>
+    const backendKilled = withGitStatusBackend(() =>
       Promise.resolve(makeRunResponse({ exitCode: null, signal: "SIGTERM", stdout: "partial…" })),
     );
     const killed = await mountBody(() => Promise.resolve(makeTreeResult()), {
@@ -1643,7 +1684,7 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
 
   it("passes commit: true on Review only when the workspace setting is on (omitted under the default)", async () => {
     // Default setting (off): the review request carries NO commit field.
-    const backendOff = vi.fn((operation: string, input: unknown) => Promise.resolve(makeRunResponse()));
+    const backendOff = withGitStatusBackend((operation: string, input: unknown) => Promise.resolve(makeRunResponse()));
     const off = await mountBody(() => Promise.resolve(makeEditedItemResult()), { backend: backendOff, provider: opendoorProvider });
     off.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
     bindBody(off.body, off.controller, off.context);
@@ -1651,10 +1692,16 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     off.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-review")?.click();
     await flush(off.body);
     expect(backendOff).toHaveBeenCalledWith("doorstop.run", { op: "review", uid: "REQ0003" });
-    expect(backendOff.mock.calls[0]?.[1]).not.toHaveProperty("commit");
+    // The no-`commit` guard is filtered to the `doorstop.run` calls: the
+    // mount-time `doorstop.git-status` auto-fetch (Phase D step 14) is call
+    // 0, so a bare `calls[0]` would read the git-status `{}` payload and
+    // pass trivially. The exact-shape toEqual below carries the real intent.
+    const reviewCall = backendOff.mock.calls.find(([operation]) => operation === "doorstop.run");
+    expect(reviewCall?.[1]).toEqual({ op: "review", uid: "REQ0003" });
+    expect(reviewCall?.[1]).not.toHaveProperty("commit");
 
     // Setting on: the request carries commit: true.
-    const backendOn = vi.fn((operation: string, input: unknown) => Promise.resolve(makeRunResponse()));
+    const backendOn = withGitStatusBackend((operation: string, input: unknown) => Promise.resolve(makeRunResponse()));
     const on = await mountBody(() => Promise.resolve(makeEditedItemResult()), { backend: backendOn, provider: opendoorProvider });
     on.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
     bindBody(on.body, on.controller, on.context);
@@ -1696,7 +1743,7 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
   });
 
   it("renders the commit outcome line in Last run; a failed commit does not flip the ok badge", async () => {
-    const backend = vi.fn(() =>
+    const backend = withGitStatusBackend(() =>
       Promise.resolve(
         makeRunResponse({
           op: "review",
@@ -1722,7 +1769,7 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
 
     // A failed COMMIT is narration: the review succeeded, so the badge stays
     // ok while the line surfaces the bounded git stderr.
-    const backendFailed = vi.fn(() =>
+    const backendFailed = withGitStatusBackend(() =>
       Promise.resolve(
         makeRunResponse({
           op: "review",
@@ -1751,12 +1798,25 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
   });
 
   it("maps every commit outcome status to its narration text (pure)", () => {
-    expect(commitOutcomeText({ status: "committed", sha: "abc1234" })).toBe("commit: abc1234");
-    expect(commitOutcomeText({ status: "clean" })).toBe("commit: clean (already committed)");
-    expect(commitOutcomeText({ status: "skipped" })).toBe(
+    // The review→commit pipeline's voice (a review run — `commit: true`).
+    expect(commitOutcomeText("review", { status: "committed", sha: "abc1234" })).toBe("commit: abc1234");
+    expect(commitOutcomeText("review", { status: "clean" })).toBe("commit: clean (already committed)");
+    expect(commitOutcomeText("review", { status: "skipped" })).toBe(
       "commit: skipped (not a git repository | review failed | deadline)",
     );
-    expect(commitOutcomeText({ status: "failed", stderr: "boom" })).toBe("commit: failed — boom");
+    expect(commitOutcomeText("review", { status: "failed", stderr: "boom" })).toBe("commit: failed — boom");
+    // The git runs' own outcome voice — the shared `clean`/`skipped`/
+    // `failed` statuses branch on the OP (the two response types are
+    // indistinguishable on those statuses): a stage's `clean` means nothing
+    // to stage, a commit's `clean` means nothing staged.
+    expect(commitOutcomeText("git-stage", { status: "staged", staged: 3 })).toBe("staged 3 paths");
+    expect(commitOutcomeText("git-stage", { status: "clean" })).toBe("clean — nothing to stage");
+    expect(commitOutcomeText("git-stage", { status: "skipped" })).toBe("skipped");
+    expect(commitOutcomeText("git-stage", { status: "failed", stderr: "boom" })).toBe("failed — boom");
+    expect(commitOutcomeText("git-commit", { status: "committed", sha: "abc1234" })).toBe("committed abc1234");
+    expect(commitOutcomeText("git-commit", { status: "clean" })).toBe("clean — nothing staged");
+    expect(commitOutcomeText("git-commit", { status: "skipped" })).toBe("skipped");
+    expect(commitOutcomeText("git-commit", { status: "failed", stderr: "boom" })).toBe("failed — boom");
   });
 });
 
@@ -1764,7 +1824,7 @@ describe("DoorstopPanelBodyElement (changes since review, Phase D)", () => {
   it("is gated on unreviewed + stored reviewed fingerprint + active backend", async () => {
     // A REVIEWED item (stamp matches): no section, even with a backend.
     const reviewedCase = await mountBody(() => Promise.resolve(makeTreeResult()), {
-      backend: vi.fn(),
+      backend: withGitStatusBackend(() => undefined),
       provider: opendoorProvider,
     });
     reviewedCase.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0001"]')?.click();
@@ -1782,7 +1842,7 @@ describe("DoorstopPanelBodyElement (changes since review, Phase D)", () => {
 
     // Same item with the backend active: the section renders (collapsed).
     const paired = await mountBody(() => Promise.resolve(makeEditedItemResult()), {
-      backend: vi.fn(),
+      backend: withGitStatusBackend(() => undefined),
       provider: opendoorProvider,
     });
     paired.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
@@ -1795,7 +1855,7 @@ describe("DoorstopPanelBodyElement (changes since review, Phase D)", () => {
   });
 
   it("sends the baseline request on expand; a later expand is a cache hit (exactly one fetch)", async () => {
-    const backend = vi.fn((operation: string) => {
+    const backend = withGitStatusBackend((operation: string) => {
       if (operation === "doorstop.item-baseline") {
         return Promise.resolve(makeBaselineResponse({ source: "none", candidates: [] }));
       }
@@ -1837,7 +1897,7 @@ describe("DoorstopPanelBodyElement (changes since review, Phase D)", () => {
       links: [{ uid: "REQ0001", fingerprint: null }],
       attributes: { owner: "team-a" },
     });
-    const backend = vi.fn((operation: string) => {
+    const backend = withGitStatusBackend((operation: string) => {
       if (operation === "doorstop.item-baseline") {
         return Promise.resolve(
           makeBaselineResponse({
@@ -1891,7 +1951,7 @@ describe("DoorstopPanelBodyElement (changes since review, Phase D)", () => {
   });
 
   it("renders the no-match notice when no candidate stamps to the reviewed fingerprint", async () => {
-    const backend = vi.fn((operation: string) => {
+    const backend = withGitStatusBackend((operation: string) => {
       if (operation === "doorstop.item-baseline") {
         return Promise.resolve(makeBaselineResponse({ source: "history", candidates: [] }));
       }
@@ -1917,7 +1977,7 @@ describe("DoorstopPanelBodyElement (changes since review, Phase D)", () => {
   });
 
   it("renders the no-git notice when the backend reports git: false", async () => {
-    const backend = vi.fn((operation: string) => {
+    const backend = withGitStatusBackend((operation: string) => {
       if (operation === "doorstop.item-baseline") {
         return Promise.resolve(makeBaselineResponse({ git: false, source: "none", candidates: [] }));
       }
@@ -1943,7 +2003,7 @@ describe("DoorstopPanelBodyElement (changes since review, Phase D)", () => {
   });
 
   it("self-heals an open section after an edit invalidates the cache key (reused <details> fires no toggle)", async () => {
-    const backend = vi.fn((operation: string) => {
+    const backend = withGitStatusBackend((operation: string) => {
       if (operation === "doorstop.item-baseline") {
         return Promise.resolve(makeBaselineResponse({ source: "history", candidates: [] }));
       }
@@ -2578,6 +2638,10 @@ function bindBody(
   // Phase D step 15: the baseline-cache state the contributions wiring mirrors.
   body.baselineVersion = controller.baselineVersion;
   body.baselineInFlight = controller.baselineInFlight;
+  // Phase D step 16: the git-status strip state the contributions wiring
+  // mirrors (the strip renders the cached view; `aria-busy` reads in-flight).
+  body.gitStatusView = controller.gitStatusView;
+  body.gitStatusInFlight = controller.gitStatusInFlight;
 }
 
 async function flush(body: DoorstopPanelBodyElement): Promise<void> {

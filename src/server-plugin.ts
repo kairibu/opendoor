@@ -3,7 +3,8 @@
 // the paired `serverModule` (package.json `piWeb.plugins[].serverModule`)
 // loaded by the session daemon at startup. Activation exposes ONE workspace
 // provider; its `request` method is what enables the browser `backend`
-// (doorstop.run through `requestDoorstopBackend`).
+// (doorstop.run through `requestDoorstopBackend`, the item-baseline fetch,
+// and the three project-scoped git operations — status/stage/commit).
 //
 // Ownership per plan §"Ownership trade-off": opendoor is a PRIMARY-tier
 // provider (no `fallback`) — `probe` claims ONLY when the project contains a
@@ -38,8 +39,21 @@ import type {
   ServerPluginActivationContext,
   WorkspaceProvider,
 } from "@jmfederico/pi-web/server-plugin-api";
-import { requestDoorstopBackend, requestDoorstopBaseline, unsupportedBackendOperationError } from "./doorstop-backend.js";
-import { DOORSTOP_BASELINE_OPERATION, DOORSTOP_RUN_OPERATION } from "./doorstop-backend-contract.js";
+import {
+  requestDoorstopBackend,
+  requestDoorstopBaseline,
+  requestDoorstopGitCommit,
+  requestDoorstopGitStage,
+  requestDoorstopGitStatus,
+  unsupportedBackendOperationError,
+} from "./doorstop-backend.js";
+import {
+  DOORSTOP_BASELINE_OPERATION,
+  DOORSTOP_GIT_COMMIT_OPERATION,
+  DOORSTOP_GIT_STAGE_OPERATION,
+  DOORSTOP_GIT_STATUS_OPERATION,
+  DOORSTOP_RUN_OPERATION,
+} from "./doorstop-backend-contract.js";
 
 /** Marker file whose presence makes a project a doorstop project. */
 const DOORSTOP_MARKER_FILE = ".doorstop.yml";
@@ -97,9 +111,12 @@ export default plugin;
 
 /** Create the opendoor workspace provider for one activation (testable —
  *  git's `createGitWorkspaceProvider` idiom). The provider is frozen and its
- *  `request` DISPATCHES on the operation name (plan step 8): `doorstop.run`
- *  → the run backend, `doorstop.item-baseline` → the read-only baseline
- *  backend, anything else → the unsupported-operation error. */
+ *  `request` DISPATCHES on the operation name (plan step 8 + the git-actions
+ *  plan's Phase B step 9): `doorstop.run` → the run backend,
+ *  `doorstop.item-baseline` → the read-only baseline backend, and the
+ *  `doorstop.git-status` / `doorstop.git-stage` / `doorstop.git-commit`
+ *  trio → their project-scoped git handlers; anything else → the
+ *  unsupported-operation error. */
 export function createDoorstopWorkspaceProvider(context: ServerPluginActivationContext): WorkspaceProvider {
   return Object.freeze({
     async probe(project: ProjectInput, signal: AbortSignal): Promise<ProviderClaim> {
@@ -127,16 +144,23 @@ export function createDoorstopWorkspaceProvider(context: ServerPluginActivationC
       ];
     },
     request: (request: ProviderRequestContext) => {
-      // Operation dispatch (plan step 8): the two contract operations route
-      // to their shared backend handlers (both serialize per workspace path
-      // and share the deadline budget inside doorstop-backend.ts); every
-      // other operation gets the existing unsupported-operation error — the
-      // same message the run handler's own guard throws.
+      // Operation dispatch (plan-add-git-actions.md Phase B step 9): the
+      // five contract operations route to their shared backend handlers
+      // (all five serialize per workspace path and share the deadline
+      // budget inside doorstop-backend.ts); every other operation gets the
+      // existing unsupported-operation error — the same message the run
+      // handler's own guard throws.
       switch (request.operation) {
         case DOORSTOP_RUN_OPERATION:
           return requestDoorstopBackend(context, request);
         case DOORSTOP_BASELINE_OPERATION:
           return requestDoorstopBaseline(context, request);
+        case DOORSTOP_GIT_STATUS_OPERATION:
+          return requestDoorstopGitStatus(context, request);
+        case DOORSTOP_GIT_STAGE_OPERATION:
+          return requestDoorstopGitStage(context, request);
+        case DOORSTOP_GIT_COMMIT_OPERATION:
+          return requestDoorstopGitCommit(context, request);
         default:
           // Reject (never throw synchronously): the provider contract
           // returns a promise, and the async handlers' own guard rejects

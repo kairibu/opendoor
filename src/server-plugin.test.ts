@@ -23,8 +23,14 @@ import type {
 import plugin, { createDoorstopWorkspaceProvider } from "./server-plugin.js";
 import {
   DOORSTOP_BASELINE_OPERATION,
+  DOORSTOP_GIT_COMMIT_OPERATION,
+  DOORSTOP_GIT_STAGE_OPERATION,
+  DOORSTOP_GIT_STATUS_OPERATION,
   DOORSTOP_RUN_OPERATION,
   parseDoorstopBaselineResponse,
+  parseDoorstopGitCommitResponse,
+  parseDoorstopGitStageResponse,
+  parseDoorstopGitStatusResponse,
   parseDoorstopRunResponse,
 } from "./doorstop-backend-contract.js";
 
@@ -149,22 +155,32 @@ describe("createDoorstopWorkspaceProvider", () => {
     expect(provider.prepareRemove).toBeUndefined();
   });
 
-  it("dispatches on the operation name: run → run handler, item-baseline → baseline handler, else unsupported error", async () => {
+  it("dispatches all five operations to their handlers; anything else errors", async () => {
     const requests: ServerPluginExecFileRequest[] = [];
+    /** The host's exact exec result shape every canned answer starts from. */
+    const RESULT: ServerPluginExecFileResult = {
+      exitCode: 0,
+      signal: null,
+      stdout: "",
+      stderr: "",
+      stdoutTruncated: false,
+      stderrTruncated: false,
+    };
     const context = {
       ...contextFor(),
       execFile: async (request: ServerPluginExecFileRequest): Promise<ServerPluginExecFileResult> => {
         requests.push(request);
-        // rev-parse answers "true"; log/show produce a blob so the baseline
-        // handler's candidate walk settles deterministically.
-        return {
-          exitCode: 0,
-          signal: null,
-          stdout: (request.args ?? [])[0] === "rev-parse" ? "true" : "sha1\n",
-          stderr: "",
-          stdoutTruncated: false,
-          stderrTruncated: false,
-        };
+        const args = request.args ?? [];
+        // rev-parse answers "true"; log/show and the commit's rev-parse
+        // --short produce a blob/sha; the stage's plain `-z` porcelain reports
+        // one changed path; the status's v1 -z -b porcelain reports branch
+        // + one path; diff --cached --quiet reports staged changes (exit 1).
+        if (args[0] === "rev-parse" && args.includes("--is-inside-work-tree")) return { ...RESULT, stdout: "true" };
+        if (args[0] === "rev-parse") return { ...RESULT, stdout: "sha1\n" };
+        if (args[0] === "status" && !args.includes("--porcelain=v1")) return { ...RESULT, stdout: " M reqs/REQ0001.yml\0" };
+        if (args[0] === "status") return { ...RESULT, stdout: "## main\0 M reqs/REQ0001.yml\0" };
+        if (args[0] === "diff") return { ...RESULT, exitCode: 1 };
+        return { ...RESULT, stdout: "sha1\n" };
       },
     };
     const provider = createDoorstopWorkspaceProvider(context);
@@ -185,10 +201,24 @@ describe("createDoorstopWorkspaceProvider", () => {
       candidates: [{ sha: "sha1", blob: "sha1\n" }],
     });
 
+    // `doorstop.git-status` routes to the read-only status handler.
+    const status = await provider.request?.(requestFor(DOORSTOP_GIT_STATUS_OPERATION, {}));
+    expect(parseDoorstopGitStatusResponse(status).branch).toBe("main");
+    expect(parseDoorstopGitStatusResponse(status).files).toEqual([
+      { path: "reqs/REQ0001.yml", index: "unmodified", workingTree: "modified" },
+    ]);
+
+    // `doorstop.git-stage` routes to the Stage-all handler (rev-parse → status → add).
+    const stage = await provider.request?.(requestFor(DOORSTOP_GIT_STAGE_OPERATION, { paths: ["reqs/REQ0001.yml"] }));
+    expect(parseDoorstopGitStageResponse(stage)).toEqual({ status: "staged", staged: 1 });
+
+    // `doorstop.git-commit` routes to the Commit handler (rev-parse → diff → commit → sha).
+    const commit = await provider.request?.(requestFor(DOORSTOP_GIT_COMMIT_OPERATION, { message: "docs" }));
+    expect(parseDoorstopGitCommitResponse(commit)).toEqual({ status: "committed", sha: "sha1" });
+
     // `doorstop.run` still routes to the run handler (doorstop exec only).
     const run = await provider.request?.(requestFor(DOORSTOP_RUN_OPERATION, { op: "validate" }));
     expect(parseDoorstopRunResponse(run).op).toBe("validate");
-    expect(requests.map((request) => request.file)).toEqual(["git", "git", "git", "doorstop"]);
 
     // Anything else → the existing unsupported-operation error.
     await expect(provider.request?.(requestFor("doorstop.purge", null))).rejects.toThrow(

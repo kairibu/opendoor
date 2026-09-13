@@ -45,12 +45,14 @@ The plugin is fully wired and green, in two halves:
 - **Server entry** (`src/server-plugin.ts`, default export `PiWebServerPlugin`)
   contributes a workspace provider that claims only projects whose root
   contains a `.doorstop.yml` (cheap `fs.access` probe — everything else stays
-  with the bundled Git provider) and serves a two-operation backend:
+  with the bundled Git provider) and serves a five-operation backend:
   `doorstop.run` runs one Doorstop CLI invocation — a review request carrying
   the opt-in `commit: true` flag is followed by a pathspec-limited git commit
-  of the item file (`doorstop: review <uid>`) — and the read-only
+  of the item file (`doorstop: review <uid>`) — the read-only
   `doorstop.item-baseline` recovers the reviewed version of an item file from
-  git history. `src/doorstop-backend.ts` validates each request, builds argv
+  git history, and the three git actions `doorstop.git-status`,
+  `doorstop.git-stage`, and `doorstop.git-commit` power the panel's git strip
+  and stage/commit controls (see **Git actions** below). `src/doorstop-backend.ts` validates each request, builds argv
   server-side (the browser never sends shell strings), and runs through the
   host's `execFile()` helper with `cwd` = the workspace path, timeouts
   clamped to 8.5 s (the review+git pipeline shares one deadline budget under
@@ -67,11 +69,10 @@ install, or a workspace the provider does not own), the action falls back to
 `terminal.runCommand()` with the same shell command, so output stays visible
 and auditable in the terminal.
 
-The shared types + function-signature contracts live in
-`src/doorstop-contract.ts`; the two backend operation contracts
-(`doorstop.run` and `doorstop.item-baseline`) shared by both halves live in
-`src/doorstop-backend-contract.ts`. Later modules import these and must not
-redefine them.
+  `doorstop.run` and `doorstop.item-baseline`) shared by both halves, plus the
+  three git-action contracts (`doorstop.git-status`, `doorstop.git-stage`,
+  `doorstop.git-commit`), live in `src/doorstop-backend-contract.ts`. Later
+  modules import these and must not redefine them.
 
 ## Workspace settings (`.pi-web/opendoor.json`)
 
@@ -124,15 +125,16 @@ restart to take effect). Parsed leniently; wrong types fall back to defaults:
 - `doorstopPath` — the Doorstop CLI binary. Defaults to `"doorstop"` resolved
   on the **sessiond host PATH** (the daemon environment, not your login shell
   — set this when the CLI lives in a venv or is not on the service PATH).
-- `gitPath` — the git binary used by the review→commit pipeline and the
-  `doorstop.item-baseline` fetch. Defaults to `"git"` resolved on the
+- `gitPath` — the git binary used by the review→commit pipeline, the
+  `doorstop.item-baseline` fetch, and the three git actions (status strip,
+  Stage all, Git commit). Defaults to `"git"` resolved on the
   **sessiond host PATH** — set it when git is not on the service PATH (the
   same escape hatch as `doorstopPath`).
 - `timeoutMs` — per-run exec timeout in ms. May SHORTEN the 8 500 ms default
   but never exceed it (the host bounds every provider callback at 10 s, so a
   longer doorstop run would be killed by pi-web, not by the plugin). It also
-  bounds every git exec of the review→commit pipeline and the baseline fetch,
-  which share one deadline budget per callback.
+  bounds every git exec of the review→commit pipeline, the baseline fetch,
+  and the git actions, which share one deadline budget per callback.
 
 ## Using the panel
 
@@ -140,9 +142,11 @@ The right-hand panel body is divided into five vertical sections, top to
 bottom:
 
 1. **`project-actions`** — the project heading (the workspace's root path,
-   basename shown, full path on hover), the **Items / Findings** toggle, and
-   the project-scoped buttons **Refresh**, **Run validation**, and
-   **Publish HTML**.
+   basename shown, full path on hover), the **Items / Findings** toggle, the
+   project-scoped buttons **Refresh**, **Run validation**, and **Publish
+   HTML**, and — on paired installs — the **Git status** strip, the **Stage
+   all** button, and the **Git commit** control (message input + button); see
+   **Git actions** below.
 2. **`item-list`** — a filters row (document chips, state filter, search)
    above the item rows.
 3. **`item-details`** — the selected item's full detail pane (unchanged).
@@ -194,6 +198,39 @@ bottom:
   review commit), Clear suspect links (`doorstop clear UID [parents…]`),
   Edit (`doorstop edit UID`), Link/Unlink via inline UID input (validated
   against the Doorstop UID grammar; shell metacharacters rejected).
+- **Git actions** (paired installs only; all three controls are hidden
+  without the paired backend — terminal-fallback users commit manually as
+  today):
+  - **Git status strip** — a compact readout above the item list:
+    `⎇ <branch> · <n> staged · <n> dirty · ↑<ahead> ↓<behind>` (zero/absent
+    parts omitted; `no git` outside a repository; a retry link on fetch
+    errors). The strip refreshes on panel load, after every run (a stage or
+    commit invalidates the cache), and whenever you click it. Outside a git
+    repository the strip shows `no git` and the stage/commit controls are
+    no-ops that report `skipped`.
+  - **Stage all** — stages every Doorstop-managed file (the root
+    `.doorstop.yml`, each document's config file, each item file) via the
+    `doorstop.git-stage` backend operation. Staging is idempotent: a second
+    click over an already-staged set reports `clean — nothing to stage`
+    instead of a git error (staged deletions in particular are skipped
+    rather than fatal). Disabled while a run is in progress or when the
+    loaded index has no documents. Note: staging is only as fresh as the
+    loaded index — files created on disk after the last **Refresh** are
+    missed until you refresh and stage again.
+  - **Git commit** — a single-line message input plus a **Commit** button,
+    served by the `doorstop.git-commit` operation. The commit records **the
+    staged index** (`git commit -m <message>` with no pathspec and no
+    add) — exactly like the git CLI. Consequences, all intended: unstaged
+    WIP is never swept into a commit; files you staged yourself (via the
+    git CLI or any other tool) are committed too; the strip's `staged`
+    count tells you what a commit will record before you click. Empty or
+    whitespace-only messages are rejected client-side (git with an empty
+    `-m` would open an editor and hang the exec). Committing with nothing
+    staged reports `clean — nothing staged`. Outcomes are narrated in the
+    status bar (`staged <n> paths` / `committed <sha>` / `clean — nothing
+    to stage` / `clean — nothing staged` / `skipped` / `failed — <stderr
+    excerpt>`); a failing pre-commit hook surfaces its stderr in the
+    expanded status bar body.
 - **Ask the agent** menu: inserts ready-made prompts (explain, fix suspect
   links, draft child requirement, review readiness) into the session prompt
   editor using the item's paths and state (feature spec §7.3).

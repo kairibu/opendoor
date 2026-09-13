@@ -16,11 +16,16 @@
 import { describe, expect, it, vi, type Mock } from "vitest";
 import type { Workspace, WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
 import type { DoorstopDocumentConfig, DoorstopIndex, ItemRecord } from "./doorstop-contract.js";
-import type { DoorstopBaselineResponse } from "./doorstop-backend-contract.js";
+import type {
+  DoorstopBaselineResponse,
+  DoorstopGitStageResponse,
+  DoorstopGitStatusResponse,
+} from "./doorstop-backend-contract.js";
 import { buildDoorstopIndex } from "./doorstop-model.js";
 import { computeItemStamp, computeItemStates } from "./doorstop-state.js";
 import {
   DoorstopWorkspaceController,
+  doorstopPaths,
   type DoorstopLastRunView,
   type DoorstopWorkspaceHost,
   type DoorstopWorkspaceJob,
@@ -583,6 +588,426 @@ describe("DoorstopWorkspaceController (baseline cache, Phase D step 13)", () => 
     await controller.requestBaseline(item);
     expect(controller.baselineViewFor(item)?.state).toBe("ready");
     expect(backend.mock.calls.filter(([op]) => op === "doorstop.item-baseline")).toHaveLength(2);
+  });
+});
+
+describe("DoorstopWorkspaceController (git status, plan-add-git-actions Phase C step 10)", () => {
+  /** A controller with a counting load job (detects invalidate-driven
+   *  reloads) and a mock backend. */
+  function statusController(backend: Mock, loadCount: { calls: number }) {
+    const { context, requestRender } = panelContext(createFakeFiles());
+    const contextWithBackend: WorkspacePanelContext = { ...context, backend: { request: backend } };
+    const { host } = fakeHost();
+    const controller = new DoorstopWorkspaceController(host, contextWithBackend, () => {
+      loadCount.calls += 1;
+      return Promise.resolve(makeResult([makeItem("REQ0001", "REQ")]));
+    });
+    controller.hostConnected();
+    return { controller, requestRender };
+  }
+
+  function gitReady(overrides: Partial<DoorstopGitStatusResponse> = {}): DoorstopGitStatusResponse {
+    return {
+      git: true,
+      branch: "main",
+      ahead: 1,
+      behind: 0,
+      staged: 2,
+      dirty: 3,
+      files: [{ path: "reqs/REQ0001.yml", index: "modified", workingTree: "unmodified" }],
+      ...overrides,
+    };
+  }
+
+  it("fetches through the git-status operation, parses strictly, and maps git:false to the no-git view", async () => {
+    const backend = vi.fn((operation: string) => {
+      if (operation === "doorstop.git-status") {
+        return Promise.resolve(gitReady());
+      }
+      return Promise.reject(new Error(`unexpected operation ${operation}`));
+    });
+    const { controller, requestRender } = statusController(backend, { calls: 0 });
+    await settle();
+    requestRender.mockClear();
+
+    await controller.requestGitStatus();
+
+    expect(backend).toHaveBeenCalledWith("doorstop.git-status", {});
+    expect(controller.gitStatusView?.state).toBe("ready");
+    if (controller.gitStatusView?.state === "ready") {
+      expect(controller.gitStatusView.response.branch).toBe("main");
+      expect(controller.gitStatusView.response.ahead).toBe(1);
+      expect(controller.gitStatusView.response.files[0]?.index).toBe("modified");
+    }
+    expect(controller.gitStatusInFlight).toBe(false);
+    expect(requestRender).toHaveBeenCalled();
+
+    // git: false → the no-git view, not an error.
+    const noGitBackend = vi.fn(() => Promise.resolve({ git: false, staged: 0, dirty: 0, files: [] } satisfies DoorstopGitStatusResponse));
+    const { controller: noGit } = statusController(noGitBackend, { calls: 0 });
+    await settle();
+    await noGit.requestGitStatus();
+    expect(noGit.gitStatusView?.state).toBe("no-git");
+
+    // A rejected bridge request lands the transient error view.
+    const failingBackend = vi.fn(() => Promise.reject(new Error("bridge hiccup")));
+    const { controller: failing } = statusController(failingBackend, { calls: 0 });
+    await settle();
+    await failing.requestGitStatus();
+    expect(failing.gitStatusView?.state).toBe("error");
+    if (failing.gitStatusView?.state === "error") {
+      expect(failing.gitStatusView.errorMessage).toContain("bridge hiccup");
+    }
+  });
+
+  it("joins concurrent fetches (two calls share one request)", async () => {
+    let resolveStatus: ((value: DoorstopGitStatusResponse) => void) | undefined;
+    const backend = vi.fn((operation: string) => {
+      if (operation === "doorstop.git-status") {
+        return new Promise<DoorstopGitStatusResponse>((resolve) => {
+          resolveStatus = resolve;
+        });
+      }
+      return Promise.reject(new Error(`unexpected operation ${operation}`));
+    });
+    const { controller } = statusController(backend, { calls: 0 });
+    await settle();
+
+    const first = controller.requestGitStatus();
+    const second = controller.requestGitStatus();
+    expect(backend.mock.calls.filter(([op]) => op === "doorstop.git-status")).toHaveLength(1);
+
+    resolveStatus?.(gitReady());
+    await Promise.all([first, second]);
+    expect(backend.mock.calls.filter(([op]) => op === "doorstop.git-status")).toHaveLength(1);
+    expect(controller.gitStatusView?.state).toBe("ready");
+    expect(controller.gitStatusInFlight).toBe(false);
+  });
+
+  it("clears the cached view on invalidate (the single cache-clearing point) and drops late writes after a disconnect", async () => {
+    let resolveStatus: ((value: DoorstopGitStatusResponse) => void) | undefined;
+    const backend = vi.fn(() => new Promise<DoorstopGitStatusResponse>((resolve) => {
+      resolveStatus = resolve;
+    }));
+    const { controller } = statusController(backend, { calls: 0 });
+    await settle();
+
+    const first = controller.requestGitStatus();
+    resolveStatus?.(gitReady());
+    await first;
+    expect(controller.gitStatusView?.state).toBe("ready");
+
+    // invalidate clears the strip view (a rescan/run may change dirtiness).
+    const promise = controller.invalidate();
+    expect(controller.gitStatusView).toBeUndefined();
+    await promise;
+
+    // A fetch resolved AFTER hostDisconnected drops its write (loading view
+    // stays; the next request refetches).
+    let secondResolve: ((value: DoorstopGitStatusResponse) => void) | undefined;
+    backend.mockImplementation(() => new Promise<DoorstopGitStatusResponse>((resolve) => {
+      secondResolve = resolve;
+    }));
+    const refetch = controller.requestGitStatus();
+    expect(controller.gitStatusView?.state).toBe("loading");
+    controller.hostDisconnected();
+    secondResolve?.(gitReady());
+    await refetch;
+    expect(controller.gitStatusView?.state).toBe("loading");
+    expect(controller.gitStatusInFlight).toBe(false);
+  });
+
+  it("hostConnected recovers an orphaned loading view (a disconnect mid-fetch) so the strip refetches", async () => {
+    const resolvers: Array<(value: DoorstopGitStatusResponse) => void> = [];
+    const backend = vi.fn((operation: string) => {
+      if (operation === "doorstop.git-status") {
+        return new Promise<DoorstopGitStatusResponse>((resolve) => {
+          resolvers.push(resolve);
+        });
+      }
+      return Promise.reject(new Error(`unexpected operation ${operation}`));
+    });
+    const { controller } = statusController(backend, { calls: 0 });
+    await settle();
+
+    // Fetch A is in flight when the panel disconnects…
+    const first = controller.requestGitStatus();
+    expect(controller.gitStatusView?.state).toBe("loading");
+    controller.hostDisconnected();
+    // …its landing is dropped by the late-write guard: the view stays an
+    // ORPHANED `loading` placeholder with no fetch in flight (the marker was
+    // cleared by the fetch's finally) — the stuck `⎇ …` the element would
+    // render until the user clicks the strip.
+    resolvers[0]?.(gitReady());
+    await first;
+    expect(controller.gitStatusView?.state).toBe("loading");
+    expect(controller.gitStatusInFlight).toBe(false);
+
+    // …and RECONNECTING clears the orphan (hostConnected is the reconnect
+    // point: the element's next ensureGitStatus sees `undefined` and
+    // refetches — the strip never strands on `⎇ …` until a manual click).
+    controller.hostConnected();
+    expect(controller.gitStatusView).toBeUndefined();
+    const refetch = controller.requestGitStatus();
+    expect(controller.gitStatusView?.state).toBe("loading");
+    resolvers[1]?.(gitReady());
+    await refetch;
+    expect(controller.gitStatusView?.state).toBe("ready");
+    expect(backend.mock.calls.filter(([op]) => op === "doorstop.git-status")).toHaveLength(2);
+  });
+
+  it("an in-flight fetch never resurrects a stale view over a cache invalidate() just cleared", async () => {
+    let resolveStatus: ((value: DoorstopGitStatusResponse) => void) | undefined;
+    const backend = vi.fn(() => new Promise<DoorstopGitStatusResponse>((resolve) => {
+      resolveStatus = resolve;
+    }));
+    const { controller } = statusController(backend, { calls: 0 });
+    await settle();
+
+    // Fetch A is in flight (its loading view is installed)…
+    const first = controller.requestGitStatus();
+    expect(controller.gitStatusView?.state).toBe("loading");
+
+    // …an invalidate lands MID-FLIGHT (a stage/commit run's success path or
+    // a rescan) and clears the cache — the single cache-clearing point.
+    const invalidation = controller.invalidate();
+    expect(controller.gitStatusView).toBeUndefined();
+    await invalidation;
+
+    // Fetch A's PRE-invalidate snapshot resolves: the write is dropped
+    // (the loading view THIS fetch installed is gone), so a stale
+    // pre-stage/pre-rescan view never resurrects over the cleared cache.
+    // The next requestGitStatus() refetches instead.
+    resolveStatus?.(gitReady());
+    await first;
+    expect(controller.gitStatusView).toBeUndefined();
+    expect(controller.gitStatusInFlight).toBe(false);
+  });
+});
+
+describe("doorstopPaths (plan-add-git-actions Phase C step 11)", () => {
+  it("lists the root marker + document config paths + item paths, deduplicated", () => {
+    const rootDoc = makeDocument({ directoryPath: "", configPath: ".doorstop.yml" });
+    const reqsDoc = makeDocument();
+    const items = [
+      makeItem("REQ0001", "REQ", { path: "reqs/REQ0001.yml" }),
+      makeItem("REQ0002", "REQ", { path: "reqs/REQ0002.yml" }),
+    ];
+    const index = buildDoorstopIndex(
+      [rootDoc, reqsDoc],
+      items,
+      [],
+      // The discovery file index carries the root marker (plus unrelated files).
+      new Set([".doorstop.yml", "reqs/.doorstop.yml", "reqs/REQ0001.yml", "reqs/REQ0002.yml", "docs/README.md"]),
+    );
+    computeItemStates(index);
+    const result: DoorstopWorkspaceResult = { index, settings: DEFAULT_OPENDOOR_SETTINGS };
+    // Root marker first, then config paths, then item paths; the root marker
+    // duplicated by the root document's own configPath is emitted once.
+    expect(doorstopPaths(result)).toEqual([
+      ".doorstop.yml",
+      "reqs/.doorstop.yml",
+      "reqs/REQ0001.yml",
+      "reqs/REQ0002.yml",
+    ]);
+  });
+
+  it("omits the root marker when discovery did not enumerate it", () => {
+    // makeResult's index carries no knownFilePaths at all.
+    const result = makeResult([makeItem("REQ0001", "REQ", { path: "reqs/REQ0001.yml" })]);
+    expect(doorstopPaths(result)).toEqual(["reqs/.doorstop.yml", "reqs/REQ0001.yml"]);
+  });
+});
+
+describe("DoorstopWorkspaceController (git stage/commit dispatch, plan-add-git-actions Phase C step 12)", () => {
+  /** A controller with a counting load job whose backend answers the given
+   *  operation (mirrors the baseline describe's `baselineController`). */
+  function gitRunController(backend: Mock, loadCount: { calls: number }) {
+    const { context } = panelContext(createFakeFiles());
+    const { host } = fakeHost();
+    const controller = new DoorstopWorkspaceController(
+      host,
+      { ...context, backend: { request: backend } },
+      () => {
+        loadCount.calls += 1;
+        return Promise.resolve(makeResult([makeItem("REQ0001", "REQ")]));
+      },
+    );
+    controller.hostConnected();
+    return { controller, backend };
+  }
+
+  function stageBackend(response: DoorstopGitStageResponse): Mock {
+    return vi.fn((operation: string) => {
+      if (operation === "doorstop.git-stage") return Promise.resolve(response);
+      return Promise.reject(new Error(`unexpected operation ${operation}`));
+    });
+  }
+
+  it("runGitStage sends the paths and commits the mapped run view (staged outcome, ok status)", async () => {
+    const loadCount = { calls: 0 };
+    const { controller, backend } = gitRunController(stageBackend({ status: "staged", staged: 2 }), loadCount);
+    await settle();
+    const loadsBefore = loadCount.calls;
+
+    await controller.runGitStage(["reqs/REQ0001.yml", "reqs/REQ0002.yml"]);
+
+    expect(backend).toHaveBeenCalledWith("doorstop.git-stage", {
+      paths: ["reqs/REQ0001.yml", "reqs/REQ0002.yml"],
+    });
+    const run = controller.lastRun;
+    expect(run?.op).toBe("git-stage");
+    expect(run?.title).toBe("Git: stage all");
+    expect(run?.status).toBe("ok");
+    expect(run?.exitCode).toBeNull();
+    expect(run?.commit).toEqual({ status: "staged", staged: 2 });
+    // Success invalidates: the load reran and the strip cache cleared.
+    expect(loadCount.calls).toBe(loadsBefore + 1);
+    expect(controller.gitStatusView).toBeUndefined();
+    expect(controller.runInProgress).toBeUndefined();
+  });
+
+  it("runGitCommit sends only the message and maps committed/sha onto the view", async () => {
+    const loadCount = { calls: 0 };
+    const backend = vi.fn((operation: string) => {
+      if (operation === "doorstop.git-commit") return Promise.resolve({ status: "committed", sha: "abc1234" });
+      return Promise.reject(new Error(`unexpected operation ${operation}`));
+    });
+    const { controller } = gitRunController(backend, loadCount);
+    await settle();
+
+    await controller.runGitCommit("  Land the fixture  ");
+
+    expect(backend).toHaveBeenCalledWith("doorstop.git-commit", { message: "  Land the fixture  " });
+    const run = controller.lastRun;
+    expect(run?.op).toBe("git-commit");
+    expect(run?.status).toBe("ok");
+    expect(run?.commit).toEqual({ status: "committed", sha: "abc1234" });
+    expect(controller.runInProgress).toBeUndefined();
+  });
+
+  it("maps a failed git outcome to a failed run, the excerpt riding in the commit narration", async () => {
+    const loadCount = { calls: 0 };
+    const { controller } = gitRunController(stageBackend({ status: "failed", stderr: "pre-commit hook rejected" }), loadCount);
+    await settle();
+
+    await controller.runGitStage(["reqs/REQ0001.yml"]);
+
+    const run = controller.lastRun;
+    expect(run?.status).toBe("failed");
+    // The excerpt rides in the `commit` narration (the review→commit idiom):
+    // the failed outcome never pollutes the run's own captured stderr.
+    expect(run?.stderr).toBe("");
+    expect(run?.commit).toEqual({ status: "failed", stderr: "pre-commit hook rejected" });
+    expect(controller.runInProgress).toBeUndefined();
+  });
+
+  it("maps a clean stage outcome to an ok run (nothing to stage) and still invalidates", async () => {
+    const loadCount = { calls: 0 };
+    const { controller } = gitRunController(stageBackend({ status: "clean" }), loadCount);
+    await settle();
+    const loadsBefore = loadCount.calls;
+
+    await controller.runGitStage(["reqs/REQ0001.yml"]);
+
+    const run = controller.lastRun;
+    expect(run?.op).toBe("git-stage");
+    // The operation RESOLVED — a `clean` outcome is NARRATION (nothing to
+    // stage), not failure: the badge stays ok and the outcome rides in the
+    // `commit` field ("clean — nothing to stage").
+    expect(run?.status).toBe("ok");
+    expect(run?.commit).toEqual({ status: "clean" });
+    // Success still invalidates: the strip cache cleared (a rescan is the
+    // run's standing success contract; the refetch is cheap).
+    expect(loadCount.calls).toBe(loadsBefore + 1);
+    expect(controller.gitStatusView).toBeUndefined();
+    expect(controller.runInProgress).toBeUndefined();
+  });
+
+  it("maps a skipped stage outcome to an ok run (not a repo / deadline) and still invalidates", async () => {
+    const loadCount = { calls: 0 };
+    const { controller } = gitRunController(stageBackend({ status: "skipped" }), loadCount);
+    await settle();
+    const loadsBefore = loadCount.calls;
+
+    await controller.runGitStage(["reqs/REQ0001.yml"]);
+
+    const run = controller.lastRun;
+    expect(run?.op).toBe("git-stage");
+    // Same as `clean`: the response RESOLVED — the skipped outcome is the
+    // narration ("skipped"), never a failed badge.
+    expect(run?.status).toBe("ok");
+    expect(run?.commit).toEqual({ status: "skipped" });
+    expect(loadCount.calls).toBe(loadsBefore + 1);
+    expect(controller.gitStatusView).toBeUndefined();
+    expect(controller.runInProgress).toBeUndefined();
+  });
+
+  it("maps a clean commit outcome to an ok run (nothing staged) and still invalidates", async () => {
+    const loadCount = { calls: 0 };
+    const backend = vi.fn((operation: string) => {
+      if (operation === "doorstop.git-commit") return Promise.resolve({ status: "clean" });
+      return Promise.reject(new Error(`unexpected operation ${operation}`));
+    });
+    const { controller } = gitRunController(backend, loadCount);
+    await settle();
+    const loadsBefore = loadCount.calls;
+
+    await controller.runGitCommit("nothing to commit");
+
+    const run = controller.lastRun;
+    expect(run?.op).toBe("git-commit");
+    // The commit RESPONDED "nothing staged" — narration ("clean — nothing
+    // staged"), not failure: ok badge, outcome in `commit`.
+    expect(run?.status).toBe("ok");
+    expect(run?.commit).toEqual({ status: "clean" });
+    expect(loadCount.calls).toBe(loadsBefore + 1);
+    expect(controller.runInProgress).toBeUndefined();
+  });
+
+  it("maps a skipped commit outcome to an ok run and still invalidates", async () => {
+    const loadCount = { calls: 0 };
+    const backend = vi.fn((operation: string) => {
+      if (operation === "doorstop.git-commit") return Promise.resolve({ status: "skipped" });
+      return Promise.reject(new Error(`unexpected operation ${operation}`));
+    });
+    const { controller } = gitRunController(backend, loadCount);
+    await settle();
+    const loadsBefore = loadCount.calls;
+
+    await controller.runGitCommit("nothing to commit");
+
+    const run = controller.lastRun;
+    expect(run?.op).toBe("git-commit");
+    // `skipped` (not a repo / deadline) is an outcome of a RESOLVED
+    // response — ok badge, "skipped" narration.
+    expect(run?.status).toBe("ok");
+    expect(run?.commit).toEqual({ status: "skipped" });
+    expect(loadCount.calls).toBe(loadsBefore + 1);
+    expect(controller.runInProgress).toBeUndefined();
+  });
+
+  it("a rejected request commits an error run, does NOT invalidate, and clears runInProgress", async () => {
+    const loadCount = { calls: 0 };
+    const backend = vi.fn((operation: string) => {
+      // A rejection thrown synchronously by the mocked backend surface
+      // (the bridge rejecting the request) lands in the controller's catch.
+      if (operation === "doorstop.git-commit") throw new Error("bridge hiccup");
+      return Promise.reject(new Error(`unexpected operation ${operation}`));
+    });
+    const { controller } = gitRunController(backend, loadCount);
+    await settle();
+    const loadsBefore = loadCount.calls;
+
+    await controller.runGitCommit("doomed");
+
+    const run = controller.lastRun;
+    expect(run?.status).toBe("error");
+    if (run?.status === "error") expect(run.errorMessage).toContain("bridge hiccup");
+    expect(run?.op).toBe("git-commit");
+    expect(run?.commit).toBeUndefined();
+    expect(loadCount.calls).toBe(loadsBefore);
+    expect(controller.runInProgress).toBeUndefined();
   });
 });
 

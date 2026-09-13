@@ -29,6 +29,8 @@ import {
   parseDoorstopBaselineRequest,
   parseDoorstopBaselineResponse,
   parseDoorstopCommitOutcome,
+  parseDoorstopGitStageResponse,
+  parseDoorstopGitStatusResponse,
   parseDoorstopRunRequest,
   parseDoorstopRunResponse,
   type DoorstopBaselineResponse,
@@ -602,5 +604,68 @@ describe("item-path rule (isValidDoorstopItemPath)", () => {
   it("rejects paths over 256 characters", () => {
     expect(isValidDoorstopItemPath("a".repeat(257))).toBe(false);
     expect(isValidDoorstopItemPath("docs/" + "a".repeat(248) + ".yml")).toBe(false); // 257 chars
+  });
+});
+describe("git count guards (negative counts are impossible junk, nothing coerced)", () => {
+  it("rejects negative ahead/behind/staged/dirty counts in the status response", () => {
+    expect(parseDoorstopGitStatusResponse({ git: true, staged: 0, dirty: 1, files: [] })).toEqual({
+      git: true,
+      staged: 0,
+      dirty: 1,
+      files: [],
+    });
+    // `Number.isFinite` alone would let an impossible -3 file/commit count
+    // through; the module's standing rule is: junk of any kind throws.
+    expect(() =>
+      parseDoorstopGitStatusResponse({
+        git: true,
+        branch: "main",
+        ahead: -1,
+        behind: 0,
+        staged: 0,
+        dirty: 0,
+        files: [],
+      }),
+    ).toThrow(/non-negative count field: ahead/);
+    expect(() =>
+      parseDoorstopGitStatusResponse({
+        git: true,
+        ahead: 1,
+        behind: -2,
+        staged: 0,
+        dirty: 0,
+        files: [],
+      }),
+    ).toThrow(/non-negative count field: behind/);
+    expect(() =>
+      parseDoorstopGitStatusResponse({
+        git: true,
+        ahead: 1,
+        behind: 2,
+        staged: -3,
+        dirty: 0,
+        files: [],
+      }),
+    ).toThrow(/non-negative count field: staged/);
+    expect(() =>
+      parseDoorstopGitStatusResponse({
+        git: true,
+        ahead: 1,
+        behind: 2,
+        staged: 0,
+        dirty: -4,
+        files: [],
+      }),
+    ).toThrow(/non-negative count field: dirty/);
+  });
+
+  it("rejects a negative staged count in the stage response (and keeps positive counts)", () => {
+    expect(parseDoorstopGitStageResponse({ status: "staged", staged: 3 })).toEqual({
+      status: "staged",
+      staged: 3,
+    });
+    expect(() => parseDoorstopGitStageResponse({ status: "staged", staged: -1 })).toThrow(
+      /non-negative count field: staged/,
+    );
   });
 });
