@@ -21,15 +21,24 @@ import {
   DOORSTOP_BASELINE_GREP_LIMIT,
   DOORSTOP_BASELINE_HISTORY_LIMIT,
   DOORSTOP_BASELINE_OPERATION,
+  DOORSTOP_GIT_COMMIT_OPERATION,
+  DOORSTOP_GIT_STAGE_OPERATION,
+  DOORSTOP_GIT_STATUS_FILES_MAX,
+  DOORSTOP_GIT_STATUS_OPERATION,
   DOORSTOP_RUN_OPERATION,
   isValidDoorstopItemPath,
   isValidDoorstopUid,
+  isValidGitCommitMessage,
   isValidPublishTarget,
   OPENDOOR_PLUGIN_ID,
   parseDoorstopBaselineRequest,
   parseDoorstopBaselineResponse,
   parseDoorstopCommitOutcome,
+  parseDoorstopGitCommitRequest,
+  parseDoorstopGitCommitResponse,
+  parseDoorstopGitStageRequest,
   parseDoorstopGitStageResponse,
+  parseDoorstopGitStatusRequest,
   parseDoorstopGitStatusResponse,
   parseDoorstopRunRequest,
   parseDoorstopRunResponse,
@@ -667,5 +676,292 @@ describe("git count guards (negative counts are impossible junk, nothing coerced
     expect(() => parseDoorstopGitStageResponse({ status: "staged", staged: -1 })).toThrow(
       /non-negative count field: staged/,
     );
+  });
+});
+
+describe("git operations (plan-add-git-actions Phase A steps 1–5)", () => {
+  it("exposes the three git operation names matching the host grammar", () => {
+    expect(DOORSTOP_GIT_STATUS_OPERATION).toBe("doorstop.git-status");
+    expect(DOORSTOP_GIT_STAGE_OPERATION).toBe("doorstop.git-stage");
+    expect(DOORSTOP_GIT_COMMIT_OPERATION).toBe("doorstop.git-commit");
+    for (const name of [DOORSTOP_GIT_STATUS_OPERATION, DOORSTOP_GIT_STAGE_OPERATION, DOORSTOP_GIT_COMMIT_OPERATION]) {
+      expect(name).toMatch(/^[a-z][a-z0-9.-]*$/);
+    }
+  });
+
+  describe("parseDoorstopGitStatusRequest", () => {
+    it("accepts the empty request and tolerates extra keys (forward-compat hook)", () => {
+      expect(parseDoorstopGitStatusRequest({})).toEqual({});
+      expect(parseDoorstopGitStatusRequest({ anything: "goes" })).toEqual({});
+    });
+
+    it("rejects non-object junk", () => {
+      expect(() => parseDoorstopGitStatusRequest(null)).toThrow(/Doorstop git status request/);
+      expect(() => parseDoorstopGitStatusRequest(undefined)).toThrow(/Doorstop git status request/);
+      expect(() => parseDoorstopGitStatusRequest([])).toThrow(/Doorstop git status request/);
+      expect(() => parseDoorstopGitStatusRequest("{}")).toThrow(/Doorstop git status request/);
+      expect(() => parseDoorstopGitStatusRequest(3)).toThrow(/Doorstop git status request/);
+    });
+  });
+
+  describe("parseDoorstopGitStatusResponse", () => {
+    it("parses the happy path with branch/ahead/behind present (exact shape, no extra fields)", () => {
+      expect(
+        parseDoorstopGitStatusResponse({
+          git: true,
+          branch: "main",
+          ahead: 2,
+          behind: 1,
+          staged: 3,
+          dirty: 5,
+          files: [
+            { path: "reqs/REQ0001.yml", index: "modified", workingTree: "unmodified" },
+            { path: "reqs/REQ0002.yml", index: "unmodified", workingTree: "modified" },
+          ],
+        }),
+      ).toEqual({
+        git: true,
+        branch: "main",
+        ahead: 2,
+        behind: 1,
+        staged: 3,
+        dirty: 5,
+        files: [
+          { path: "reqs/REQ0001.yml", index: "modified", workingTree: "unmodified" },
+          { path: "reqs/REQ0002.yml", index: "unmodified", workingTree: "modified" },
+        ],
+      });
+    });
+
+    it("omits the absent optional fields instead of writing undefined keys", () => {
+      const parsed = parseDoorstopGitStatusResponse({ git: true, staged: 0, dirty: 0, files: [] });
+      expect(parsed).toEqual({ git: true, staged: 0, dirty: 0, files: [] });
+      expect("branch" in parsed).toBe(false);
+      expect("ahead" in parsed).toBe(false);
+      expect("behind" in parsed).toBe(false);
+    });
+
+    it("parses the git:false degradation shape", () => {
+      expect(parseDoorstopGitStatusResponse({ git: false, staged: 0, dirty: 0, files: [] })).toEqual({
+        git: false,
+        staged: 0,
+        dirty: 0,
+        files: [],
+      });
+    });
+
+    it("rejects branch/ahead/behind on a non-git workspace (the field/git coupling)", () => {
+      expect(() =>
+        parseDoorstopGitStatusResponse({ git: false, branch: "main", staged: 0, dirty: 0, files: [] }),
+      ).toThrow(/Only a git repository may carry "branch"/);
+      expect(() =>
+        parseDoorstopGitStatusResponse({ git: false, ahead: 1, staged: 0, dirty: 0, files: [] }),
+      ).toThrow(/Only a git repository may carry "branch"/);
+      expect(() =>
+        parseDoorstopGitStatusResponse({ git: false, behind: 2, staged: 0, dirty: 0, files: [] }),
+      ).toThrow(/Only a git repository may carry "branch"/);
+    });
+
+    it("rejects unknown file states and non-string states (strict enum, nothing coerced)", () => {
+      expect(() =>
+        parseDoorstopGitStatusResponse({
+          git: true,
+          staged: 0,
+          dirty: 1,
+          files: [{ path: "reqs/REQ0001.yml", index: "staged", workingTree: "unmodified" }],
+        }),
+      ).toThrow(/Invalid doorstop git file state/);
+      expect(() =>
+        parseDoorstopGitStatusResponse({
+          git: true,
+          staged: 0,
+          dirty: 1,
+          files: [{ path: "reqs/REQ0001.yml", index: "unmodified", workingTree: 7 }],
+        }),
+      ).toThrow(/Invalid doorstop git file state/);
+    });
+
+    it("rejects wrong-typed and missing fields", () => {
+      expect(() => parseDoorstopGitStatusResponse({ git: "yes", staged: 0, dirty: 0, files: [] })).toThrow(
+        /boolean field: git/,
+      );
+      expect(() => parseDoorstopGitStatusResponse({ git: true, staged: "3", dirty: 0, files: [] })).toThrow(
+        /number field: staged/,
+      );
+      expect(() => parseDoorstopGitStatusResponse({ git: true, staged: 0, dirty: 0 })).toThrow(/files must be an array/);
+      expect(() =>
+        parseDoorstopGitStatusResponse({ git: true, staged: 0, dirty: 0, files: [{ path: 3, index: "modified", workingTree: "modified" }] }),
+      ).toThrow(/string field: path/);
+      expect(() =>
+        parseDoorstopGitStatusResponse({
+          git: true,
+          staged: 0,
+          dirty: 1,
+          files: [{ path: "reqs/REQ0001.yml", index: "modified" }],
+        }),
+      ).toThrow(/Invalid doorstop git file state/);
+      expect(() => parseDoorstopGitStatusResponse(null)).toThrow(/Doorstop git status response/);
+    });
+
+    it("documents the 200-file cap constant", () => {
+      expect(DOORSTOP_GIT_STATUS_FILES_MAX).toBe(200);
+    });
+  });
+
+  describe("parseDoorstopGitStageRequest", () => {
+    it("accepts validated workspace-relative paths and preserves order", () => {
+      expect(parseDoorstopGitStageRequest({ paths: [".doorstop.yml", "reqs/reqs.yml", "reqs/REQ0001.yml"] })).toEqual({
+        paths: [".doorstop.yml", "reqs/reqs.yml", "reqs/REQ0001.yml"],
+      });
+    });
+
+    it("deduplicates paths preserving first-occurrence order", () => {
+      expect(
+        parseDoorstopGitStageRequest({ paths: ["reqs/REQ0001.yml", "reqs/REQ0002.yml", "reqs/REQ0001.yml"] }),
+      ).toEqual({ paths: ["reqs/REQ0001.yml", "reqs/REQ0002.yml"] });
+    });
+
+    it("rejects a missing paths field, a non-array, and non-string entries", () => {
+      expect(() => parseDoorstopGitStageRequest({})).toThrow(/paths must be an array/);
+      expect(() => parseDoorstopGitStageRequest({ paths: "reqs/REQ0001.yml" })).toThrow(/paths must be an array/);
+      expect(() => parseDoorstopGitStageRequest({ paths: [3] })).toThrow(/string array field: paths/);
+      expect(() => parseDoorstopGitStageRequest(null)).toThrow(/Doorstop git stage request/);
+    });
+
+    it("rejects an EMPTY paths array (a contradiction the browser never emits)", () => {
+      expect(() => parseDoorstopGitStageRequest({ paths: [] })).toThrow(/at least one path is required/);
+    });
+
+    it("rejects paths outside the item-path grammar (empty, absolute, traversal, backslash)", () => {
+      for (const path of [
+        "",
+        "/abs/REQ0001.yml",
+        "C:/win/REQ0001.yml",
+        "..",
+        "../REQ0001.yml",
+        "docs/../../etc/passwd",
+        "docs\\REQ0001.yml",
+      ]) {
+        expect(() => parseDoorstopGitStageRequest({ paths: [path] })).toThrow(/Invalid doorstop item path/);
+      }
+    });
+  });
+
+  describe("parseDoorstopGitStageResponse (field/status coupling)", () => {
+    it("parses every status with only its own fields", () => {
+      expect(parseDoorstopGitStageResponse({ status: "staged", staged: 2 })).toEqual({ status: "staged", staged: 2 });
+      expect(parseDoorstopGitStageResponse({ status: "clean" })).toEqual({ status: "clean" });
+      expect(parseDoorstopGitStageResponse({ status: "skipped" })).toEqual({ status: "skipped" });
+      expect(parseDoorstopGitStageResponse({ status: "failed", stderr: "boom" })).toEqual({
+        status: "failed",
+        stderr: "boom",
+      });
+    });
+
+    it("rejects a staged count on any status but staged, and stderr on any status but failed", () => {
+      expect(() => parseDoorstopGitStageResponse({ status: "clean", staged: 1 })).toThrow(
+        /Only a "staged" outcome may carry "staged"/,
+      );
+      expect(() => parseDoorstopGitStageResponse({ status: "skipped", staged: 1 })).toThrow(
+        /Only a "staged" outcome may carry "staged"/,
+      );
+      expect(() => parseDoorstopGitStageResponse({ status: "clean", stderr: "boom" })).toThrow(
+        /Only a "failed" outcome may carry "stderr"/,
+      );
+      expect(() => parseDoorstopGitStageResponse({ status: "staged", stderr: "boom" })).toThrow(
+        /Only a "failed" outcome may carry "stderr"/,
+      );
+    });
+
+    it("rejects unknown statuses and wrong-typed fields", () => {
+      expect(() => parseDoorstopGitStageResponse({ status: "committed" })).toThrow(/Invalid doorstop git stage status/);
+      expect(() => parseDoorstopGitStageResponse({ status: 3 })).toThrow(/string field: status/);
+      expect(() => parseDoorstopGitStageResponse({})).toThrow(/string field: status/);
+      expect(() => parseDoorstopGitStageResponse(null)).toThrow(/Doorstop git stage response/);
+      expect(() => parseDoorstopGitStageResponse({ status: "failed", stderr: 3 })).toThrow(/string field: stderr/);
+    });
+  });
+
+  describe("isValidGitCommitMessage (the commit message grammar)", () => {
+    it("accepts non-blank single-line messages within the 2000-char cap", () => {
+      for (const message of [
+        "Add doorstop docs",
+        "a",
+        " " + "spaced both ends".repeat(10), // interior blanks are fine
+        "x".repeat(2000), // exactly at the cap
+        "unicode — é ✓ ok",
+      ]) {
+        expect(isValidGitCommitMessage(message), JSON.stringify(message.slice(0, 20))).toBe(true);
+      }
+    });
+
+    it("rejects empty and whitespace-only messages (git would hang or abort)", () => {
+      expect(isValidGitCommitMessage("")).toBe(false);
+      expect(isValidGitCommitMessage("   ")).toBe(false);
+      expect(isValidGitCommitMessage("\t")).toBe(false);
+    });
+
+    it("rejects messages over the 2000-char cap", () => {
+      expect(isValidGitCommitMessage("x".repeat(2001))).toBe(false);
+    });
+
+    it("rejects control characters and line breaks (single line)", () => {
+      for (const message of [
+        "two\nlines",
+        "carriage\rreturn",
+        "tab\there",
+        "\u0000nul",
+        "\u0007bell",
+        "\u007fdel",
+        "c1\u0085control",
+        "c1\u009fcontrol",
+        "sep\u2028line",
+        "sep\u2029line",
+      ]) {
+        expect(isValidGitCommitMessage(message), JSON.stringify(message)).toBe(false);
+      }
+    });
+  });
+
+  describe("parseDoorstopGitCommitRequest", () => {
+    it("accepts a valid message and TRIMS it in the result", () => {
+      expect(parseDoorstopGitCommitRequest({ message: "Add doorstop docs" })).toEqual({ message: "Add doorstop docs" });
+      expect(parseDoorstopGitCommitRequest({ message: "  padded  " })).toEqual({ message: "padded" });
+      expect(parseDoorstopGitCommitRequest({ message: "x", extra: "tolerated" })).toEqual({ message: "x" });
+    });
+
+    it("rejects missing/wrong-typed message fields and out-of-grammar messages", () => {
+      expect(() => parseDoorstopGitCommitRequest({})).toThrow(/string field: message/);
+      expect(() => parseDoorstopGitCommitRequest({ message: 3 })).toThrow(/string field: message/);
+      expect(() => parseDoorstopGitCommitRequest(null)).toThrow(/Doorstop git commit request/);
+      for (const message of ["", "   ", "two\nlines", "x".repeat(2001)]) {
+        expect(() => parseDoorstopGitCommitRequest({ message }), message.slice(0, 10)).toThrow(
+          /Invalid git commit message/,
+        );
+      }
+    });
+  });
+
+  describe("parseDoorstopGitCommitResponse (reuses parseDoorstopCommitOutcome verbatim)", () => {
+    it("is the SAME function object (one parser, no second copy)", () => {
+      expect(parseDoorstopGitCommitResponse).toBe(parseDoorstopCommitOutcome);
+    });
+
+    it("parses the commit outcome shapes and enforces the field/status coupling", () => {
+      expect(parseDoorstopGitCommitResponse({ status: "committed", sha: "abc1234" })).toEqual({
+        status: "committed",
+        sha: "abc1234",
+      });
+      expect(parseDoorstopGitCommitResponse({ status: "clean" })).toEqual({ status: "clean" });
+      expect(parseDoorstopGitCommitResponse({ status: "skipped" })).toEqual({ status: "skipped" });
+      expect(parseDoorstopGitCommitResponse({ status: "failed", stderr: "hook failed" })).toEqual({
+        status: "failed",
+        stderr: "hook failed",
+      });
+      expect(() => parseDoorstopGitCommitResponse({ status: "clean", sha: "abc1234" })).toThrow(
+        /Only a "committed" outcome may carry "sha"/,
+      );
+      expect(() => parseDoorstopGitCommitResponse({ status: "staged" })).toThrow(/Invalid doorstop commit status/);
+    });
   });
 });
