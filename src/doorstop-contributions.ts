@@ -5,13 +5,13 @@
 // thin entry calls this factory, exactly like OpenSE's
 // createOpenseBrowserContributions. All logic lives in the reviewed modules:
 // the per-workspace controller registry + load job (doorstop-panel.ts), the
-// Lit body element (doorstop-panel-elements.ts), and the model/state chain.
+// Lit body element (doorstop-panel-element.ts), and the model/state chain.
 //
 // This module only:
 //   1. instantiates the registry + registers the panel elements,
 //   2. wires the panel contribution (render mirrors the controller's render
 //      inputs into the body element's properties — state flow documented in
-//      doorstop-panel-elements.ts),
+//      doorstop-panel-element.ts),
 //   3. wires the palette actions (view + refresh), and
 //   4. wires the informational workspace label (§7.4) with the documented
 //      async-cache idiom.
@@ -22,7 +22,7 @@
 // or, unpaired, the panel terminal (`context.terminal`), which only exists on
 // the `WorkspacePanelContext` of a rendered panel (the palette action
 // callback context has neither). So they stay as panel-toolbar/action-row
-// buttons, dispatched by doorstop-panel-elements via the Phase D step 9
+// buttons, dispatched by doorstop-panel-element via the Phase D step 9
 // runDoorstop dispatcher.
 // ---------------------------------------------------------------------------
 
@@ -137,7 +137,7 @@ function createDoorstopPanel(registry: DoorstopWorkspaceRegistry): WorkspacePane
 }
 
 /**
- * Panel render wiring (state flow documented in doorstop-panel-elements.ts):
+ * Panel render wiring (state flow documented in doorstop-panel-element.ts):
  * the host template drives the single body element, mirroring the workspace
  * controller's render inputs into its reactive properties. The controller
  * object itself is committed for actions/lifecycle only — its identity never

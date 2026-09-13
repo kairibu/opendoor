@@ -29,7 +29,7 @@
 // operation needs must be present and correctly typed.
 //
 // Grammar note (single source of truth): `isValidDoorstopUid` is the port of
-// the element-level Link/Unlink target guard (doorstop-panel-elements.ts
+// the element-level Link/Unlink target guard (doorstop-panel-view-model.ts
 // `isValidTargetUid`, which now delegates here) and `isValidPublishTarget`
 // the port of the settings-chain safe-relative-path rule
 // (doorstop-settings.ts), which also delegates here — one grammar, no
@@ -247,7 +247,7 @@ export const DOORSTOP_BASELINE_BLOB_MAX = 256 * 1024;
  * chain's `split_uid` grammar (prefix [+sep] + digits [+sep+name]),
  * ANCHORED to the whole string and restricted to the UID alphabet. This is
  * the exact grammar of the element-level Link/Unlink input guard (the
- * private `isValidTargetUid` in doorstop-panel-elements.ts, which now
+ * private `isValidTargetUid` in doorstop-panel-view-model.ts, which now
  * delegates here): the explicit `[\w.-]` alphabet guard rejects whitespace,
  * quotes, and every shell metacharacter by construction, and the structural
  * checks require a prefix + separator + digits|name, or a prefix + digits.
@@ -315,7 +315,7 @@ export function isValidDoorstopItemPath(value: string): boolean {
  * validator would reject is rejected here, so the backend can never be
  * asked to write outside the workspace. (This is a structural PATH check;
  * how the value is shell-QUOTED for the terminal fallback is the separate
- * `PUBLISH_TARGET_SAFE_TOKEN` concern of doorstop-panel-elements.ts
+ * `PUBLISH_TARGET_SAFE_TOKEN` concern of doorstop-panel-view-model.ts
  * `doorstopPublishCommand`.)
  */
 export function isValidPublishTarget(value: string): boolean {
