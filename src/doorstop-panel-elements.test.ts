@@ -19,6 +19,8 @@ import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { TerminalCommandRun, TerminalCommandRunHandle, Workspace, WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
 import type { DoorstopDocumentConfig, DoorstopIndex, ItemRecord, ItemStateKey } from "./doorstop-contract.js";
 import {
+  DOORSTOP_GIT_COMMIT_OPERATION,
+  DOORSTOP_GIT_STAGE_OPERATION,
   DOORSTOP_GIT_STATUS_OPERATION,
   type DoorstopBaselineResponse,
   type DoorstopGitStatusResponse,
@@ -28,6 +30,7 @@ import { buildDoorstopIndex } from "./doorstop-model.js";
 import { computeItemStamp, computeItemStates } from "./doorstop-state.js";
 import {
   DoorstopWorkspaceController,
+  doorstopPaths,
   type DoorstopWorkspaceHost,
   type DoorstopWorkspaceJob,
 } from "./doorstop-panel-controller.js";
@@ -2609,6 +2612,210 @@ describe("DoorstopPanelBodyElement (Ask-agent menu)", () => {
     await flush(body);
     root.querySelector<HTMLElement>(".doorstop-explain")?.click();
     expect(controller.selectedUid).toBe("REQ0002");
+  });
+});
+
+// --- git strip + stage + commit (plan-add-git-actions Phase F item 23) -----------------
+
+/** Mount a backend-active body with the connection flag RAISED: `mountBody`
+ *  constructs the controller disconnected (isConnected false), so the
+ *  mount-time `doorstop.git-status` auto-fetch lands DROPPED (the
+ *  late-write guard) and leaves an orphaned `loading` view — re-rendering
+ *  (requestUpdate → updated → ensureGitStatus's orphan guard) refetches
+ *  it, and this time the landing sticks. Callers then see the strip's
+ *  honest state on every assertion. */
+async function mountGitBody(
+  backend: Mock,
+  job: () => Promise<DoorstopWorkspaceResult> = () => Promise.resolve(makeTreeResult()),
+): Promise<{
+  body: DoorstopPanelBodyElement;
+  controller: DoorstopWorkspaceController;
+  context: ReturnType<typeof panelContext>["context"];
+  backend: Mock;
+}> {
+  const mounted = await mountBody(job, { backend, provider: opendoorProvider });
+  mounted.controller.hostConnected();
+  bindBody(mounted.body, mounted.controller, mounted.context);
+  await flush(mounted.body);
+  mounted.body.requestUpdate();
+  bindBody(mounted.body, mounted.controller, mounted.context);
+  await flush(mounted.body);
+  return { ...mounted, backend };
+}
+
+/** The `doorstop.git-status` calls a backend spy has seen so far. */
+function gitStatusCalls(backend: Mock): number {
+  return backend.mock.calls.filter(([operation]) => operation === DOORSTOP_GIT_STATUS_OPERATION).length;
+}
+
+describe("DoorstopPanelBodyElement (git strip + stage + commit, plan-add-git-actions Phase F item 23)", () => {
+  it("hides all three git controls on an unpaired install (backendActive false)", async () => {
+    const { body } = await mountBody(() => Promise.resolve(makeTreeResult()));
+    const root = body.shadowRoot;
+    expect(root?.querySelector(".doorstop-git-status")).toBeNull();
+    expect(root?.querySelector(".doorstop-git-stage")).toBeNull();
+    expect(root?.querySelector(".doorstop-git-commit")).toBeNull();
+  });
+
+  it("renders the ready strip's counts from gitStatusText and re-fetches on click", async () => {
+    const backend = vi.fn((operation: string) =>
+      operation === DOORSTOP_GIT_STATUS_OPERATION
+        ? Promise.resolve(makeGitStatusResponse({ ahead: 1, staged: 2, dirty: 3 }))
+        : Promise.resolve(makeRunResponse()),
+    );
+    const { body } = await mountGitBody(backend);
+    const strip = body.shadowRoot?.querySelector<HTMLButtonElement>(".doorstop-git-status");
+    expect(strip).not.toBeNull();
+    expect(strip?.getAttribute("aria-busy")).toBe("false");
+    expect(strip?.querySelector(".doorstop-git-status-text")?.textContent).toBe(
+      "⎇ main · 2 staged · 3 dirty · ↑1",
+    );
+
+    // Clicking the strip re-fetches through the controller (the controller
+    // JOINS in-flight fetches, so this is one extra round-trip, exactly).
+    const before = gitStatusCalls(backend);
+    strip?.click();
+    await flush(body);
+    expect(gitStatusCalls(backend)).toBe(before + 1);
+  });
+
+  it("renders the no-git text on the git:false view", async () => {
+    // The git:false response must drop branch/ahead/behind too — the
+    // contract couples those fields to git:true (junk otherwise).
+    const backend = vi.fn((operation: string) =>
+      operation === DOORSTOP_GIT_STATUS_OPERATION
+        ? Promise.resolve(
+            makeGitStatusResponse({ git: false, branch: undefined, ahead: undefined, behind: undefined }),
+          )
+        : Promise.resolve(makeRunResponse()),
+    );
+    const { body } = await mountGitBody(backend);
+    // The refetch after hostConnected sticks (the mount-time fetch landed
+    // dropped) and carries the git:false answer → the strip's no-git text.
+    expect(body.shadowRoot?.querySelector(".doorstop-git-status-text")?.textContent).toBe("no git");
+  });
+
+  it("disables Stage all while a run is in flight or the index has no documents", async () => {
+    const backend = withGitStatusBackend(() => Promise.resolve(makeRunResponse()));
+    const { body } = await mountGitBody(backend);
+    const root = body.shadowRoot;
+    const stage = root?.querySelector<HTMLButtonElement>(".doorstop-git-stage");
+    expect(stage?.disabled).toBe(false);
+
+    body.runInProgress = "Doorstop: validate";
+    await flush(body);
+    expect(root?.querySelector<HTMLButtonElement>(".doorstop-git-stage")?.disabled).toBe(true);
+    expect(root?.querySelector<HTMLButtonElement>(".doorstop-git-commit-button")?.disabled).toBe(true);
+    expect(root?.querySelector<HTMLInputElement>(".doorstop-git-commit-input")?.disabled).toBe(true);
+    body.runInProgress = undefined;
+    await flush(body);
+
+    // An empty index disables Stage all (an empty stage request is a
+    // contradiction the browser never emits — the request parser rejects it).
+    body.result = makeResult([], [], [], new Set());
+    await flush(body);
+    expect(root?.querySelector<HTMLButtonElement>(".doorstop-git-stage")?.disabled).toBe(true);
+  });
+
+  it("clicking Stage all sends doorstop.git-stage with the loaded index's paths", async () => {
+    const backend = withGitStatusBackend(() =>
+      Promise.resolve({ status: "staged", staged: 2 }),
+    );
+    const { body, controller } = await mountGitBody(backend);
+    const before = backend.mock.calls.filter(([operation]) => operation === DOORSTOP_GIT_STAGE_OPERATION).length;
+    body.shadowRoot?.querySelector<HTMLButtonElement>(".doorstop-git-stage")?.click();
+    await flush(body);
+    expect(backend.mock.calls.filter(([operation]) => operation === DOORSTOP_GIT_STAGE_OPERATION)).toHaveLength(
+      before + 1,
+    );
+    expect(backend).toHaveBeenLastCalledWith(DOORSTOP_GIT_STAGE_OPERATION, {
+      paths: doorstopPaths(body.result as DoorstopWorkspaceResult),
+    });
+    expect(controller.runInProgress).toBeUndefined();
+    expect(controller.lastRun).toMatchObject({ op: "git-stage", status: "ok" });
+  });
+
+  it("keeps the commit button disabled on an empty input and surfaces the inline error on Enter (no request)", async () => {
+    const backend = withGitStatusBackend(() => Promise.resolve(makeRunResponse()));
+    const { body } = await mountGitBody(backend);
+    const root = body.shadowRoot;
+    const input = root?.querySelector<HTMLInputElement>(".doorstop-git-commit-input");
+    const commit = root?.querySelector<HTMLButtonElement>(".doorstop-git-commit-button");
+    expect(input).not.toBeNull();
+    expect(commit?.disabled).toBe(true); // empty input → disabled
+
+    // Enter with an empty input: the inline error appears and NO request
+    // goes out (the browser must never send an empty commit message).
+    const commitsBefore = backend.mock.calls.filter(([operation]) => operation === DOORSTOP_GIT_COMMIT_OPERATION).length;
+    input?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, composed: true }));
+    await flush(body);
+    expect(root?.querySelector("[role='alert']")?.textContent).toContain("Enter a commit message");
+    expect(
+      backend.mock.calls.filter(([operation]) => operation === DOORSTOP_GIT_COMMIT_OPERATION),
+    ).toHaveLength(commitsBefore);
+  });
+
+  it("sends doorstop.git-commit with the message only and clears the input after success", async () => {
+    const backend = vi.fn((operation: string) =>
+      operation === DOORSTOP_GIT_STATUS_OPERATION
+        ? Promise.resolve(makeGitStatusResponse())
+        : operation === DOORSTOP_GIT_COMMIT_OPERATION
+          ? Promise.resolve({ status: "committed", sha: "abc1234" })
+          : Promise.resolve(makeRunResponse()),
+    );
+    const { body } = await mountGitBody(backend);
+    const root = body.shadowRoot;
+    const input = root?.querySelector<HTMLInputElement>(".doorstop-git-commit-input");
+    const commit = root?.querySelector<HTMLButtonElement>(".doorstop-git-commit-button");
+    if (input === undefined || input === null) throw new Error("no commit input");
+
+    input.value = "  Land the strip  ";
+    input.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+    await flush(body);
+    expect(commit?.disabled).toBe(false);
+
+    const commitsBefore = backend.mock.calls.filter(([operation]) => operation === DOORSTOP_GIT_COMMIT_OPERATION).length;
+    commit?.click();
+    await flush(body);
+    expect(
+      backend.mock.calls.filter(([operation]) => operation === DOORSTOP_GIT_COMMIT_OPERATION),
+    ).toHaveLength(commitsBefore + 1);
+    expect(backend).toHaveBeenCalledWith(DOORSTOP_GIT_COMMIT_OPERATION, { message: "Land the strip" });
+
+    // Success (status ok + the git-commit op) clears the input; a failed
+    // commit would keep the message for a corrected retry.
+    expect(input.value).toBe("");
+  });
+
+  it("Escape clears the input and the inline error", async () => {
+    const backend = withGitStatusBackend(() => Promise.resolve(makeRunResponse()));
+    const { body } = await mountGitBody(backend);
+    const root = body.shadowRoot;
+    const input = root?.querySelector<HTMLInputElement>(".doorstop-git-commit-input");
+    if (input === undefined || input === null) throw new Error("no commit input");
+
+    // Produce an inline error first (Enter on an empty input).
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, composed: true }));
+    await flush(body);
+    expect(root?.querySelector("[role='alert']")).not.toBeNull();
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, composed: true }));
+    await flush(body);
+    expect(input.value).toBe("");
+    expect(root?.querySelector("[role='alert']")).toBeNull();
+  });
+
+  it("the strip re-fetches after a stage's invalidate (the single cache-clearing point)", async () => {
+    const backend = withGitStatusBackend(() => Promise.resolve({ status: "staged", staged: 2 }));
+    const { body } = await mountGitBody(backend);
+    const before = gitStatusCalls(backend);
+    body.shadowRoot?.querySelector<HTMLButtonElement>(".doorstop-git-stage")?.click();
+    await flush(body);
+    bindBody(body, (body as DoorstopPanelBodyElement).controller as DoorstopWorkspaceController, body.context as WorkspacePanelContext);
+    await flush(body);
+    // The run's success path invalidated (clearing the cached view), and the
+    // element's next render re-fetched the strip through the orphan guard.
+    expect(gitStatusCalls(backend)).toBeGreaterThan(before);
   });
 });
 
