@@ -2684,9 +2684,9 @@ describe("DoorstopPanelBodyElement (git strip + stage + commit, plan-add-git-act
     // contract couples those fields to git:true (junk otherwise).
     const backend = vi.fn((operation: string) =>
       operation === DOORSTOP_GIT_STATUS_OPERATION
-        ? Promise.resolve(
-            makeGitStatusResponse({ git: false, branch: undefined, ahead: undefined, behind: undefined }),
-          )
+        ? // A literal no-git payload: the contract couples branch/ahead/behind
+          // to git:true, so the degradation shape carries none of them.
+          Promise.resolve({ git: false, staged: 0, dirty: 0, files: [] } as DoorstopGitStatusResponse)
         : Promise.resolve(makeRunResponse()),
     );
     const { body } = await mountGitBody(backend);
