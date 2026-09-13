@@ -1,68 +1,3 @@
-// ---------------------------------------------------------------------------
-// Opendoor panel Lit element (plan §3.1/§3.4, integration chain E2): the
-// single workspace panel root `<pi-web-opendoor-panel-body>`, mirroring the
-// opense-panel-elements.ts idiom (same register-once guard, same
-// state-flow: controller fields mirrored into reactive properties by the
-// host render function, controller passed for *actions*).
-//
-// Layout (plan-layout-improvement.md): five named vertical sections in
-// host-chrome classes (the git/opense panel conventions — toolbar/viewer/
-// empty/muted), all `doorstop-*`-prefixed like git's `git-*`/opense's
-// `opense-*`. Regions 2–3 stack vertically like the opense split
-// (item list above, detail below):
-//
-//   1. project-actions — the panel title, the Items / Findings toggle, the
-//      stale and skipped-confirmation notices, and the project-scoped
-//      buttons Refresh (controller.invalidate), Run validation and Publish
-//      HTML (backend when the workspace is opendoor-owned with an active
-//      backend, terminal otherwise).
-//   2. item-list — a `doorstop-list-filters` row (the document tree as
-//      chips (`REQ ← [TST, LLT]` via each config's `parentPrefix`; item
-//      count + aggregate state dots; the "All" chip clears the document
-//      filter), the state-filter dropdown, and the search input) above the
-//      list pane: level/uid/header-excerpt rows with per-ItemStateKey
-//      chips; click selects the item. Diagnostics (truncated/binary/parse
-//      errors) surface as an inline warning strip at the top of the list
-//      pane.
-//   3. item-details — the pane below the list: uid/level/header, the item
-//      text as ESCAPED text (v1 deliberately renders no markdown —
-//      injection-safe by construction), flags, links out (suspect/ok +
-//      recorded vs current fingerprint shorts), links in, references,
-//      extended attributes as JSON-ish text, and local findings.
-//   4. item-action-palette — the Review / Clear suspect links / Edit /
-//      Unlink / Link + target input / target-error alert / Ask-agent menu
-//      row, moved OUT of the detail pane so it spans the panel at a fixed
-//      height matching the host prompt footer; a muted placeholder row
-//      while nothing is selected; absent in the findings view.
-//   5. status-bar — the panel's view of the latest run's status/duration/
-//      output (driven by `controller.lastRun`, plan Phase D step 8) with a
-//      dismiss button; the output body AUTO-EXPANDS whenever a run produces
-//      a message to show, and Dismiss clears the run + collapses the bar.
-//
-// Action buttons are disabled while `controller.runInProgress` is set.
-//
-// Every run dispatches through `runDoorstop` (Phase D step 9) with TWO
-// paths. When the workspace is owned by the opendoor provider with an
-// active backend (`context.backend !== undefined &&
-// context.workspace.provider?.pluginId === OPENDOOR_PLUGIN_ID &&
-// provider.capabilities.request !== false`), the action calls
-// `context.backend.request("doorstop.run", input)` with the STRUCTURED
-// request (argv is built server-side — the browser never shell-quotes) and
-// commits the response to `controller.lastRun`. Otherwise it runs the
-// terminal command exactly as before: `context.terminal.runCommand({ title,
-// command, metadata: { "opendoor.op": … }, open })` —
-// `TerminalCommandRunHandle.completed` (node_modules/@jmfederico/pi-web/
-// dist/plugin-api.d.ts) resolves when the run finishes, so on completion
-// the panel invalidates (rescans the workspace) — the §9.3 "re-scan on
-// completion" obligation fulfilled without polling.
-//
-// The body element drives the controller lifecycle directly (opense hands
-// that duty to its activity element; here there is only one element, so it
-// raises/lowers the connection flag itself) — connect kicks the first load,
-// disconnect drops late async writes, and a controller re-commit (workspace
-// switch) ends the old workspace's connection and starts the new one's.
-// ---------------------------------------------------------------------------
-
 import type { WorkspacePanelContext, WorkspaceBackend } from "@jmfederico/pi-web/plugin-api";
 import { LitElement, css, html, nothing, svg, type PropertyValues, type TemplateResult } from "lit";
 import { classMap } from "lit/directives/class-map.js";
@@ -109,16 +44,11 @@ import {
 
 export const bodyElementTag = "pi-web-opendoor-panel-body";
 
-/** Empty-state copy for a workspace with no Doorstop documents (spec §7.1
- *  "empty states": no documents → the create hint). */
 export const EMPTY_WORKSPACE_MESSAGE =
   "This workspace has no Doorstop documents — run `doorstop create REQ ./reqs` in the workspace to start a requirements tree.";
 
-/** Reading title on the "All items" toolbar chip. */
 const ALL_DOCUMENTS_LABEL = "All";
 
-/** Human-readable chip label for every ItemStateKey (the UI never renders
- *  the raw key string). */
 export const STATE_CHIP_LABELS: Record<ItemStateKey, string> = {
   normative: "normative",
   "non-normative": "non-normative",
@@ -132,11 +62,6 @@ export const STATE_CHIP_LABELS: Record<ItemStateKey, string> = {
   "missing-reference": "missing reference",
 };
 
-/** Chip color story for one ItemStateKey: informational states are muted,
- *  warn-ish states use the warning color, error-ish states (suspect links,
- *  unknown links, missing references, inactive) use the danger color —
- *  spec §7.1 "suspect/unreviewed/error-ish = distinct colors, muted for
- *  informational". */
 export type StateChipKind = "muted" | "warning" | "danger";
 
 export function stateChipKind(key: ItemStateKey): StateChipKind {
@@ -157,8 +82,6 @@ export function stateChipKind(key: ItemStateKey): StateChipKind {
   }
 }
 
-/** Aggregate document state dot kinds ("green / suspect / unreviewed" of
- *  spec §7.1). */
 export type DocumentStateDot = "ok" | "unreviewed" | "suspect";
 
 function dotTitle(dot: DocumentStateDot): string {
@@ -172,12 +95,6 @@ function dotTitle(dot: DocumentStateDot): string {
   }
 }
 
-/**
- * The aggregate state dots of one document chip: a green "ok" dot when every
- * item is reviewed with no suspect links, an amber dot when any item is
- * unreviewed, and a red dot when any item has a suspect link (each shown
- * when it applies — a document can carry both amber and red).
- */
 export function documentStateDots(
   document: DoorstopDocumentConfig,
   items: readonly ItemRecord[],
@@ -193,14 +110,8 @@ export function documentStateDots(
   return dots;
 }
 
-/**
- * The item-list filter pipeline (document prefix + state chip + search over
- * UID/header/text). `documentPrefix` `undefined` and `""` both mean "all
- * documents" — `""` is the sentinel `selectDocument("")` writes when the
- * "All" chip clears the document filter (the controller's selectDocument
- * takes a plain string, so the element documents the empty-string meaning
- * here rather than mutating controller state directly).
- */
+/** `documentPrefix` `""` (the sentinel `selectDocument("")` writes for the
+ *  "All" chip) and `undefined` both mean "all documents". */
 export function filteredItems(
   index: DoorstopIndex,
   documentPrefix: string | undefined,
@@ -220,41 +131,27 @@ export function filteredItems(
   });
 }
 
-/** Short fingerprint display form: first 8 chars + ellipsis; `null` (a link
- *  Doorstop has not stamped yet) renders as "none". */
+/** `null` (a link Doorstop has not stamped yet) renders as "none". */
 export function shortFingerprint(fingerprint: string | null): string {
   return fingerprint === null ? "none" : `${fingerprint.slice(0, 8)}…`;
 }
 
 // --- findings view (feature spec §7.2) ---------------------------------------
 
-/** Panel sub-views of the toolbar toggle (spec §7.2): "items" renders the
- *  document-tree / item-list / detail layout; "findings" renders the
- *  workspace-wide validation-findings list. Element-local state — the
- *  controller has no view concept (its render inputs drive the item view
- *  only), so the toggle is intentionally not mirrored by the host render. */
+/** Element-local sub-view (spec §7.2) — the controller has no view concept,
+ *  so the toggle is intentionally not mirrored by the host render. */
 export type DoorstopPanelView = "items" | "findings";
 
-/** Findings-view empty-state copy: every index finding + diagnostic is
- *  plugin-computed and none fired (spec §7.2). */
 export const FINDINGS_EMPTY_MESSAGE = "No findings — the tree is clean.";
 
-/** Empty-state hint — the plugin's local checks are not Doorstop's own
- *  validation; the CLI in the workspace terminal remains authoritative. */
 export const FINDINGS_EMPTY_HINT =
   "Findings are plugin-local; run `doorstop` validation in the terminal for the authoritative check.";
 
-/** Header note shown above the findings list (spec §7.2 "clearly labeled"). */
 export const FINDINGS_PLUGIN_LOCAL_NOTE =
   "plugin-local findings — `doorstop` validation in the terminal is authoritative";
 
-/**
- * One row of the findings view — the merged shape over the index's findings
- * (`Finding`) and its discovery/settings diagnostics (`DiscoveryDiagnostic`),
- * which already carry exactly these fields structurally. Each row renders a
- * severity chip, an item UID when the finding names one, a path when the
- * finding names one, and the message.
- */
+/** Merged shape over the index's findings and discovery diagnostics, which
+ *  already carry exactly these fields structurally. */
 export interface FindingsViewRow {
   severity: "error" | "warning" | "info";
   uid?: string;
@@ -262,37 +159,23 @@ export interface FindingsViewRow {
   message: string;
 }
 
-/** Findings-view severity ordering, error first (Doorstop's ERROR > WARNING
- *  > INFO), used by the stable sort below. */
 const FINDING_SEVERITY_RANK: Record<FindingsViewRow["severity"], number> = {
   error: 0,
   warning: 1,
   info: 2,
 };
 
-/**
- * Every finding the findings view lists (spec §7.2): the index's findings
- * (structural findings from the model chain + per-item state findings) merged
- * with the discovery/settings diagnostics, sorted by severity — errors first,
- * warnings second, info last — with a STABLE sort so input order is preserved
- * within one severity. `Finding` and `DiscoveryDiagnostic` are structurally
- * assignable to {@link FindingsViewRow}, so the merge never loses a field and
- * never fabricates one.
- */
 export function findingsViewRows(index: DoorstopIndex): FindingsViewRow[] {
   const rows: FindingsViewRow[] = [...index.findings, ...index.diagnostics];
   return rows.sort((a, b) => FINDING_SEVERITY_RANK[a.severity] - FINDING_SEVERITY_RANK[b.severity]);
 }
 
-/** Grouped severity counts of the findings view (the header's
- *  "n errors · n warnings · n info"). */
 export interface FindingsViewCounts {
   errors: number;
   warnings: number;
   info: number;
 }
 
-/** Count the findings-view rows by severity. */
 export function findingsViewCounts(rows: readonly FindingsViewRow[]): FindingsViewCounts {
   const counts: FindingsViewCounts = { errors: 0, warnings: 0, info: 0 };
   for (const row of rows) {
@@ -303,60 +186,31 @@ export function findingsViewCounts(rows: readonly FindingsViewRow[]): FindingsVi
   return counts;
 }
 
-/** The header's count line, e.g. "2 errors · 1 warning · 3 info" (singulars
- *  for 1; "info" is count-invariant). */
 export function findingsCountText(counts: FindingsViewCounts): string {
   const errors = counts.errors === 1 ? "1 error" : `${String(counts.errors)} errors`;
   const warnings = counts.warnings === 1 ? "1 warning" : `${String(counts.warnings)} warnings`;
   return `${errors} · ${warnings} · ${String(counts.info)} info`;
 }
 
-/** The publish target of a load result — `result.settings.publishTarget`
- *  (slice 1: always present after a load), falling back to the frozen
- *  `DEFAULT_OPENDOOR_SETTINGS.publishTarget` when the result or its settings
- *  are missing (a not-yet-landed load, or a result built by an older caller).
- *  Exported so the exact fallback is testable independent of the toolbar. */
+/** Exported so the exact fallback is testable independent of the toolbar. */
 export function doorstopPublishTarget(result: DoorstopWorkspaceResult | undefined): string {
   return result?.settings?.publishTarget ?? DEFAULT_OPENDOOR_SETTINGS.publishTarget;
 }
 
-/** Whether the workspace settings opt Review into the review→commit pipeline
- *  (Phase C step 9) — `result.settings.commitAfterReview` with the frozen
- *  default's `false` fallback when the result or its settings are missing
- *  (exactly the publish-target fallback idiom). The commit flag travels
- *  only on the BACKEND path; the terminal fallback does not commit. */
+/** The commit flag travels only on the BACKEND path; the terminal fallback
+ *  does not commit. */
 export function doorstopCommitAfterReview(result: DoorstopWorkspaceResult | undefined): boolean {
   return result?.settings?.commitAfterReview ?? DEFAULT_OPENDOOR_SETTINGS.commitAfterReview;
 }
 
-/** The one-line Last-run narration of a git outcome: the review→commit
- *  pipeline's post-review commit (plan Phase C step 11) and the two
- *  project-scoped git runs' own outcome (plan-add-git-actions.md Phase C
- *  step 12 / Phase D step 15). `op` picks the narrative voice — the two
- *  outcomes SHARE the `clean`/`skipped`/`failed` statuses, and a stage
- *  run's `clean` means "nothing to stage" while a commit run's `clean`
- *  means "nothing staged", so the status alone cannot narrate correctly:
- *
- *  - non-git runs (a REVIEW run's `commit: true`): `commit: <short-sha>` /
- *    `commit: clean (already committed)` / `commit: skipped (not a git
- *    repository | review failed | deadline)` / `commit: failed — <stderr
- *    excerpt>` — the pipeline's established voice.
- *  - git-stage/git-commit runs: `staged <n> paths` / `committed <sha>` /
- *    `clean — nothing to stage` (stage) / `clean — nothing staged`
- *    (commit) / `skipped` / `failed — <stderr excerpt>` — git-CLI voice.
- *
- * The outcome is informational — for a REVIEW run it never flips the run's
- * ok/failed badge (the review itself succeeded; the commit is narration);
- * on the git-stage/git-commit RUNS the run's own `status` already reflects
- * a `failed` outcome (Phase C step 12) and this line carries the
- * count/sha/skip/error detail. */
+/** `op` picks the narrative voice: the two outcome types SHARE the
+ *  `clean`/`skipped`/`failed` statuses and are indistinguishable on them —
+ *  a stage's `clean` means "nothing to stage", a commit's "nothing staged"
+ *  — so the status alone cannot narrate correctly. The outcome is
+ *  informational: for a REVIEW run it never flips the run's ok/failed
+ *  badge, and on the git runs the run's own `status` already reflects a
+ *  `failed` outcome. */
 export function commitOutcomeText(op: DoorstopLastRunView["op"], outcome: DoorstopCommitOutcome | DoorstopGitStageResponse): string {
-  // The project-scoped git runs speak git-CLI voice; a review run's
-  // post-review commit keeps the `commit: …` pipeline voice. Threading the
-  // op in (rather than switching on the outcome alone) is what lets a
-  // stage's `clean` say "nothing to stage" where a commit's `clean` says
-  // "nothing staged" — the two response types are indistinguishable on
-  // those shared statuses.
   const gitRun = op === "git-stage" || op === "git-commit";
   switch (outcome.status) {
     case "staged":
@@ -373,10 +227,6 @@ export function commitOutcomeText(op: DoorstopLastRunView["op"], outcome: Doorst
   }
 }
 
-/** Whether a run produced anything the status bar should display: captured
- *  stdout/stderr, a backend error message, or a review-commit narration.
- *  Drives the status bar's content-driven AUTO-EXPANSION — a run with no
- *  output at all stays collapsed to its status row only. */
 export function lastRunHasMessage(lastRun: DoorstopLastRunView): boolean {
   return (
     lastRun.stdout !== "" ||
@@ -387,14 +237,8 @@ export function lastRunHasMessage(lastRun: DoorstopLastRunView): boolean {
 }
 
 /**
- * The git status strip's compact readout text (plan-add-git-actions.md Phase
- * D step 14): `⎇ <branch> · <staged> staged · <dirty> dirty · ↑<ahead>
- * ↓<behind>`, OMITTING the zero/absent parts — a clean repo reads `⎇ main`;
- * a repo ahead of its upstream shows `↑N` with no `↓` (git OMITS the zero
- * side of the `[ahead N]` bracket, so `ahead`/`behind` are absent at 0 — the
- * Phase B worker's finding, handled where the parser drops the zero side, and
- * mirrored here by dropping the 0 counts the same way). A detached HEAD (no
- * `branch`) renders the bare `⎇` glyph: provisioned as git, just branchless.
+ * Zero counts are dropped because git OMITS the zero side of the
+ * `[ahead N]` bracket — `ahead`/`behind` are absent at 0, mirrored here.
  * Exported for the Phase F element tests (the `commitOutcomeText` idiom).
  */
 export function gitStatusText(response: DoorstopGitStatusResponse): string {
@@ -406,38 +250,28 @@ export function gitStatusText(response: DoorstopGitStatusResponse): string {
   return parts.join(" · ");
 }
 
-/** Characters a publish target may contain and stay inert in any shell: the
- *  same `[\w.-]` token alphabet as the UID guard below plus `/` for path
- *  separators (the default `./public` is such a token). A target containing
- *  anything else — whitespace, quotes, `;`, `|`, `&`, `$`, backticks — is
- *  emitted shell-quoted by {@link doorstopPublishCommand}. */
+/** Shell-inert alphabet for a publish target (the UID guard's `\w` alphabet
+ *  plus `/` for the default `./public`); anything else is shell-quoted by
+ *  {@link doorstopPublishCommand}. */
 const PUBLISH_TARGET_SAFE_TOKEN = /^[\w./-]+$/;
 
-/** Quote one string as a single POSIX-shell argument (single quotes, embedded
- *  quotes escaped as `'\''`) — the exact idiom the host's terminal service
- *  uses when it echoes each runCommand through `$SHELL -lc`, so a quoted
- *  argument survives whatever login shell the workspace runs. */
+/** POSIX single-quote argument; the same idiom the host's terminal service
+ *  uses when it echoes each runCommand through `$SHELL -lc`. */
 function quoteShellArgument(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-/** The exact publish command line: `doorstop publish all <publishTarget>` —
- *  the toolbar's publish action runs this in the workspace terminal (M5: the
- *  target now comes from the workspace settings instead of being hardcoded).
- *
- *  The settings validator only guarantees the target is a workspace-relative
- *  PATH (no `..` segment, not absolute); it does NOT guarantee the target is
- *  a shell-inert ARGUMENT — spaces and every shell metacharacter pass its
- *  check, and the host runs the command through a login shell, so an unquoted
- *  metacharacter target from a committed `.pi-web/opendoor.json` would
- *  execute in the workspace terminal on Publish. Targets outside the inert
+/** The settings validator only guarantees the target is a workspace-relative
+ *  PATH (no `..` segment, not absolute); it does NOT guarantee it is
+ *  shell-inert, and the host runs the command through a login shell, so an
+ *  unquoted metacharacter target from a committed `.pi-web/opendoor.json`
+ *  would execute in the workspace terminal. Targets outside the inert
  *  {@link PUBLISH_TARGET_SAFE_TOKEN} alphabet are therefore single-quoted
- *  here, at the command boundary (the UID-token guard idiom above, applied
- *  at the one place the value becomes a command).
+ *  here, at the command boundary.
  *
  *  `target` may be passed explicitly so a caller that already computed it
  *  (the publish confirm path) keeps the confirm message and the command
- *  provably consistent; it defaults to the result's target. */
+ *  provably consistent. */
 export function doorstopPublishCommand(
   result: DoorstopWorkspaceResult | undefined,
   target: string = doorstopPublishTarget(result),
@@ -446,22 +280,14 @@ export function doorstopPublishCommand(
   return `doorstop publish all ${argument}`;
 }
 
-/**
- * The Link/Unlink inline inputs' target-UID guard — the shared contract
- * grammar `isValidDoorstopUid` (src/doorstop-backend-contract.ts), aliased
- * here by identity so the browser and the server bundle validate
- * identically: an accepted target is always a safe bare token for
- * `doorstop ${op} ${item.uid} ${target}` — whitespace, quotes, and every
- * shell metacharacter are rejected by construction. Exported for the
- * contract parity test; the Link/Unlink inputs are its only in-panel
- * consumer.
- */
+/** Aliased by identity so the browser and the server bundle validate
+ *  identically — an accepted target is always a shell-safe bare token.
+ *  Exported for the contract parity test. */
 export const isValidTargetUid = isValidDoorstopUid;
 
-/** Config of an item's own document, or an inert fallback when the index is
- *  missing it — the state chain's own configForItem idiom, exported so the
- *  element's suspect/reviewed fingerprint comparisons reuse the exact same
- *  fallback (a missing config must not silently break stamps). */
+/** An inert fallback when the index is missing an item's document config —
+ *  the same fallback the state chain uses, so a missing config must not
+ *  silently break stamps. */
 function documentConfigFor(index: DoorstopIndex, item: ItemRecord): DoorstopDocumentConfig {
   return index.byPrefix.get(item.documentPrefix) ?? {
     directoryPath: "",
@@ -474,14 +300,10 @@ function documentConfigFor(index: DoorstopIndex, item: ItemRecord): DoorstopDocu
   };
 }
 
-/**
- * The linked parent items of `item` whose recorded fingerprint no longer
- * matches the parent's current link-record stamp — the exact comparison the
- * state chain uses for the "suspect-link" chip (contract/state: recorded
- * `LinkRecord.fingerprint` vs `computeItemStamp(parent, config, false)`;
- * `null` recordings are never suspect). Drives the Clear button and the
- * Fix-suspect-links prompt.
- */
+/** Must stay the exact comparison the state chain uses for the
+ *  "suspect-link" chip: recorded `LinkRecord.fingerprint` vs
+ *  `computeItemStamp(parent, config, false)`; `null` recordings are never
+ *  suspect. */
 export function suspectParentItems(item: ItemRecord, index: DoorstopIndex): ItemRecord[] {
   const suspects: ItemRecord[] = [];
   for (const link of item.links) {
@@ -495,9 +317,6 @@ export function suspectParentItems(item: ItemRecord, index: DoorstopIndex): Item
   return suspects;
 }
 
-/** Prefix of the first child document of the item's own document (the
- *  document `doorstop add <PREFIX>` names when drafting a child item), or
- *  undefined when the document has no children (§7.3 draft-child action). */
 export function firstChildDocumentPrefix(index: DoorstopIndex, item: ItemRecord): string | undefined {
   for (const document of index.documents) {
     if (document.parentPrefix === item.documentPrefix) return document.prefix;
@@ -505,24 +324,16 @@ export function firstChildDocumentPrefix(index: DoorstopIndex, item: ItemRecord)
   return undefined;
 }
 
-/** JSON-ish text for one extended attribute value — always escaped by lit,
- *  never rendered as raw HTML (spec §7.1 extended-attributes table). */
 function jsonishText(value: unknown): string {
   if (value === undefined) return "undefined";
   const json = JSON.stringify(value);
   return json === undefined ? String(value) : json;
 }
 
-/** Display form of one side of a field-level diff: an attribute absent on
- *  that side (undefined) reads as "—", anything else as JSON-ish text. */
 function diffValueText(value: unknown): string {
   return value === undefined ? "—" : jsonishText(value);
 }
 
-/** Compact display form of one references list for a before→after chip:
- *  paths joined with ", ", each with its keyword (`#kw`) and short sha
- *  (`@abcdef01`) annotations when present, so a keyword/sha-only change is
- *  still visible in the chip text. */
 function referenceListText(references: readonly DoorstopItemReference[]): string {
   return references
     .map((reference) => {
@@ -534,8 +345,6 @@ function referenceListText(references: readonly DoorstopItemReference[]): string
     .join(", ");
 }
 
-/** Row summary for the item list: the header when present, else the first
- *  line of the text (truncated), else a placeholder dash. */
 function itemExcerpt(item: ItemRecord): string {
   const header = item.header;
   if (header !== undefined && header !== "") return header;
@@ -545,10 +354,9 @@ function itemExcerpt(item: ItemRecord): string {
 }
 
 /**
- * Public property surface of the panel-root custom element. The host render
- * function mirrors the workspace controller's render inputs here (state flow
- * documented at the top of this module); `controller` provides the action
- * methods and `context` the terminal + prompt editor.
+ * The host render function mirrors the workspace controller's render inputs
+ * into the reactive properties below; `controller` provides the actions and
+ * `context` the terminal + prompt editor.
  */
 export interface DoorstopPanelBodyElement extends LitElement {
   controller: DoorstopWorkspaceController | undefined;
@@ -561,58 +369,39 @@ export interface DoorstopPanelBodyElement extends LitElement {
   selectedDocumentPrefix: string | undefined;
   stateFilter: ItemStateKey | undefined;
   search: string;
-  /** Mirrored from the controller: the latest doorstop run's view record
-   *  (renders the bottom status bar's badge and output body). */
+  /** Mirrored from the controller. */
   lastRun: DoorstopLastRunView | undefined;
-  /** Mirrored from the controller: title of the run in flight (disables the
-   *  action buttons). */
+  /** Mirrored from the controller. */
   runInProgress: string | undefined;
-  /** Mirrored from the controller: counter bumped on every baseline-cache
-   *  mutation (the detail pane's "Changes since review" fetches). */
+  /** Mirrored from the controller: bumped on every baseline-cache mutation. */
   baselineVersion: number;
-  /** Mirrored from the controller: UID whose baseline fetch is in flight. */
+  /** Mirrored from the controller. */
   baselineInFlight: string | undefined;
-  /** Mirrored from the controller (plan-add-git-actions Phase D step 16):
-   *  the git-status strip's cached view; `undefined` before the first fetch
-   *  lands (or after an invalidate cleared it). */
+  /** Mirrored from the controller; `undefined` before the first fetch lands
+   *  (or after an invalidate cleared it). */
   gitStatusView: DoorstopGitStatusView | undefined;
-  /** Mirrored from the controller: true while the git status fetch is in
-   *  flight (the strip's `aria-busy` — the fetch/render guards themselves
-   *  read the CONTROLLER's live flags, since the mirrored property may lag
-   *  a render). */
+  /** Mirrored from the controller — but the fetch/render guards read the
+   *  CONTROLLER's live flags, since the mirrored property may lag a render. */
   gitStatusInFlight: boolean;
 }
 
-/**
- * The real host's workspace panel context does not declare `focusPrompt`
- * (it lives on the runtime context), so the prompt-insert path calls it
- * through this structural widening — present only where the host supplies it
- * (tests); anywhere else the insertText call alone focuses the mounted
- * editor (the host's prompt editor focuses itself on insert).
- */
+/** The real host's workspace panel context does not declare `focusPrompt`
+ *  (it lives on the runtime context); present only where the host supplies
+ *  it (tests). */
 type PanelContextWithFocusPrompt = WorkspacePanelContext & { focusPrompt?: () => void };
 
-/** Toolbar icon: doorstop checklist (the panel title mark). */
 const doorstopIconSvg = svg`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect width="8" height="4" x="8" y="3" rx="1"/><path d="m9 12 2 2 4-4"/></svg>`;
 
-/** Toolbar icon: refresh (re-run discovery + load). */
 const refreshIconSvg = svg`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>`;
 
-/** Toolbar icon: validation shield. */
 const validateIconSvg = svg`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>`;
 
-/** Toolbar icon: publish (upload arrow). */
 const publishIconSvg = svg`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>`;
 
-/** Toolbar icon: git stage (plus in a circle — the add-to-index action). */
 const gitStageIconSvg = svg`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/></svg>`;
 
-/** Toolbar icon: git commit (check in a circle — the record-the-index
- *  action). */
 const gitCommitIconSvg = svg`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>`;
 
-/** Register the body element; safe to call more than once (plugin modules
- *  can be evaluated across reloads — each call is guarded per tag). */
 export function defineDoorstopPanelElements(): void {
   defineDoorstopPanelBodyElement();
 }
@@ -620,17 +409,13 @@ export function defineDoorstopPanelElements(): void {
 function defineDoorstopPanelBodyElement(): void {
   defineCustomElementOnce(bodyElementTag, () => {
     class DoorstopPanelBodyElement extends LitElement {
-      /** Action surface (refresh/select/filter/terminal/prompt); all
-       *  rendered inputs arrive via the mirrored properties below (module
-       *  header documents the state flow). */
+      /** Actions only; rendered inputs arrive via the mirrored properties. */
       @property({ attribute: false })
       controller: DoorstopWorkspaceController | undefined;
 
-      /** Workspace context for the terminal and the prompt editor. */
       @property({ attribute: false })
       context: WorkspacePanelContext | undefined;
 
-      /** Load result (mirrored from the controller; new object per load). */
       @property({ attribute: false })
       result: DoorstopWorkspaceResult | undefined;
 
@@ -655,90 +440,50 @@ function defineDoorstopPanelBodyElement(): void {
       @property({ attribute: false })
       search = "";
 
-      /** Latest doorstop run's view record, mirrored from the controller
-       *  (renders the bottom status bar). */
       @property({ attribute: false })
       lastRun: DoorstopLastRunView | undefined;
 
-      /** Title of the doorstop run in flight, mirrored from the controller;
-       *  `undefined` with no run pending (action buttons disabled while set). */
       @property({ attribute: false })
       runInProgress: string | undefined;
 
-      /** Baseline-cache version counter, mirrored from the controller (the
-       *  host re-binds a changed value on every baseline fetch mutation, so
-       *  the "Changes since review" section re-renders as fetches land). */
       @property({ attribute: false })
       baselineVersion = 0;
 
-      /** UID of the baseline fetch in flight, mirrored from the controller. */
       @property({ attribute: false })
       baselineInFlight: string | undefined;
 
-      /** Git-status strip view, mirrored from the controller
-       *  (plan-add-git-actions Phase D step 16): the strip renders this; a
-       *  missing view renders nothing until the first fetch lands (the
-       *  label-cache's no-flash idiom). */
       @property({ attribute: false })
       gitStatusView: DoorstopGitStatusView | undefined;
 
-      /** Whether the git status fetch is in flight, mirrored from the
-       *  controller (the strip's `aria-busy` while a fetch runs; the fetch
-       *  guard in `ensureGitStatus` deliberately reads the CONTROLLER's live
-       *  flag instead — the mirrored property may lag a render). */
       @property({ attribute: false })
       gitStatusInFlight = false;
 
-      /** Whether the Ask-agent menu is expanded. */
       @state()
       private askMenuOpen = false;
 
-      /** Inline error for the Link/Unlink target inputs (shown in the action
-       *  row; cleared on the next successful run). */
       @state()
       private targetError: string | undefined;
 
-      /** Inline error for the project-scoped git actions (the empty commit
-       *  message and the defensive empty-stage case; shown beside the git
-       *  controls in the project-actions row — the `targetError`-style alert
-       *  pattern, cleared on the next successful submit). */
       @state()
       private gitActionError: string | undefined;
 
-      /** The git commit input's current text (mirrored for the Commit button's
-       *  disabled gating — an empty input disables it). The input's value
-       *  itself stays uncontrolled (typed by the user, cleared after a
-       *  successful commit), like the Link/Unlink target inputs. */
       @state()
       private gitCommitMessage = "";
 
-      /** Whether a publish ran without an available confirmation dialog
-       *  (sandboxed plugin hosts may not expose window.confirm) — surfaced
-       *  as a muted notice so a skipped confirmation is never silent. */
+      /** Sandboxed plugin hosts may not expose window.confirm. */
       @state()
       private confirmSkipped = false;
 
-      /** Active sub-view of the toolbar toggle (spec §7.2): "items" is the
-       *  default tree/list/detail layout, "findings" the workspace-wide
-       *  findings list. Element-local state — the controller has no view
-       *  concept, and the toggle is deliberately not mirrored by the host
-       *  render (module-level type comment documents this). */
+      /** Element-local — the controller has no view concept. */
       @state()
       private view: DoorstopPanelView = "items";
 
-      /** Whether the status bar's output body is expanded. Content-driven:
-       *  auto-set when a run produces a message to show; Dismiss collapses it.
-       *  Element-local @state — the controller has no expansion concept. */
+      /** Element-local @state — the controller has no expansion concept. */
       @state()
       private statusExpanded = false;
 
-      /** The lastRun view object that already drove an expansion decision, so
-       *  each NEW run re-triggers the auto-expansion (but a re-render of the
-       *  same run does not). Non-reactive; element-local. */
       private lastExpandedRun: DoorstopLastRunView | undefined;
 
-      /** Inline target inputs of the Link/Unlink actions. Values stay
-       *  uncontrolled (typed by the user; cleared after a run). */
       private readonly unlinkInputRef: Ref<HTMLInputElement> = createRef<HTMLInputElement>();
       private readonly linkInputRef: Ref<HTMLInputElement> = createRef<HTMLInputElement>();
       private readonly gitCommitInputRef: Ref<HTMLInputElement> = createRef<HTMLInputElement>();
@@ -1747,13 +1492,10 @@ function defineDoorstopPanelBodyElement(): void {
 
       override connectedCallback(): void {
         super.connectedCallback();
-        // The Ask-agent menu's outside-click/Escape dismissal needs a
-        // document-level listener while the element is mounted.
+        // For the Ask-agent menu's outside-click/Escape dismissal.
         document.addEventListener("click", this.onDocumentClick);
         document.addEventListener("keydown", this.onDocumentKeydown);
-        // The workspace panel became visible: raise the controller's
-        // connection flag and kick the first load (idempotent — a cached
-        // result or an in-flight loadRequest is left alone, §3.2).
+        // Kick the first load; idempotent (§3.2).
         this.controller?.hostConnected();
       }
 
@@ -1761,24 +1503,15 @@ function defineDoorstopPanelBodyElement(): void {
         super.disconnectedCallback();
         document.removeEventListener("click", this.onDocumentClick);
         document.removeEventListener("keydown", this.onDocumentKeydown);
-        // The panel left the DOM: drop the connection flag so late async
-        // writes (load results landing afterwards) are discarded until the
-        // workspace reconnects (plan §3.2).
+        // Discards late async writes until the workspace reconnects (§3.2).
         this.controller?.hostDisconnected();
       }
 
       protected override willUpdate(changedProperties: PropertyValues<this>): void {
-        // Switching the selected item dismisses the Ask-agent menu (the menu
-        // is scoped to one item; a stale menu for a previous selection is
-        // meaningless).
+        // The Ask-agent menu is scoped to one item.
         if (changedProperties.has("selectedUid")) {
           this.askMenuOpen = false;
         }
-        // Status-bar auto-expansion: a NEW run object that produced a message
-        // to show (any stdout/stderr, a backend error, or a commit narration)
-        // re-expands the bar; a new run with nothing to show stays collapsed.
-        // Dismiss clears the run and collapses (`onDismissRun`). Element-local
-        // state — the controller is untouched.
         if (changedProperties.has("lastRun")) {
           const lastRun = this.lastRun;
           if (lastRun === undefined) {
@@ -1789,11 +1522,8 @@ function defineDoorstopPanelBodyElement(): void {
             this.statusExpanded = lastRunHasMessage(lastRun);
           }
         }
-        // Workspace switch while the element stays connected (the host
-        // re-commits a DIFFERENT controller): end the old workspace's
-        // connection, start the new one's — same guarded ordering as the
-        // pre-refactor controller-commit guards. `previous === undefined`
-        // (initial mount) is skipped: connectedCallback already connected.
+        // Initial mount (`previous === undefined`) is skipped:
+        // connectedCallback already connected.
         if (this.isConnected && changedProperties.has("controller")) {
           const previous = changedProperties.get("controller") as DoorstopWorkspaceController | undefined;
           if (previous !== undefined && previous !== this.controller) {
@@ -1804,26 +1534,19 @@ function defineDoorstopPanelBodyElement(): void {
       }
 
       /**
-       * Self-heal the reused-`<details>` hole in the "Changes since review"
-       * section: Lit REUSES the section's DOM node when the detail pane
-       * re-renders for the same selected item whose cache key changed (an
-       * edit landed) — node reuse fires no `toggle`, so the expand handler
-       * alone would leave the section stuck on "Loading baseline…" with no
-       * fetch in flight. After every render, if the section is OPEN but the
-       * current item has no baseline view, kick the lazy fetch.
-       * `requestBaseline` installs its "loading" view synchronously, so this
-       * cannot loop: the next pass sees a view and stands down, and the
-       * landing fetch replaces it. (A selection switch needs no help here —
-       * {@link renderChangesSinceReview} keys the node by UID, so Lit
-       * recreates it closed and the user's expand fires a real `toggle`.)
+       * Self-heal the reused-`<details>` hole: Lit REUSES the section's DOM
+       * node when the same selected item re-renders after its cache key
+       * changed (an edit landed) — node reuse fires no `toggle`, so the
+       * expand handler alone would strand the section on "Loading baseline…"
+       * with no fetch in flight. `requestBaseline` installs its "loading"
+       * view synchronously, so this cannot loop. (A selection switch needs
+       * no help here — {@link renderChangesSinceReview} keys the node by UID,
+       * so Lit recreates it closed and the user's expand fires a real
+       * `toggle`.)
        */
       protected override updated(): void {
-        // Git status strip auto-fetch (plan-add-git-actions Phase D step 14
-        // + the Phase C hand-off note): fetch on the section's FIRST render
-        // and re-fetch after every `invalidate()` clears the cached view (a
-        // rescan or any run — stage and commit included — may change the
-        // workspace's dirtiness). The guard keeps this once-per-clearing and
-        // independent of the detail-section self-heal below.
+        // Re-fetch after every `invalidate()` — any run may change the
+        // workspace's dirtiness.
         this.ensureGitStatus();
         const details = this.shadowRoot?.querySelector<HTMLDetailsElement>(".doorstop-changes");
         if (details === null || details === undefined || !details.open) return;
@@ -1834,24 +1557,11 @@ function defineDoorstopPanelBodyElement(): void {
       }
 
       /**
-       * The git status strip's auto-fetch guard (plan-add-git-actions Phase
-       * D step 14 + the Phase C hand-off note): when the cached view is
-       * MISSING (the first render — `gitStatusView` starts `undefined` — or
-       * a post-`invalidate()` clearing) AND when it is an ORPHANED `loading`
-       * placeholder (a fetch that finished while DISCONNECTED had its
-       * landing dropped by the late-write guard, leaving `loading` with no
-       * fetch in flight — the reconnect-orphan recovery; the controller's
-       * `hostConnected()` clears the orphan, and this widened guard also
-       * covers any render that happens while the orphan is still in place),
-       * kick `controller.requestGitStatus()`. The `!gitStatusInFlight`
-       * check keeps this safe: `requestGitStatus` installs its `loading`
-       * view synchronously, so a `loading` view with NO in-flight fetch is
-       * always an orphan. The controller JOINS concurrent calls
-       * (`gitStatusRequest`), so even a redundant kick cannot stack a
-       * duplicate round-trip; the guard reads the CONTROLLER's live flags
-       * (the mirrored element properties may lag a render), and the
-       * `backendActive()` gate keeps unpaired installs untouched (the
-       * controls — and the fetch — are hidden there).
+       * A `loading` view with no in-flight fetch is an ORPHAN (a fetch that
+       * finished while disconnected had its landing dropped by the
+       * late-write guard); the guard therefore covers missing views and
+       * orphans. The controller JOINS concurrent calls, so a redundant kick
+       * cannot stack a duplicate round-trip.
        */
       private ensureGitStatus(): void {
         const controller = this.controller;
@@ -1877,21 +1587,12 @@ function defineDoorstopPanelBodyElement(): void {
 
       // --- project actions (region 1) -----------------------------------------------
 
-      /** Project-scoped actions (region 1): the panel title, the Items /
-       *  Findings toggle, the stale / skipped-confirm notices, and the
-       *  Refresh / Run validation / Publish buttons. The document chips and
-       *  the state/search filters live in the list-filters row above the
-       *  item list instead (region 2's own affordances). */
       private renderProjectActions(): TemplateResult {
         const publishTarget = doorstopPublishTarget(this.result);
-        // The heading is the project path (the host workspace's root directory)
-        // rather than the static "Doorstop" label — it identifies WHICH tree the
-        // panel is acting on. The basename is displayed and the full path is
-        // kept as the tooltip (title); without a bound context (never in the
-        // real host) the workspace label is the fallback.
         const projectPath = this.context?.workspace.path ?? "";
+        // The heading is the project path (not a static "Doorstop" label):
+        // basename displayed, full path kept as the tooltip.
         const projectLabel = projectPath === "" ? "Doorstop" : projectPath.split("/").filter(Boolean).pop() ?? projectPath;
-        //const projectLabel = projectPath;
         return html`
           <section class="doorstop-project-actions">
             <strong class="doorstop-title" title=${projectPath === "" ? nothing : projectPath}>${doorstopIconSvg}${projectLabel}</strong>
@@ -1909,19 +1610,9 @@ function defineDoorstopPanelBodyElement(): void {
       }
 
       /**
-       * The project-scoped git controls (plan-add-git-actions Phase D step
-       * 14) — the status strip, the Stage all button, and the commit
-       * input+button — placed after the Publish button inside the toolbar
-       * actions row. Gated on {@link DoorstopPanelBodyElement.backendActive}
-       * (hidden on unpaired installs): the strip's status data and the runs'
-       * git access are the backend's, not the browser's — the same gate the
-       * "Changes since review" section uses.
-       *
-       * The commit INPUT is disabled while a run is in flight alongside the
-       * buttons — the stricter reading of the plan's "the control … disabled
-       * while `runInProgress !== undefined`": typing during a run is blocked
-       * so a message typed but never submitted cannot be lost when the run's
-       * invalidate lands mid-typing.
+       * The commit INPUT is disabled while a run is in flight (like the
+       * buttons) so a typed-but-never-submitted message cannot be lost when
+       * the run's invalidate lands mid-typing.
        */
       private renderGitActions(): TemplateResult | typeof nothing {
         if (!this.backendActive()) return nothing;
@@ -1958,24 +1649,10 @@ function defineDoorstopPanelBodyElement(): void {
         `;
       }
 
-      /**
-       * The git status strip (plan-add-git-actions Phase D step 14): the
-       * compact readout chip rendered from the controller's cached
-       * `gitStatusView`. A MISSING view renders nothing (the label-cache's
-       * no-flash idiom — the first fetch lands within a render or two); a
-       * LOADING view renders a muted "…" placeholder instead of blanking the
-       * strip area (the Phase C hand-off note — a re-fetch after an
-       * invalidate must never wipe the row). Clicking the chip re-fetches
-       * (the controller joins an in-flight fetch, so even a click during
-       * loading cannot stack a duplicate request).
-       */
       private renderGitStatus(): TemplateResult | typeof nothing {
         const view = this.gitStatusView;
         if (view === undefined) return nothing;
         const refresh = (): void => { void this.controller?.requestGitStatus(); };
-        // The strip mirrors `gitStatusInFlight` onto `aria-busy` (the only
-        // render-side consumer of the mirrored flag — honest to assistive
-        // tech while a fetch runs).
         switch (view.state) {
           case "loading":
             return html`<button
@@ -2002,10 +1679,6 @@ function defineDoorstopPanelBodyElement(): void {
 
       // --- list filters (above the item list) ---------------------------------------
 
-      /** The item-list filter row: the document tree chips, the state-filter
-       *  dropdown, and the search input. Rendered at the top of the items-view
-       *  branch (inside the viewer), directly above the list/detail split —
-       *  behavior is unchanged from the old toolbar placement. */
       private renderListFilters(result: DoorstopWorkspaceResult): TemplateResult {
         return html`
           <section class="doorstop-list-filters">
@@ -2033,19 +1706,8 @@ function defineDoorstopPanelBodyElement(): void {
       }
 
       /**
-       * The status bar (region 5, plan Phase D step 8/9): the latest
-       * backend-path run's status badge (ok/failed/killed/error), run
-       * duration (and exit code / killing signal when relevant), a Dismiss
-       * button, and — when expanded — the captured output body. Driven
-       * entirely by `controller.lastRun`; renders nothing (and takes no
-       * space) before the first run. Visible in both the items and findings
-       * views. A run in flight marks action buttons disabled at the buttons
-       * themselves (`runInProgress`), not here.
-       *
-       * Expansion is CONTENT-DRIVEN: whenever a new run produces a message to
-       * show (`lastRunHasMessage`), the bar expands automatically without any
-       * user interaction (see `willUpdate`). Dismiss clears the run and
-       * collapses the bar; there is no manual expand/collapse toggle.
+       * Expansion is CONTENT-DRIVEN (see `willUpdate`); there is no manual
+       * expand/collapse toggle.
        */
       private renderStatusBar(): TemplateResult | typeof nothing {
         const lastRun = this.lastRun;
@@ -2073,9 +1735,6 @@ function defineDoorstopPanelBodyElement(): void {
         `;
       }
 
-      /** The status bar's expanded body: the commit narration line, the
-       *  captured stdout/stderr as pre-wrapped `<pre>` blocks with the
-       *  truncated-stream notices, and the "No output captured." fallback. */
       private renderStatusBarBody(lastRun: DoorstopLastRunView): TemplateResult {
         return html`
           <div class="doorstop-last-run">
@@ -2108,10 +1767,6 @@ function defineDoorstopPanelBodyElement(): void {
         `;
       }
 
-      /** The Items / Findings view toggle (spec §7.2): a tab-like switch
-       *  between the item list/detail layout and the workspace-wide findings
-       *  list. The run actions (Refresh / Run validation / Publish) sit
-       *  outside the switch and stay reachable in both views. */
       private renderViewToggle(): TemplateResult {
         return html`
           <div class="doorstop-view-toggle" role="tablist" aria-label="Requirements panel view">
@@ -2143,14 +1798,6 @@ function defineDoorstopPanelBodyElement(): void {
         `;
       }
 
-      /**
-       * One document chip — `REQ ← [TST, LLT]`: each non-root chip shows
-       * its `parentPrefix` as a small `← REQ` arrow (the tree edges come
-       * from the configs' `parentPrefix`, spec §7.1), plus the item count
-       * and the aggregate state dots. `undefined` renders the "All" chip
-       * (clears the document filter). Clicking a chip filters the item list
-       * to that document.
-       */
       private renderDocumentChip(
         document: DoorstopDocumentConfig | undefined,
         result: DoorstopWorkspaceResult,
@@ -2188,15 +1835,9 @@ function defineDoorstopPanelBodyElement(): void {
         if (result === undefined) {
           return html`<p class="doorstop-muted doorstop-standalone">${this.loading ? "Loading workspace…" : "Run Refresh to scan for Doorstop documents."}</p>`;
         }
-        // Findings view (spec §7.2) replaces the whole viewer with the
-        // findings list; the discovery diagnostics are listed THERE as rows,
-        // so the items-view inline warning strip is not duplicated. In the
-        // items view the strip sits at the top of the stacked list pane
-        // (list above, detail below — mirroring the opense split). It is
-        // rendered in BOTH branches: diagnostics must never be silently
-        // dropped, so a workspace whose only document failed to parse
-        // (documents.length === 0 with non-empty diagnostics) still shows
-        // the strip above the empty state.
+        // Rendered in BOTH branches: diagnostics must never be silently
+        // dropped — a workspace whose only document failed to parse still
+        // shows the strip above the empty state.
         if (this.view === "findings") {
           return this.renderFindingsView(result);
         }
@@ -2219,12 +1860,6 @@ function defineDoorstopPanelBodyElement(): void {
         `;
       }
 
-      /** The findings view (spec §7.2): every finding of the index — the
-       *  structural + state findings and the discovery/settings diagnostics —
-       *  normalized to rows and sorted error → warning → info, with grouped
-       *  counts and the plugin-local label in the header. A workspace with
-       *  nothing to flag renders the muted clean-tree empty state instead of
-       *  an empty list. */
       private renderFindingsView(result: DoorstopWorkspaceResult): TemplateResult {
         const rows = findingsViewRows(result.index);
         const counts = findingsViewCounts(rows);
@@ -2248,11 +1883,6 @@ function defineDoorstopPanelBodyElement(): void {
         `;
       }
 
-      /** One findings-view row: severity chip, the finding's item UID (when
-       *  it names one AND that item still exists in the index — clickable,
-       *  navigating back to the Items view with the item selected), the path
-       *  (when the finding names one), and the message. All text is escaped
-       *  by lit; nothing here is ever markup. */
       private renderFindingRow(row: FindingsViewRow, index: DoorstopIndex): TemplateResult {
         const kind =
           row.severity === "error" ? "doorstop-error" : row.severity === "warning" ? "doorstop-warning" : "doorstop-info";
@@ -2272,10 +1902,6 @@ function defineDoorstopPanelBodyElement(): void {
         `;
       }
 
-      /** Navigate from a findings row's UID to the item: clear the
-       *  document/state/search filters (the finding may belong to a document
-       *  or state the current filters hide), select the item, and switch
-       *  back to the Items view so the target is actually visible. */
       private selectFindingTarget(uid: string): void {
         const controller = this.controller;
         if (controller === undefined) return;
@@ -2286,9 +1912,6 @@ function defineDoorstopPanelBodyElement(): void {
         this.view = "items";
       }
 
-      /** Inline warning strip: every discovery + parse diagnostic (truncated
-       *  reads, binary skips, item-name mismatches, parse errors) attributed
-       *  by path — the module family's never-drop-silently discipline. */
       private renderDiagnostics(result: DoorstopWorkspaceResult): TemplateResult | typeof nothing {
         if (result.index.diagnostics.length === 0) return nothing;
         return html`
@@ -2349,13 +1972,8 @@ function defineDoorstopPanelBodyElement(): void {
         return html`<span class=${`doorstop-chip doorstop-chip-${kind}`}>${STATE_CHIP_LABELS[key]}</span>`;
       }
 
-      /** Whether the workspace runs the paired backend path (the exact
-       *  `runDoorstop` gate: an owned opendoor provider whose backend
-       *  enables `request`). The baseline fetch and the review→commit pipeline
-       *  live server-side, so the "Changes since review" section is hidden on
-       *  unpaired installs — consistent with the existing backend-absent
-       *  fallbacks (the section's git access is the backend's, not the
-       *  browser's). */
+      /** The baseline fetch and the review→commit pipeline live server-side,
+       *  so this gates the sections that need them. */
       private backendActive(): boolean {
         const context = this.context;
         return (
@@ -2366,14 +1984,6 @@ function defineDoorstopPanelBodyElement(): void {
       }
 
       /**
-       * The collapsible "Changes since review" section (plan Phase D step
-       * 14): rendered between the state-chip row and the Text section, gated
-       * on the item being unreviewed WITH a stored reviewed fingerprint (a
-       * never-reviewed item has no baseline to recover) and the backend path
-       * being active. Collapsed by default; expanding triggers the lazy
-       * baseline fetch, which resolves to the loading/no-git/no-match notices
-       * or the semantic diff view.
-       *
        * The `<details>` is wrapped in `keyed(item.uid, …)` so a selection
        * switch RE-CREATES the node (fresh, collapsed, with a real `toggle` on
        * expand) instead of Lit reusing the old item's open node — a reused
@@ -2398,7 +2008,6 @@ function defineDoorstopPanelBodyElement(): void {
         );
       }
 
-      /** The opened section's body: the state notices or the ready diff view. */
       private renderBaselineView(view: DoorstopBaselineView): TemplateResult {
         switch (view.state) {
           case "loading":
@@ -2417,10 +2026,6 @@ function defineDoorstopPanelBodyElement(): void {
         }
       }
 
-      /** The semantic diff of a matched baseline: the source label, the text
-       *  as `+`/`−` line rows (or a too-large-to-diff notice), and before→after
-       *  field chips for ref, references, link UIDs, and the changed extended
-       *  reviewed attributes. */
       private renderBaselineDiff(view: DoorstopBaselineView, diff: ItemFieldDiff): TemplateResult {
         return html`
           ${view.source === undefined
@@ -2450,8 +2055,6 @@ function defineDoorstopPanelBodyElement(): void {
         `;
       }
 
-      /** One text-diff row: a `+`/`−` gutter mark and the line (an empty
-       *  line keeps its row height via a non-breaking space). */
       private renderDiffLine(line: DiffLine): TemplateResult {
         const mark = line.kind === "added" ? "+" : line.kind === "removed" ? "−" : "";
         return html`
@@ -2462,8 +2065,6 @@ function defineDoorstopPanelBodyElement(): void {
         `;
       }
 
-      /** One field-level before→after chip row (ref / references / a changed
-       *  extended reviewed attribute). */
       private renderFieldChange(label: string, before: unknown, after: unknown): TemplateResult {
         return html`
           <div class="doorstop-field-change">
@@ -2477,6 +2078,8 @@ function defineDoorstopPanelBodyElement(): void {
 
       // --- detail pane ------------------------------------------------------------------
 
+      // v1 deliberately renders the item text as escaped text — no markdown,
+      // injection-safe by construction.
       private renderDetail(result: DoorstopWorkspaceResult): TemplateResult {
         const selectedUid = this.selectedUid;
         if (selectedUid === undefined) {
@@ -2537,15 +2140,6 @@ function defineDoorstopPanelBodyElement(): void {
 
       // --- item action palette (region 4) --------------------------------------------
 
-      /** The panel-level item action palette (region 4) — the Review / Clear
-       *  suspect links / Edit / Unlink / Link + target inputs, target-error
-       *  alert, and Ask-agent menu moved out of the detail pane so the section
-       *  spans the panel width at a fixed height matching the host prompt
-       *  footer. Rendered ONLY in the items view: hidden in the findings view
-       *  and when the workspace has no documents; a muted placeholder row when
-       *  nothing is selected (keeps the palette at constant height); the full
-       *  action row otherwise. All handlers/refs are the detail pane's
-       *  originals, untouched. */
       private renderItemActionPalette(): TemplateResult | typeof nothing {
         if (this.view !== "items") return nothing;
         const result = this.result;
@@ -2578,12 +2172,8 @@ function defineDoorstopPanelBodyElement(): void {
         `;
       }
 
-      /**
-       * Links out (parents): each recorded link as UID + suspect/ok verdict
-       * + recorded vs current fingerprint short forms. Clicking navigates
-       * to the parent item. `computeItemStamp(parent, config, false)` is
-       * exactly the link-record stamp the state chain compares against.
-       */
+      /** `computeItemStamp(parent, config, false)` is exactly the
+       *  link-record stamp the state chain compares against. */
       private renderLinksOut(item: ItemRecord, index: DoorstopIndex): TemplateResult {
         if (item.links.length === 0) return html`<p class="doorstop-muted">No parent links.</p>`;
         return html`
@@ -2621,8 +2211,6 @@ function defineDoorstopPanelBodyElement(): void {
         `;
       }
 
-      /** Links in (children): every item whose links include this UID,
-       *  clickable to navigate. */
       private renderLinksIn(
         item: ItemRecord,
         index: DoorstopIndex,
@@ -2643,10 +2231,6 @@ function defineDoorstopPanelBodyElement(): void {
         `;
       }
 
-      /** References: workspace-root-relative paths (resolved by the model
-       *  chain), compared against the discovery file index — a missing file
-       *  gets a "not found" chip (best effort; `doorstop validate` remains
-       *  authoritative). */
       private renderReferences(item: ItemRecord, index: DoorstopIndex): TemplateResult {
         const paths: string[] = [];
         if (item.ref !== "") paths.push(item.ref);
@@ -2731,10 +2315,6 @@ function defineDoorstopPanelBodyElement(): void {
         `;
       }
 
-      /** Ask-agent menu (§7.3): the four prompt builders inserted into the
-       *  prompt editor, followed by a focus of the editor. Fix-suspect-links
-       *  and Draft-child are disabled (with an explaining title) when their
-       *  builders would have nothing actionable to say. */
       private renderAskMenu(
         item: ItemRecord,
         index: DoorstopIndex,
@@ -2782,12 +2362,6 @@ function defineDoorstopPanelBodyElement(): void {
 
       // --- handlers ------------------------------------------------------------------
 
-      /** Dismiss collapses the status bar. With a controller bound, the run
-       *  clears via the existing `controller.dismissRun()` clear-run semantics
-       *  (plan Risk: clear + collapse) and `willUpdate` resets the expansion
-       *  trigger; without one there is no run to clear, so the bar merely
-       *  collapses and the run stays (there are no runs to re-expand it
-       *  anyway — expansion is re-triggered by the next run's message). */
       private onDismissRun = (): void => {
         this.statusExpanded = false;
         this.controller?.dismissRun();
@@ -2802,15 +2376,11 @@ function defineDoorstopPanelBodyElement(): void {
       };
 
       private onPublishClick = (): void => {
-        // M5: the publish target comes from the workspace settings
-        // (`result.settings.publishTarget`), falling back to the default
-        // target when the result/settings are missing — never a hardcoded
-        // directory. Publishing writes HTML artifacts across the workspace,
-        // so confirm before running when the host exposes a confirm dialog.
-        // Sandboxed plugin hosts may not define window.confirm (it silently
-        // evaluates false/undefined there), so feature-detect: when
-        // unavailable, run publish anyway and surface a muted notice that
-        // the confirmation was skipped rather than dropping the action.
+        // Publishing writes HTML artifacts across the workspace, so confirm
+        // before running when the host exposes a confirm dialog. Sandboxed
+        // plugin hosts may not define window.confirm (it silently evaluates
+        // false/undefined there), so feature-detect: run publish anyway and
+        // surface a muted notice rather than dropping the action.
         const target = doorstopPublishTarget(this.result);
         if (typeof window.confirm === "function") {
           if (!window.confirm(`Publish the Doorstop tree as HTML to ${target} in the workspace terminal?`)) return;
@@ -2818,8 +2388,6 @@ function defineDoorstopPanelBodyElement(): void {
         } else {
           this.confirmSkipped = true;
         }
-        // The already-computed `target` is passed through so the confirm
-        // message and the executed command can never disagree.
         this.runDoorstop(
           "publish",
           "Doorstop: publish",
@@ -2829,23 +2397,15 @@ function defineDoorstopPanelBodyElement(): void {
         );
       };
 
-      /** The git commit input's current text, mirrored into state for the
-       *  Commit button's disabled gating (empty input → disabled). */
       private onGitCommitInput = (event: Event): void => {
         this.gitCommitMessage = (event.target as HTMLInputElement).value;
       };
 
-      /**
-       * Stage all (plan-add-git-actions Phase D step 15): stage every
-       * Doorstop-managed path of the loaded index via
-       * `controller.runGitStage(doorstopPaths(result))`. Early-returns while
-       * any run is in flight (the Phase C hand-off note — the button's
-       * disabled state covers pointer clicks; this guard covers every call
-       * path). An empty path list is DEFENSIVE only (the button is disabled
-       * without documents, and every indexed document/item contributes a
-       * path) — surfaced as an inline error, never a silent return.
-       */
       private onGitStageClick = (): void => {
+        // The button's disabled state covers pointer clicks; this guard
+        // covers every call path. An empty path list is DEFENSIVE only (the
+        // button is disabled without documents) — surfaced as an inline
+        // error, never a silent return.
         const controller = this.controller;
         if (controller === undefined) return;
         if (controller.runInProgress !== undefined) return;
@@ -2863,14 +2423,10 @@ function defineDoorstopPanelBodyElement(): void {
         void controller.runGitStage(paths);
       };
 
-      /** Commit clicked (the button submits the commit control). */
       private onGitCommitClick = (): void => {
         this.gitCommitSubmit();
       };
 
-      /** Enter submits the commit; Escape clears the input AND a visible
-       *  inline error (the target-input keydown idiom, plus the error — a
-       *  dismissed attempt must not leave its alert behind). */
       private onGitCommitKeydown = (event: KeyboardEvent): void => {
         const input = this.gitCommitInputRef.value;
         if (input === undefined) return;
@@ -2885,17 +2441,11 @@ function defineDoorstopPanelBodyElement(): void {
       };
 
       /**
-       * The commit submit path (plan-add-git-actions Phase D step 15): read
-       * + trim the message; an EMPTY message surfaces an inline error (the
-       * `targetError`-style alert pattern — the browser must never send an
-       * empty message: the server rejects it, and git with an empty `-m`
-       * would hang the exec until the deadline) and focuses the input;
-       * otherwise the commit runs through
-       * `controller.runGitCommit(message)` (the staged index, no pathspec,
-       * no add — whatever the index holds). Early-returns while any run is
-       * in flight. The input is cleared on SUCCESS (`status: "ok"` —
-       * committed / clean / skipped outcomes); a `failed` commit (hook
-       * stderr, missing identity) keeps the message for a corrected retry.
+       * The browser must never send an empty commit message: the server
+       * rejects it, and git with an empty `-m` would hang the exec until the
+       * deadline. The input is cleared only on SUCCESS so a `failed` commit
+       * (hook stderr, missing identity) keeps the message for a corrected
+       * retry.
        */
       private gitCommitSubmit(): void {
         const controller = this.controller;
@@ -2941,9 +2491,7 @@ function defineDoorstopPanelBodyElement(): void {
       };
 
       private reviewItem(item: ItemRecord): void {
-        // Phase C step 9: the workspace setting `commitAfterReview` (default
-        // off) opts this review into the backend's review→commit pipeline.
-        // The flag is OMITTED under the default (the exact optional-field
+        // The commit flag is OMITTED under the default (optional-field
         // idiom) so old servers and in-flight requests across a mixed-version
         // reload window parse the request fine.
         const commit = doorstopCommitAfterReview(this.result);
@@ -2958,9 +2506,6 @@ function defineDoorstopPanelBodyElement(): void {
 
       private clearSuspects(item: ItemRecord, suspectUids: readonly string[]): void {
         if (suspectUids.length === 0) return;
-        // `doorstop clear <uid> [parent…]` re-records the current parent
-        // fingerprints for the given links (the button is disabled without
-        // suspect links, so the parents list is never empty here).
         this.runDoorstop(
           "clear",
           "Doorstop: clear suspect links",
@@ -2983,9 +2528,7 @@ function defineDoorstopPanelBodyElement(): void {
       private runTargetOp(op: "unlink" | "link", inputRef: Ref<HTMLInputElement>, item: ItemRecord): void {
         const input = inputRef.value;
         const target = input?.value.trim() ?? "";
-        // Empty and invalid targets are surfaced as a visible inline error
-        // (never a silent return, and never interpolated into the command)
-        // — an unvalidated free-text target could smuggle shell syntax into
+        // An unvalidated free-text target could smuggle shell syntax into
         // `doorstop ${op} ${item.uid} ${target}`.
         if (target === "") {
           this.targetError = `Enter a ${op} target UID (e.g. ${item.documentPrefix}0001)`;
@@ -3009,9 +2552,9 @@ function defineDoorstopPanelBodyElement(): void {
       }
 
       private onDocumentClick = (event: MouseEvent): void => {
-        // Outside-click dismissal of the Ask-agent menu. Uses composedPath so
-        // clicks on the toggle/items inside the shadow-DOM menu root (which
-        // would otherwise be retargeted to the host) stay "inside".
+        // composedPath so clicks on the toggle/items inside the shadow-DOM
+        // menu root (which would otherwise be retargeted to the host) stay
+        // "inside".
         if (!this.askMenuOpen) return;
         const menuRoot = this.shadowRoot?.querySelector(".doorstop-menu");
         if (menuRoot === undefined || menuRoot === null) {
@@ -3026,8 +2569,6 @@ function defineDoorstopPanelBodyElement(): void {
       };
 
       private onDocumentKeydown = (event: KeyboardEvent): void => {
-        // Escape closes the Ask-agent menu (scoped to the menu; the target
-        // inputs' own Escape-clear is handled separately in onTargetKeydown).
         if (event.key === "Escape" && this.askMenuOpen) {
           this.askMenuOpen = false;
         }
@@ -3037,10 +2578,6 @@ function defineDoorstopPanelBodyElement(): void {
         this.askMenuOpen = !this.askMenuOpen;
       };
 
-      /** Expanding the "Changes since review" section triggers the lazy
-       *  baseline fetch for the currently selected item (collapsing does
-       *  nothing). The controller's cache + in-flight join make repeated
-       *  expands cheap. */
       private onChangesToggle = (event: Event): void => {
         const details = event.currentTarget;
         if (!(details instanceof HTMLDetailsElement) || !details.open) return;
@@ -3053,44 +2590,26 @@ function defineDoorstopPanelBodyElement(): void {
         const context = this.context;
         if (context === undefined) return;
         context.prompt.insertText(text);
-        // The panel context in the real host does not declare focusPrompt
-        // (it lives on the runtime context); call it defensively where the
-        // host supplies it — otherwise insertText already focuses the
-        // mounted editor.
+        // focusPrompt lives on the runtime context, not the panel context.
         (context as PanelContextWithFocusPrompt).focusPrompt?.();
         this.askMenuOpen = false;
       }
 
       /**
-       * Run one doorstop CLI action (plan Phase D step 9) — the single
-       * dispatch surface of every panel action, with TWO paths:
+       * The single dispatch surface of every panel action, with TWO paths:
        *
        *  - BACKEND path when the workspace is owned by the opendoor provider
-       *    with an active backend (`context.backend !== undefined &&
-       *    context.workspace.provider?.pluginId === OPENDOOR_PLUGIN_ID &&
-       *    provider.capabilities.request !== false`): `runDoorstopBackend`
-       *    sends the STRUCTURED `input` through `context.backend.request("doorstop.run", …)`
-       *    (argv is built server-side — the browser never shell-quotes on
-       *    this path), parses the response with `parseDoorstopRunResponse`,
-       *    commits it to `controller.lastRun`, invalidates, and clears
-       *    `runInProgress`. A rejected request commits `status: "error"`
-       *    with the parsed server error text and does NOT invalidate (the
-       *    run wrote nothing to the workspace)
-       *  - TERMINAL fallback everywhere else — exactly today's behavior: a
-       *    named run with `metadata: { "opendoor.op": … }` so runs are
-       *    identifiable, and — because `TerminalCommandRunHandle.completed`
-       *    resolves when the run finishes — a rescan (invalidate) on
-       *    completion so the panel picks up whatever the CLI changed to the
-       *    item files (§9.3, no polling). `doorstopPublishCommand`/
-       *    `quoteShellArgument`/UID guarding stay untouched for this path.
+       *    with an active backend: the STRUCTURED `input` goes through
+       *    `context.backend.request("doorstop.run", …)` — argv is built
+       *    server-side, so the browser never shell-quotes on this path. A
+       *    rejected request commits `status: "error"` and does NOT
+       *    invalidate (the run wrote nothing to the workspace).
+       *  - TERMINAL fallback everywhere else: `handle.completed` resolves
+       *    when the run finishes, so the panel invalidates (rescans) on
+       *    completion — no polling.
        *
-       * `open` keeps the current view for item-scoped ops; validation opens
-       * the terminal so its full output is visible (terminal path only).
-       *
-       * This is the SINGLE choke point for the run-in-flight invariant: it
-       * returns early while `controller.runInProgress` is set, so the
-       * disabled buttons, the Link/Unlink inputs' Enter-key submits, and any
-       * future call site can never start a second overlapping run.
+       * This is the SINGLE choke point for the run-in-flight invariant: any
+       * call site can never start a second overlapping run.
        */
       private runDoorstop(
         op: DoorstopRunRequest["op"],
@@ -3102,8 +2621,6 @@ function defineDoorstopPanelBodyElement(): void {
         const context = this.context;
         const controller = this.controller;
         if (context === undefined || controller === undefined) return;
-        // Single choke point (see doc above): covers the disabled buttons,
-        // the Link/Unlink Enter keys, and any future call site at once.
         if (controller.runInProgress !== undefined) return;
         if (
           context.backend !== undefined &&
@@ -3113,9 +2630,6 @@ function defineDoorstopPanelBodyElement(): void {
           void this.runDoorstopBackend(op, title, input, context.backend);
           return;
         }
-        // Terminal fallback: exactly today's behavior (unpaired workspace,
-        // non-opendoor provider, or a provider whose backend disables the
-        // request capability).
         const terminal = context.terminal;
         if (terminal === undefined) return;
         void terminal
@@ -3125,23 +2639,9 @@ function defineDoorstopPanelBodyElement(): void {
               .then(() => { void controller.invalidate(); })
               .catch(() => { void controller.invalidate(); });
           })
-          .catch(() => {
-            // A rejected runCommand never reaches the panel domain: the
-            // terminal surfaces its own error, and the panel has nothing
-            // authoritative to add.
-          });
+          .catch(() => { /* the terminal surfaces its own error */ });
       }
 
-      /**
-       * The backend path of {@link runDoorstop}: set `runInProgress`, await
-       * the structured request, parse + map the response onto a
-       * `DoorstopLastRunView` (`status`: exit 0 → `"ok"`, exit ≠ 0 →
-       * `"failed"`, `signal !== null` → `"killed"`), commit it to
-       * `controller.lastRun`, invalidate (a successful run changed the
-       * workspace), and clear `runInProgress`. On REJECTION: commit
-       * `status: "error"` with the parsed server error text, clear
-       * `runInProgress`, and do NOT invalidate (nothing ran).
-       */
       private async runDoorstopBackend(
         op: DoorstopRunRequest["op"],
         title: string,
@@ -3169,19 +2669,14 @@ function defineDoorstopPanelBodyElement(): void {
             stderr: parsed.stderr,
             stdoutTruncated: parsed.stdoutTruncated,
             stderrTruncated: parsed.stderrTruncated,
-            // The server measured the exec wall time into `durationMs`;
-            // surfaced verbatim — the browser has nothing more accurate.
             durationMs: parsed.durationMs,
             at: startedAt,
-            // The optional review→commit outcome rides along when the server
-            // sent it (absent under the default — the exact optional-field
-            // idiom); the Last-run section renders its one narration line.
+            // Optional review→commit outcome, absent under the default.
             ...(parsed.commit === undefined ? {} : { commit: parsed.commit }),
           });
           void controller.invalidate();
         } catch (error) {
-          // No response → no server duration; fall back to the client-side
-          // wall time around the rejected request.
+          // No response → no server duration; client-side wall time instead.
           controller.commitRun({
             op,
             title,
@@ -3212,11 +2707,9 @@ function defineDoorstopPanelBodyElement(): void {
   });
 }
 
-/** Register a custom element exactly once. No-ops outside a DOM environment
- *  (node-side tests import modules that define elements) and on
- *  re-registration (plugin modules can be evaluated more than once across
- *  reloads). Local copy of the opense-shared idiom — this chain only creates
- *  the elements module. */
+/** No-ops outside a DOM environment (node-side tests import modules that
+ *  define elements) and on re-registration (plugin modules can be evaluated
+ *  more than once across reloads). */
 function defineCustomElementOnce(tag: string, define: () => void): void {
   if (typeof customElements === "undefined" || typeof HTMLElement === "undefined") return;
   if (customElements.get(tag) !== undefined) return;
