@@ -6,9 +6,11 @@ import type {
   ItemStateKey,
 } from "./doorstop-contract.js";
 import {
+  DOORSTOP_GIT_STATUS_FILES_MAX,
   isValidDoorstopUid,
   type DoorstopCommitOutcome,
   type DoorstopGitStageResponse,
+  type DoorstopGitStatusFile,
   type DoorstopGitStatusResponse,
 } from "./doorstop-backend-contract.js";
 import { computeItemStamp } from "./doorstop-state.js";
@@ -220,6 +222,107 @@ export function gitStatusText(response: DoorstopGitStatusResponse): string {
   if ((response.ahead ?? 0) > 0) parts.push(`↑${String(response.ahead)}`);
   if ((response.behind ?? 0) > 0) parts.push(`↓${String(response.behind)}`);
   return parts.join(" · ");
+}
+
+/** The per-item git-state chip vocabulary, derived at RENDER time from
+ *  `gitStatusView.response.files`. Deliberately NOT an `ItemStateKey`:
+ *  keeping git state out of `computeItemStates()` means the state filter
+ *  dropdown and `STATE_KEY_ORDER` stay untouched. */
+export type ItemGitState =
+  | "clean"
+  | "staged"
+  | "changed"
+  | "staged-changed"
+  | "untracked"
+  | "conflicted";
+
+/** One path→file lookup pass per list render (the status response's `files`
+ *  array is already capped server-side; a Map keeps every row lookup O(1)). */
+export function gitStatusFilesByPath(
+  response: DoorstopGitStatusResponse,
+): Map<string, DoorstopGitStatusFile> {
+  const byPath = new Map<string, DoorstopGitStatusFile>();
+  for (const file of response.files) byPath.set(file.path, file);
+  return byPath;
+}
+
+/** Single-path lookup against the status response's `files` array — for the
+ *  action row, which renders ONE item and need not build the whole Map. */
+export function gitStatusFileFor(
+  response: DoorstopGitStatusResponse,
+  path: string,
+): DoorstopGitStatusFile | undefined {
+  return response.files.find((file) => file.path === path);
+}
+
+/** True when the server capped the status response's `files` array. `dirty`
+ *  is counted from the FULL porcelain output while `files` holds only the
+ *  first {@link DOORSTOP_GIT_STATUS_FILES_MAX} entries, so a `dirty` count
+ *  above the list means paths past the cap are unreported. Per-item git UI
+ *  must then be suppressed: an unreported path would otherwise render
+ *  "clean" (no chip) with a Stage button claiming it has no unstaged
+ *  changes, contradicting the strip's honest counts. */
+export function gitStatusFilesTruncated(response: DoorstopGitStatusResponse): boolean {
+  return (
+    response.files.length === DOORSTOP_GIT_STATUS_FILES_MAX &&
+    response.dirty > response.files.length
+  );
+}
+
+/** Map one porcelain XY pair (`index`/X = staged, `workingTree`/Y = unstaged)
+ *  onto the row's chip state. `file` is `undefined` when porcelain omitted
+ *  the path (unmodified); `ignored` files are treated as clean because they
+ *  are never stageable without `-f` (the server's `git add` would fail). An
+ *  `untracked` pair (`??`) is its own state; a conflict stays stageable —
+ *  `git add` on a resolved path is exactly how a conflict is marked
+ *  resolved. */
+export function itemGitState(file: DoorstopGitStatusFile | undefined): ItemGitState {
+  if (file === undefined) return "clean";
+  const { index, workingTree } = file;
+  if (workingTree === "ignored") return "clean";
+  if (index === "unmodified" && workingTree === "unmodified") return "clean";
+  if (index === "untracked" && workingTree === "untracked") return "untracked";
+  if (index === "conflicted" || workingTree === "conflicted") return "conflicted";
+  if (index !== "unmodified" && workingTree !== "unmodified") return "staged-changed";
+  if (index !== "unmodified") return "staged";
+  return "changed";
+}
+
+/** Chip text per git state; `clean` is empty because the caller skips the
+ *  chip entirely (only non-clean rows render one). */
+export const GIT_CHIP_LABELS: Record<ItemGitState, string> = {
+  clean: "",
+  staged: "staged",
+  changed: "changed",
+  "staged-changed": "staged + changed",
+  untracked: "untracked",
+  conflicted: "conflict",
+};
+
+/** Reuse the existing chip palette (`.doorstop-chip-{ok,warning,danger,muted}`)
+ *  — no git-specific colors. */
+export function gitChipKind(state: ItemGitState): "ok" | "warning" | "danger" | "muted" {
+  switch (state) {
+    case "staged":
+      return "ok";
+    case "changed":
+    case "staged-changed":
+      return "warning";
+    case "conflicted":
+      return "danger";
+    case "untracked":
+    case "clean":
+      return "muted";
+  }
+}
+
+/** True when `git add <path>` would stage a working-tree change: the Y
+ *  column is neither `unmodified` (already staged — the server skips these
+ *  to avoid the "did not match any files" fatal) nor `ignored`. An absent
+ *  entry (omitted from porcelain) is not stageable either. */
+export function itemStageable(file: DoorstopGitStatusFile | undefined): boolean {
+  if (file === undefined) return false;
+  return file.workingTree !== "unmodified" && file.workingTree !== "ignored";
 }
 
 /** Shell-inert alphabet for a publish target (the UID guard's `\w` alphabet

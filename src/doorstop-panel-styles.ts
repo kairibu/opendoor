@@ -386,6 +386,25 @@ export const panelStyles = css`
           justify-content: flex-end;
         }
 
+        /* The per-row "git add" affordance. It is a pointer-only <span>
+           (aria-hidden, no role) because the row IS a <button> and a nested
+           <button> would be hoisted out by the HTML parser; the keyboard path
+           is the region-4 Stage button. */
+        .doorstop-item-add {
+          display: inline-flex;
+          align-items: center;
+          align-self: center;
+          flex: 0 0 auto;
+          padding: 0 2px;
+          border-radius: 4px;
+          color: var(--pi-muted);
+          cursor: pointer;
+        }
+
+        .doorstop-item-add:hover {
+          color: var(--pi-text);
+        }
+
         /* --- state chips (item rows + detail head) --- */
         .doorstop-chip {
           border-radius: 999px;

@@ -448,15 +448,16 @@ export class DoorstopWorkspaceController implements ReactiveController {
     this.requestUpdate();
   }
 
-  /** Run the Stage all action (plan Phase C step 12): stage every
-   *  Doorstop-managed path of the loaded index (the element hands the
-   *  {@link doorstopPaths} list in). Runs the `doorstop.git-stage` backend
+  /** Run the Stage action (plan Phase C step 12): stage every Doorstop-managed
+   *  path of the loaded index (the element hands the {@link doorstopPaths}
+   *  list in), or — for a per-item stage — exactly one item's path with
+   *  `title = "Git: stage <uid>"`. Runs the `doorstop.git-stage` backend
    *  operation through the shared {@link DoorstopWorkspaceController.runGitOperation}
    *  dispatch. */
-  async runGitStage(paths: readonly string[]): Promise<void> {
+  async runGitStage(paths: readonly string[], title = "Git: stage all"): Promise<void> {
     await this.runGitOperation(
       "git-stage",
-      "Git: stage all",
+      title,
       DOORSTOP_GIT_STAGE_OPERATION,
       // Fresh object literal — the request shape is validated server-side
       // (`parseDoorstopGitStageRequest`: non-empty, grammar-checked,

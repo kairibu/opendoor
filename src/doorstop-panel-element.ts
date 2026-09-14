@@ -26,6 +26,8 @@ import {
   OPENDOOR_PLUGIN_ID,
   DOORSTOP_RUN_OPERATION,
   parseDoorstopRunResponse,
+  type DoorstopGitStatusFile,
+  type DoorstopGitStatusResponse,
   type DoorstopRunRequest,
 } from "./doorstop-backend-contract.js";
 import { computeItemStamp } from "./doorstop-state.js";
@@ -63,8 +65,15 @@ import {
   findingsViewCounts,
   findingsViewRows,
   firstChildDocumentPrefix,
+  GIT_CHIP_LABELS,
+  gitChipKind,
+  gitStatusFileFor,
+  gitStatusFilesByPath,
+  gitStatusFilesTruncated,
   gitStatusText,
   itemExcerpt,
+  itemGitState,
+  itemStageable,
   isValidTargetUid,
   jsonishText,
   lastRunHasMessage,
@@ -647,6 +656,28 @@ function defineDoorstopPanelBodyElement(): void {
         `;
       }
 
+      /** The status response usable for PER-ITEM git UI: a paired install, a
+       *  ready view, and an UNTRUNCATED `files` list. `undefined` when
+       *  unpaired / loading / no-git / error / truncated, so the item list and
+       *  action row render no chips, no per-row add, and no svg inside the row
+       *  (the XSS assertion's structural dependency). The strip reads
+       *  `gitStatusView` directly, so its honest counts still render even when
+       *  this is `undefined`. */
+      private readyGitStatus(): DoorstopGitStatusResponse | undefined {
+        if (!this.backendActive()) return undefined;
+        const view = this.gitStatusView;
+        if (view === undefined || view.state !== "ready") return undefined;
+        if (gitStatusFilesTruncated(view.response)) return undefined;
+        return view.response;
+      }
+
+      /** The path→git-file map for one list render; `undefined` when per-item
+       *  git UI is unavailable (see {@link readyGitStatus}). */
+      private readyGitFiles(): Map<string, DoorstopGitStatusFile> | undefined {
+        const response = this.readyGitStatus();
+        return response === undefined ? undefined : gitStatusFilesByPath(response);
+      }
+
       private renderItemList(result: DoorstopWorkspaceResult): TemplateResult {
         if (result.index.items.length === 0) {
           return html`<p class="doorstop-muted doorstop-standalone">No Doorstop items found (item files may be binary or truncated — see the diagnostics above).</p>`;
@@ -655,15 +686,29 @@ function defineDoorstopPanelBodyElement(): void {
         if (items.length === 0) {
           return html`<p class="doorstop-muted doorstop-standalone">No items match the current document, state, or search filters.</p>`;
         }
+        // One lookup pass for the whole list; each row reads its own path.
+        const gitFiles = this.readyGitFiles();
         return html`
           <div class="doorstop-items" role="list" aria-label="Doorstop items">
-            ${repeat(items, (item) => item.uid, (item) => this.renderItemRow(item))}
+            ${repeat(items, (item) => item.uid, (item) => this.renderItemRow(item, gitFiles))}
           </div>
         `;
       }
 
-      private renderItemRow(item: ItemRecord): TemplateResult {
+      private renderItemRow(
+        item: ItemRecord,
+        gitFiles: Map<string, DoorstopGitStatusFile> | undefined,
+      ): TemplateResult {
         const selected = this.selectedUid === item.uid;
+        const gitState = itemGitState(gitFiles?.get(item.path));
+        // The per-row add is pointer-only by design: the row IS a <button>,
+        // so a nested <button> would be hoisted out by the HTML parser. A
+        // <span> parses fine, but a role="button" that is not keyboard-
+        // operable would violate the ARIA contract — and the affordance is
+        // redundant with the keyboard-reachable region-4 Stage button — so it
+        // is hidden from the accessibility tree (`aria-hidden`) and left as a
+        // pointer shortcut.
+        const stageable = itemStageable(gitFiles?.get(item.path));
         return html`
           <button
             type="button"
@@ -677,6 +722,15 @@ function defineDoorstopPanelBodyElement(): void {
             <span class="doorstop-item-summary">${itemExcerpt(item)}</span>
             <span class="doorstop-item-chips">
               ${item.stateKeys.map((key) => this.renderStateChip(key))}
+              ${gitState === "clean" ? nothing : html`<span class=${`doorstop-chip doorstop-chip-${gitChipKind(gitState)}`}>${GIT_CHIP_LABELS[gitState]}</span>`}
+              ${stageable && this.runInProgress === undefined
+                ? html`<span
+                    class="doorstop-item-add"
+                    aria-hidden="true"
+                    title=${`git add ${item.path}`}
+                    @click=${(event: Event) => { event.stopPropagation(); this.stageItem(item); }}
+                  >${gitStageIconSvg}</span>`
+                : nothing}
             </span>
           </button>
         `;
@@ -977,6 +1031,13 @@ function defineDoorstopPanelBodyElement(): void {
       ): TemplateResult {
         const reviewed = item.stateKeys.includes("reviewed");
         const suspectUids = suspects.length > 0 ? suspects.map((parent) => parent.uid) : [];
+        // ONE ready-check for both the button and its stageable predicate;
+        // `readyGitStatus` already owns the paired/ready/untruncated gate, so
+        // the chip row and the palette button can never disagree.
+        const gitStatus = this.readyGitStatus();
+        const stageable = itemStageable(
+          gitStatus === undefined ? undefined : gitStatusFileFor(gitStatus, item.path),
+        );
         return html`
           <button
             type="button"
@@ -1003,6 +1064,17 @@ function defineDoorstopPanelBodyElement(): void {
             title=${`Open ${item.uid} in the editor`}
             @click=${() => { this.editItem(item); }}
           >Edit</button>
+          ${gitStatus === undefined
+            ? nothing
+            : html`<button
+                type="button"
+                class="doorstop-item-stage"
+                ?disabled=${this.runInProgress !== undefined || !stageable}
+                title=${stageable
+                  ? `Stage ${item.path}`
+                  : `${item.uid} has no unstaged changes — commit next`}
+                @click=${() => { this.stageItem(item); }}
+              >${gitStageIconSvg}Stage</button>`}
           <div class="doorstop-op">
             <input
               type="text"
@@ -1115,6 +1187,15 @@ function defineDoorstopPanelBodyElement(): void {
       private onGitCommitInput = (event: Event): void => {
         this.gitCommitMessage = (event.target as HTMLInputElement).value;
       };
+
+      /** Stage one item's own file — the same `doorstop.git-stage` operation
+       *  with `[item.path]`; the shared run dispatch narrates the uid. Shared
+       *  by the row's `git add` span and the palette's Stage button. */
+      private stageItem(item: ItemRecord): void {
+        const controller = this.controller;
+        if (controller === undefined || controller.runInProgress !== undefined) return;
+        void controller.runGitStage([item.path], `Git: stage ${item.uid}`);
+      }
 
       private onGitStageClick = (): void => {
         // The button's disabled state covers pointer clicks; this guard

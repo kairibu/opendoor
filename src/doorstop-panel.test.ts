@@ -16,10 +16,12 @@
 import { describe, expect, it, vi, type Mock } from "vitest";
 import type { Workspace, WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
 import type { DoorstopDocumentConfig, DoorstopIndex, ItemRecord } from "./doorstop-contract.js";
-import type {
-  DoorstopBaselineResponse,
-  DoorstopGitStageResponse,
-  DoorstopGitStatusResponse,
+import {
+  DOORSTOP_GIT_STATUS_FILES_MAX,
+  type DoorstopBaselineResponse,
+  type DoorstopGitStageResponse,
+  type DoorstopGitStatusFile,
+  type DoorstopGitStatusResponse,
 } from "./doorstop-backend-contract.js";
 import { buildDoorstopIndex } from "./doorstop-model.js";
 import { computeItemStamp, computeItemStates } from "./doorstop-state.js";
@@ -38,6 +40,15 @@ import {
   type DoorstopWorkspaceResult,
 } from "./doorstop-panel.js";
 import { DEFAULT_OPENDOOR_SETTINGS } from "./doorstop-settings.js";
+import {
+  GIT_CHIP_LABELS,
+  gitChipKind,
+  gitStatusFileFor,
+  gitStatusFilesByPath,
+  gitStatusFilesTruncated,
+  itemGitState,
+  itemStageable,
+} from "./doorstop-panel-view-model.js";
 import { createFakeFiles, dirEntry, fileEntry, text, tree, type FakeWorkspaceFiles } from "./test-support.js";
 
 const doorstopWorkspace: Workspace = {
@@ -785,6 +796,132 @@ describe("DoorstopWorkspaceController (git status, plan-add-git-actions Phase C 
   });
 });
 
+describe("itemGitState / itemStageable / gitStatusFilesByPath (per-item git state)", () => {
+  function gitFile(
+    index: DoorstopGitStatusFile["index"],
+    workingTree: DoorstopGitStatusFile["workingTree"],
+    path = "reqs/REQ0001.yml",
+  ): DoorstopGitStatusFile {
+    return { path, index, workingTree };
+  }
+
+  it("maps every porcelain XY pair onto the chip state", () => {
+    const table: Array<[string, DoorstopGitStatusFile | undefined, ReturnType<typeof itemGitState>]> = [
+      ["absent (unmodified is omitted from porcelain)", undefined, "clean"],
+      ["'  ' unmodified/unmodified (defensive)", gitFile("unmodified", "unmodified"), "clean"],
+      ["'!!' ignored (never stageable without -f)", gitFile("ignored", "ignored"), "clean"],
+      ["'M ' staged modification", gitFile("modified", "unmodified"), "staged"],
+      ["'A ' staged addition", gitFile("added", "unmodified"), "staged"],
+      ["'D ' fully-staged deletion", gitFile("deleted", "unmodified"), "staged"],
+      ["' M' unstaged modification", gitFile("unmodified", "modified"), "changed"],
+      ["' D' unstaged deletion", gitFile("unmodified", "deleted"), "changed"],
+      ["'MM' staged + unstaged modification", gitFile("modified", "modified"), "staged-changed"],
+      ["'AM' staged addition + unstaged modification", gitFile("added", "modified"), "staged-changed"],
+      ["'RM' rename + unstaged modification", gitFile("renamed", "modified"), "staged-changed"],
+      ["'??' untracked", gitFile("untracked", "untracked"), "untracked"],
+      ["'UU' conflicted", gitFile("conflicted", "conflicted"), "conflicted"],
+      ["'AU' added-both conflict", gitFile("added", "conflicted"), "conflicted"],
+    ];
+    for (const [label, file, expected] of table) {
+      expect(itemGitState(file), label).toBe(expected);
+    }
+  });
+
+  it("marks exactly the working-tree-changed paths stageable (conflicts included, ignored excluded)", () => {
+    const table: Array<[string, DoorstopGitStatusFile | undefined, boolean]> = [
+      ["absent", undefined, false],
+      ["unmodified/unmodified", gitFile("unmodified", "unmodified"), false],
+      ["ignored", gitFile("ignored", "ignored"), false],
+      ["staged only ('M ')", gitFile("modified", "unmodified"), false],
+      ["fully-staged deletion ('D ')", gitFile("deleted", "unmodified"), false],
+      ["unstaged modification (' M')", gitFile("unmodified", "modified"), true],
+      ["unstaged deletion (' D')", gitFile("unmodified", "deleted"), true],
+      ["staged + unstaged ('MM')", gitFile("modified", "modified"), true],
+      ["untracked ('??')", gitFile("untracked", "untracked"), true],
+      ["conflicted ('UU') — add resolves", gitFile("conflicted", "conflicted"), true],
+    ];
+    for (const [label, file, expected] of table) {
+      expect(itemStageable(file), label).toBe(expected);
+    }
+  });
+
+  it("labels and colors every state; clean is empty because the chip is skipped", () => {
+    expect(GIT_CHIP_LABELS).toEqual({
+      clean: "",
+      staged: "staged",
+      changed: "changed",
+      "staged-changed": "staged + changed",
+      untracked: "untracked",
+      conflicted: "conflict",
+    });
+    expect(gitChipKind("staged")).toBe("ok");
+    expect(gitChipKind("changed")).toBe("warning");
+    expect(gitChipKind("staged-changed")).toBe("warning");
+    expect(gitChipKind("conflicted")).toBe("danger");
+    expect(gitChipKind("untracked")).toBe("muted");
+    expect(gitChipKind("clean")).toBe("muted");
+  });
+
+  it("keys gitStatusFilesByPath by the porcelain path (a rename reports its NEW path)", () => {
+    const renamed = gitFile("renamed", "unmodified", "reqs/REQ0009.yml");
+    const modified = gitFile("unmodified", "modified", "reqs/REQ0002.yml");
+    const files = gitStatusFilesByPath({
+      git: true,
+      staged: 1,
+      dirty: 2,
+      files: [renamed, modified],
+    });
+    expect(files.get("reqs/REQ0009.yml")).toBe(renamed);
+    expect(files.get("reqs/REQ0002.yml")).toBe(modified);
+    // The old (source) path is NOT in the map — a stale index row for it
+    // renders clean until the next rescan (the documented rename gap).
+    expect(files.get("reqs/REQ0001.yml")).toBeUndefined();
+    expect(itemGitState(files.get("reqs/REQ0001.yml"))).toBe("clean");
+    expect(itemStageable(files.get("reqs/REQ0001.yml"))).toBe(false);
+  });
+
+  it("finds one file by path for the action row (no map build)", () => {
+    const modified = gitFile("unmodified", "modified", "reqs/REQ0002.yml");
+    const response: DoorstopGitStatusResponse = { git: true, staged: 0, dirty: 1, files: [modified] };
+    expect(gitStatusFileFor(response, "reqs/REQ0002.yml")).toBe(modified);
+    expect(gitStatusFileFor(response, "reqs/REQ0001.yml")).toBeUndefined();
+  });
+
+  it("flags a files list as truncated only when dirty exceeds the capped length", () => {
+    const cappedFiles = (): DoorstopGitStatusFile[] =>
+      Array.from({ length: DOORSTOP_GIT_STATUS_FILES_MAX }, (_, index) =>
+        gitFile("unmodified", "modified", `reqs/REQ${String(index).padStart(4, "0")}.yml`),
+      );
+    // Exactly at the cap with matching counts: nothing was dropped.
+    expect(
+      gitStatusFilesTruncated({
+        git: true,
+        staged: 0,
+        dirty: DOORSTOP_GIT_STATUS_FILES_MAX,
+        files: cappedFiles(),
+      }),
+    ).toBe(false);
+    // dirty above the cap: paths past the cap are unreported.
+    expect(
+      gitStatusFilesTruncated({
+        git: true,
+        staged: 0,
+        dirty: DOORSTOP_GIT_STATUS_FILES_MAX + 1,
+        files: cappedFiles(),
+      }),
+    ).toBe(true);
+    // A short list is never truncated, whatever the counts claim.
+    expect(
+      gitStatusFilesTruncated({
+        git: true,
+        staged: 0,
+        dirty: 500,
+        files: [gitFile("unmodified", "modified")],
+      }),
+    ).toBe(false);
+  });
+});
+
 describe("doorstopPaths (plan-add-git-actions Phase C step 11)", () => {
   it("lists the root marker + document config paths + item paths, deduplicated", () => {
     const rootDoc = makeDocument({ directoryPath: "", configPath: ".doorstop.yml" });
@@ -865,6 +1002,17 @@ describe("DoorstopWorkspaceController (git stage/commit dispatch, plan-add-git-a
     expect(loadCount.calls).toBe(loadsBefore + 1);
     expect(controller.gitStatusView).toBeUndefined();
     expect(controller.runInProgress).toBeUndefined();
+  });
+
+  it("runGitStage honors an explicit per-item title (the element's `Git: stage <uid>`)", async () => {
+    const loadCount = { calls: 0 };
+    const { controller } = gitRunController(stageBackend({ status: "staged", staged: 1 }), loadCount);
+    await settle();
+
+    await controller.runGitStage(["reqs/REQ0002.yml"], "Git: stage REQ0002");
+
+    expect(controller.lastRun?.op).toBe("git-stage");
+    expect(controller.lastRun?.title).toBe("Git: stage REQ0002");
   });
 
   it("runGitCommit sends only the message and maps committed/sha onto the view", async () => {
