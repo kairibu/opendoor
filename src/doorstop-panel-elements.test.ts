@@ -23,6 +23,7 @@ import {
   DOORSTOP_GIT_STAGE_OPERATION,
   DOORSTOP_GIT_STATUS_OPERATION,
   DOORSTOP_GIT_STATUS_FILES_MAX,
+  DOORSTOP_GIT_UNSTAGE_OPERATION,
   type DoorstopBaselineResponse,
   type DoorstopGitStatusFile,
   type DoorstopGitStatusResponse,
@@ -1822,6 +1823,14 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     expect(commitOutcomeText("git-commit", { status: "clean" })).toBe("clean — nothing staged");
     expect(commitOutcomeText("git-commit", { status: "skipped" })).toBe("skipped");
     expect(commitOutcomeText("git-commit", { status: "failed", stderr: "boom" })).toBe("failed — boom");
+    // The unstage inverse shares every status with stage/commit except its
+    // own `unstaged` (the status-bar switch must know it, or the narration
+    // silently renders empty) and its own `clean` voice.
+    expect(commitOutcomeText("git-unstage", { status: "unstaged", unstaged: 3 })).toBe("unstaged 3 paths");
+    expect(commitOutcomeText("git-unstage", { status: "unstaged", unstaged: 0 })).toBe("unstaged 0 paths");
+    expect(commitOutcomeText("git-unstage", { status: "clean" })).toBe("clean — nothing to unstage");
+    expect(commitOutcomeText("git-unstage", { status: "skipped" })).toBe("skipped");
+    expect(commitOutcomeText("git-unstage", { status: "failed", stderr: "boom" })).toBe("failed — boom");
   });
 });
 
@@ -2847,7 +2856,7 @@ async function selectItemRow(
 }
 
 describe("DoorstopPanelBodyElement (per-item git staging: chips + row add + palette Stage)", () => {
-  it("renders git chips for non-clean rows and the row add only where stageable", async () => {
+  it("renders git chips for non-clean rows and the row add/remove where staged or stageable", async () => {
     const backend = vi.fn((operation: string) =>
       operation === DOORSTOP_GIT_STATUS_OPERATION
         ? Promise.resolve(
@@ -2875,11 +2884,18 @@ describe("DoorstopPanelBodyElement (per-item git staging: chips + row add + pale
     // clean → only its state chips, no git chip.
     expect(chips("REQ0001")).not.toMatch(/changed|staged|untracked|conflict/);
 
-    // The row add is stageable-only: unstaged modification / untracked yes,
-    // staged-only no, clean no.
-    expect(row("REQ0002")?.querySelector(".doorstop-item-add")).not.toBeNull();
-    expect(row("TST002")?.querySelector(".doorstop-item-add")).not.toBeNull();
-    expect(row("TST001")?.querySelector(".doorstop-item-add")).toBeNull();
+    // The row span is direction-aware: the plus (`git add`) for stageable
+    // rows (unstaged modification / untracked), the minus (`git reset`) for
+    // rows with staged (X-column) changes, and nothing for a clean row.
+    expect(row("REQ0002")?.querySelector(".doorstop-item-add")?.getAttribute("title")).toBe(
+      "git add reqs/REQ0002.yml",
+    );
+    expect(row("TST002")?.querySelector(".doorstop-item-add")?.getAttribute("title")).toBe(
+      "git add tests/TST002.yml",
+    );
+    expect(row("TST001")?.querySelector(".doorstop-item-add")?.getAttribute("title")).toBe(
+      "git reset tests/TST001.yml",
+    );
     expect(row("REQ0001")?.querySelector(".doorstop-item-add")).toBeNull();
   });
 
@@ -2921,6 +2937,7 @@ describe("DoorstopPanelBodyElement (per-item git staging: chips + row add + pale
     await selectItemRow(noGit.body, noGit.controller, noGit.context, "REQ0002");
     expect(noGit.body.shadowRoot?.querySelector(".doorstop-item-add")).toBeNull();
     expect(noGit.body.shadowRoot?.querySelector(".doorstop-item-stage")).toBeNull();
+    expect(noGit.body.shadowRoot?.querySelector(".doorstop-item-unstage")).toBeNull();
 
     const errorBackend = vi.fn((operation: string) =>
       operation === DOORSTOP_GIT_STATUS_OPERATION
@@ -2931,11 +2948,21 @@ describe("DoorstopPanelBodyElement (per-item git staging: chips + row add + pale
     await selectItemRow(errored.body, errored.controller, errored.context, "REQ0002");
     expect(errored.body.shadowRoot?.querySelector(".doorstop-item-add")).toBeNull();
     expect(errored.body.shadowRoot?.querySelector(".doorstop-item-stage")).toBeNull();
+    expect(errored.body.shadowRoot?.querySelector(".doorstop-item-unstage")).toBeNull();
 
     // Unpaired install: zero per-item git affordances on any row.
     const unpaired = await mountBody(() => Promise.resolve(makeTreeResult()));
     expect(unpaired.body.shadowRoot?.querySelector(".doorstop-item-add")).toBeNull();
     expect(unpaired.body.shadowRoot?.querySelector(".doorstop-item-row svg")).toBeNull();
+    // The palette gate is the SAME `readyGitStatus()` check for both git
+    // buttons (there is no per-button readiness): the Unstage button is
+    // absent for exactly the same reason the Stage button is.
+    await selectItemRow(unpaired.body, unpaired.controller, unpaired.context, "REQ0002");
+    // Positive control: the palette DID render (Review is backend-independent),
+    // so the two null assertions below are about the git gate, not a failed select.
+    expect(unpaired.body.shadowRoot?.querySelector(".doorstop-review")).not.toBeNull();
+    expect(unpaired.body.shadowRoot?.querySelector(".doorstop-item-stage")).toBeNull();
+    expect(unpaired.body.shadowRoot?.querySelector(".doorstop-item-unstage")).toBeNull();
   });
 
   it("renders the palette Stage only when ready, disabled for staged items and in-flight runs", async () => {
@@ -3010,9 +3037,17 @@ describe("DoorstopPanelBodyElement (per-item git staging: chips + row add + pale
     expect(chips).not.toContain("changed");
     expect(body.shadowRoot?.querySelector(".doorstop-item-add")).toBeNull();
 
-    // The palette Stage is suppressed too (not merely disabled).
+    // The palette Stage is suppressed too (not merely disabled). NB: this
+    // is the GATE removing the button (`readyGitStatus()` → undefined when
+    // truncated); the in-flight test below is the GUARD disabling it in
+    // place (`runInProgress !== undefined`) while the status stays ready.
+    // The two look contradictory out of context but are independent.
     await selectItemRow(body, controller, context, "REQ0002");
+    // Positive control: the palette rendered (Review is backend-independent);
+    // both git buttons are absent, not merely disabled.
+    expect(body.shadowRoot?.querySelector(".doorstop-review")).not.toBeNull();
     expect(body.shadowRoot?.querySelector(".doorstop-item-stage")).toBeNull();
+    expect(body.shadowRoot?.querySelector(".doorstop-item-unstage")).toBeNull();
   });
 
   it("re-fetches and re-renders the chips after a successful per-item stage", async () => {
@@ -3055,6 +3090,207 @@ describe("DoorstopPanelBodyElement (per-item git staging: chips + row add + pale
 
     expect(chips()).toContain("staged");
     expect(chips()).not.toContain("changed");
+  });
+});
+
+// --- per-item git UNSTAGING (row minus + palette Unstage) -------------------------
+
+describe("DoorstopPanelBodyElement (per-item git unstaging: row minus + palette Unstage)", () => {
+  const statusBackend = (
+    response: () => DoorstopGitStatusResponse,
+    onUnstage: () => unknown = () => ({ status: "unstaged", unstaged: 1 }),
+  ): Mock =>
+    vi.fn((operation: string) => {
+      if (operation === DOORSTOP_GIT_STATUS_OPERATION) return Promise.resolve(response());
+      if (operation === DOORSTOP_GIT_UNSTAGE_OPERATION) return Promise.resolve(onUnstage());
+      return Promise.resolve(makeRunResponse());
+    });
+
+  it("prefers the minus icon when the index (X) column is dirty — minus wins on 'MM'", async () => {
+    const backend = statusBackend(() =>
+      makeGitStatusResponse({
+        staged: 2,
+        dirty: 1,
+        files: [
+          gitStatusFile("reqs/REQ0002.yml", "unmodified", "modified"), // ' M' → plus
+          gitStatusFile("tests/TST001.yml", "modified", "unmodified"), // 'M ' → minus
+          gitStatusFile("tests/TST002.yml", "modified", "modified"), // 'MM' → minus
+        ],
+      }),
+    );
+    const { body } = await mountGitBody(backend);
+    const span = (uid: string) =>
+      body.shadowRoot?.querySelector<HTMLElement>(`.doorstop-item-row[data-uid="${uid}"] .doorstop-item-add`);
+
+    expect(span("REQ0002")?.getAttribute("title")).toBe("git add reqs/REQ0002.yml");
+    expect(span("TST001")?.getAttribute("title")).toBe("git reset tests/TST001.yml");
+    // The requested UX: a staged-then-edited item shows the minus (the
+    // palette Stage button remains the keyboard-reachable stage path).
+    expect(span("TST002")?.getAttribute("title")).toBe("git reset tests/TST002.yml");
+
+    // The minus icon is the plus circle WITHOUT its vertical bar: the plus
+    // svg carries two <path> children, the minus exactly one.
+    expect(span("REQ0002")?.querySelectorAll("path")).toHaveLength(2);
+    expect(span("TST001")?.querySelectorAll("path")).toHaveLength(1);
+  });
+
+  it("hides the row minus during an in-flight run and under a truncated status", async () => {
+    const backend = statusBackend(() =>
+      makeGitStatusResponse({
+        staged: 1,
+        dirty: 1,
+        files: [gitStatusFile("tests/TST001.yml", "modified", "unmodified")],
+      }),
+    );
+    const { body } = await mountGitBody(backend);
+    const minus = () =>
+      body.shadowRoot?.querySelector('.doorstop-item-row[data-uid="TST001"] .doorstop-item-add');
+    expect(minus()).not.toBeNull();
+
+    body.runInProgress = "Doorstop: validate";
+    await flush(body);
+    expect(minus()).toBeNull();
+    body.runInProgress = undefined;
+    await flush(body);
+
+    // Truncation suppresses EVERY per-item git affordance, minus included
+    // (an unstage against unreported paths would act on stale path data).
+    const files: DoorstopGitStatusFile[] = [
+      gitStatusFile("tests/TST001.yml", "modified", "unmodified"),
+      ...Array.from({ length: DOORSTOP_GIT_STATUS_FILES_MAX - 1 }, (_, index) =>
+        gitStatusFile(`other/file${String(index)}.yml`, "unmodified", "modified"),
+      ),
+    ];
+    const truncated = await mountGitBody(
+      statusBackend(() =>
+        makeGitStatusResponse({ staged: 1, dirty: DOORSTOP_GIT_STATUS_FILES_MAX + 1, files }),
+      ),
+    );
+    expect(truncated.body.shadowRoot?.querySelector(".doorstop-item-add")).toBeNull();
+    await selectItemRow(truncated.body, truncated.controller, truncated.context, "TST001");
+    expect(truncated.body.shadowRoot?.querySelector(".doorstop-item-unstage")).toBeNull();
+  });
+
+  it("renders the palette Stage and Unstage independently, disabled per X/Y state and during a run", async () => {
+    const backend = statusBackend(() =>
+      makeGitStatusResponse({
+        staged: 2,
+        dirty: 2,
+        files: [
+          gitStatusFile("reqs/REQ0002.yml", "unmodified", "modified"), // stageable only
+          gitStatusFile("reqs/REQ0001.yml", "modified", "unmodified"), // unstageable only
+          gitStatusFile("tests/TST001.yml", "modified", "modified"), // both
+        ],
+      }),
+    );
+    const { body, controller, context } = await mountGitBody(backend);
+    const stage = () => body.shadowRoot?.querySelector<HTMLButtonElement>(".doorstop-item-stage");
+    const unstage = () => body.shadowRoot?.querySelector<HTMLButtonElement>(".doorstop-item-unstage");
+
+    // Y-column dirty only: Stage enabled, Unstage disabled.
+    await selectItemRow(body, controller, context, "REQ0002");
+    expect(stage()?.disabled).toBe(false);
+    expect(unstage()?.disabled).toBe(true);
+    expect(unstage()?.getAttribute("title")).toBe("REQ0002 has nothing staged");
+
+    // X-column dirty only: Unstage enabled, Stage disabled.
+    await selectItemRow(body, controller, context, "REQ0001");
+    expect(stage()?.disabled).toBe(true);
+    expect(unstage()?.disabled).toBe(false);
+    expect(unstage()?.getAttribute("title")).toBe("Unstage reqs/REQ0001.yml (git reset)");
+
+    // 'MM': BOTH enabled, independently.
+    await selectItemRow(body, controller, context, "TST001");
+    expect(stage()?.disabled).toBe(false);
+    expect(unstage()?.disabled).toBe(false);
+
+    // An in-flight run disables both (the shared runInProgress gate).
+    body.runInProgress = "Doorstop: validate";
+    await flush(body);
+    expect(stage()?.disabled).toBe(true);
+    expect(unstage()?.disabled).toBe(true);
+    body.runInProgress = undefined;
+    await flush(body);
+
+    // Clicking the palette Unstage sends the per-item request and title.
+    unstage()?.click();
+    await flush(body);
+    expect(backend).toHaveBeenCalledWith(DOORSTOP_GIT_UNSTAGE_OPERATION, {
+      paths: ["tests/TST001.yml"],
+    });
+    expect(controller.lastRun).toMatchObject({
+      op: "git-unstage",
+      status: "ok",
+      title: "Git: unstage TST001",
+    });
+  });
+
+  it("clicking the row minus sends doorstop.git-unstage with the item path and does not change the selection", async () => {
+    const backend = statusBackend(() =>
+      makeGitStatusResponse({
+        staged: 1,
+        dirty: 0,
+        files: [gitStatusFile("reqs/REQ0002.yml", "modified", "unmodified")],
+      }),
+    );
+    const { body, controller } = await mountGitBody(backend);
+    expect(controller.selectedUid).toBeUndefined();
+
+    body.shadowRoot
+      ?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0002"] .doorstop-item-add')
+      ?.click();
+    await flush(body);
+
+    expect(backend).toHaveBeenCalledWith(DOORSTOP_GIT_UNSTAGE_OPERATION, {
+      paths: ["reqs/REQ0002.yml"],
+    });
+    expect(controller.lastRun).toMatchObject({
+      op: "git-unstage",
+      status: "ok",
+      title: "Git: unstage REQ0002",
+    });
+    // stopPropagation: clicking the nested minus never selected the row.
+    expect(controller.selectedUid).toBeUndefined();
+  });
+
+  it("re-fetches and re-renders after a successful unstage (minus → plus)", async () => {
+    let unstaged = false;
+    const backend = vi.fn((operation: string) => {
+      if (operation === DOORSTOP_GIT_STATUS_OPERATION) {
+        return Promise.resolve(
+          makeGitStatusResponse({
+            staged: unstaged ? 0 : 1,
+            dirty: 1,
+            files: [
+              unstaged
+                ? gitStatusFile("reqs/REQ0002.yml", "unmodified", "modified")
+                : gitStatusFile("reqs/REQ0002.yml", "modified", "unmodified"),
+            ],
+          }),
+        );
+      }
+      if (operation === DOORSTOP_GIT_UNSTAGE_OPERATION) {
+        unstaged = true;
+        return Promise.resolve({ status: "unstaged", unstaged: 1 });
+      }
+      return Promise.resolve(makeRunResponse());
+    });
+    const { body, controller, context } = await mountGitBody(backend);
+    const span = () =>
+      body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0002"] .doorstop-item-add');
+    expect(span()?.getAttribute("title")).toBe("git reset reqs/REQ0002.yml");
+
+    span()?.click();
+    await flush(body);
+    // The success invalidated the cached view; mirroring the cleared view
+    // lets the element's orphan guard refetch the updated status.
+    bindBody(body, controller, context);
+    await flush(body);
+    bindBody(body, controller, context);
+    await flush(body);
+
+    expect(unstaged).toBe(true);
+    expect(span()?.getAttribute("title")).toBe("git add reqs/REQ0002.yml");
   });
 });
 

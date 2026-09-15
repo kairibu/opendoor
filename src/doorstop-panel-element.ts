@@ -10,6 +10,7 @@ import {
   doorstopIconSvg,
   gitCommitIconSvg,
   gitStageIconSvg,
+  gitUnstageIconSvg,
   publishIconSvg,
   refreshIconSvg,
   validateIconSvg,
@@ -74,6 +75,7 @@ import {
   itemExcerpt,
   itemGitState,
   itemStageable,
+  itemUnstageable,
   isValidTargetUid,
   jsonishText,
   lastRunHasMessage,
@@ -701,14 +703,19 @@ function defineDoorstopPanelBodyElement(): void {
       ): TemplateResult {
         const selected = this.selectedUid === item.uid;
         const gitState = itemGitState(gitFiles?.get(item.path));
-        // The per-row add is pointer-only by design: the row IS a <button>,
-        // so a nested <button> would be hoisted out by the HTML parser. A
-        // <span> parses fine, but a role="button" that is not keyboard-
-        // operable would violate the ARIA contract — and the affordance is
-        // redundant with the keyboard-reachable region-4 Stage button — so it
-        // is hidden from the accessibility tree (`aria-hidden`) and left as a
-        // pointer shortcut.
+        // The per-row add/remove is pointer-only by design: the row IS a
+        // <button>, so a nested <button> would be hoisted out by the HTML
+        // parser. A <span> parses fine, but a role="button" that is not
+        // keyboard-operable would violate the ARIA contract — and the
+        // affordance is redundant with the keyboard-reachable region-4
+        // Stage/Unstage buttons — so it is hidden from the accessibility
+        // tree (`aria-hidden`) and left as a pointer shortcut. One span
+        // hosts BOTH directions: the minus (index/X dirty) takes precedence
+        // over the plus (worktree/Y dirty) so a `staged-changed` (`MM`) row
+        // shows the requested "I staged by mistake" minus, and the palette's
+        // Stage button remains the keyboard path for the plus half.
         const stageable = itemStageable(gitFiles?.get(item.path));
+        const unstageable = itemUnstageable(gitFiles?.get(item.path));
         return html`
           <button
             type="button"
@@ -723,14 +730,21 @@ function defineDoorstopPanelBodyElement(): void {
             <span class="doorstop-item-chips">
               ${item.stateKeys.map((key) => this.renderStateChip(key))}
               ${gitState === "clean" ? nothing : html`<span class=${`doorstop-chip doorstop-chip-${gitChipKind(gitState)}`}>${GIT_CHIP_LABELS[gitState]}</span>`}
-              ${stageable && this.runInProgress === undefined
+              ${unstageable && this.runInProgress === undefined
                 ? html`<span
                     class="doorstop-item-add"
                     aria-hidden="true"
-                    title=${`git add ${item.path}`}
-                    @click=${(event: Event) => { event.stopPropagation(); this.stageItem(item); }}
-                  >${gitStageIconSvg}</span>`
-                : nothing}
+                    title=${`git reset ${item.path}`}
+                    @click=${(event: Event) => { event.stopPropagation(); this.unstageItem(item); }}
+                  >${gitUnstageIconSvg}</span>`
+                : stageable && this.runInProgress === undefined
+                  ? html`<span
+                      class="doorstop-item-add"
+                      aria-hidden="true"
+                      title=${`git add ${item.path}`}
+                      @click=${(event: Event) => { event.stopPropagation(); this.stageItem(item); }}
+                    >${gitStageIconSvg}</span>`
+                  : nothing}
             </span>
           </button>
         `;
@@ -1031,13 +1045,14 @@ function defineDoorstopPanelBodyElement(): void {
       ): TemplateResult {
         const reviewed = item.stateKeys.includes("reviewed");
         const suspectUids = suspects.length > 0 ? suspects.map((parent) => parent.uid) : [];
-        // ONE ready-check for both the button and its stageable predicate;
-        // `readyGitStatus` already owns the paired/ready/untruncated gate, so
-        // the chip row and the palette button can never disagree.
+        // ONE ready-check for both the buttons and their stageable/
+        // unstageable predicates; `readyGitStatus` already owns the
+        // paired/ready/untruncated gate, so the chip row and the palette
+        // buttons can never disagree.
         const gitStatus = this.readyGitStatus();
-        const stageable = itemStageable(
-          gitStatus === undefined ? undefined : gitStatusFileFor(gitStatus, item.path),
-        );
+        const gitFile = gitStatus === undefined ? undefined : gitStatusFileFor(gitStatus, item.path);
+        const stageable = itemStageable(gitFile);
+        const unstageable = itemUnstageable(gitFile);
         return html`
           <button
             type="button"
@@ -1074,7 +1089,16 @@ function defineDoorstopPanelBodyElement(): void {
                   ? `Stage ${item.path}`
                   : `${item.uid} has no unstaged changes — commit next`}
                 @click=${() => { this.stageItem(item); }}
-              >${gitStageIconSvg}Stage</button>`}
+              >${gitStageIconSvg}Stage</button>
+              <button
+                type="button"
+                class="doorstop-item-unstage"
+                ?disabled=${this.runInProgress !== undefined || !unstageable}
+                title=${unstageable
+                  ? `Unstage ${item.path} (git reset)`
+                  : `${item.uid} has nothing staged`}
+                @click=${() => { this.unstageItem(item); }}
+              >${gitUnstageIconSvg}Unstage</button>`}
           <div class="doorstop-op">
             <input
               type="text"
@@ -1195,6 +1219,18 @@ function defineDoorstopPanelBodyElement(): void {
         const controller = this.controller;
         if (controller === undefined || controller.runInProgress !== undefined) return;
         void controller.runGitStage([item.path], `Git: stage ${item.uid}`);
+      }
+
+      /** Unstage one item's own file — the `doorstop.git-unstage` inverse with
+       *  `[item.path]`; the shared run dispatch narrates the uid. Shared by
+       *  the row's minus span and the palette's Unstage button. The guard
+       *  mirrors {@link stageItem}: a run already in flight must never be
+       *  overlapped (the disabled states cover pointer clicks; this covers
+       *  every call path). */
+      private unstageItem(item: ItemRecord): void {
+        const controller = this.controller;
+        if (controller === undefined || controller.runInProgress !== undefined) return;
+        void controller.runGitUnstage([item.path], `Git: unstage ${item.uid}`);
       }
 
       private onGitStageClick = (): void => {

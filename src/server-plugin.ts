@@ -4,7 +4,7 @@
 // loaded by the session daemon at startup. Activation exposes ONE workspace
 // provider; its `request` method is what enables the browser `backend`
 // (doorstop.run through `requestDoorstopBackend`, the item-baseline fetch,
-// and the three project-scoped git operations — status/stage/commit).
+// and the four project-scoped git operations — status/stage/unstage/commit).
 //
 // Ownership per plan §"Ownership trade-off": opendoor is a PRIMARY-tier
 // provider (no `fallback`) — `probe` claims ONLY when the project contains a
@@ -45,6 +45,7 @@ import {
   requestDoorstopGitCommit,
   requestDoorstopGitStage,
   requestDoorstopGitStatus,
+  requestDoorstopGitUnstage,
   unsupportedBackendOperationError,
 } from "./doorstop-backend.js";
 import {
@@ -52,6 +53,7 @@ import {
   DOORSTOP_GIT_COMMIT_OPERATION,
   DOORSTOP_GIT_STAGE_OPERATION,
   DOORSTOP_GIT_STATUS_OPERATION,
+  DOORSTOP_GIT_UNSTAGE_OPERATION,
   DOORSTOP_RUN_OPERATION,
 } from "./doorstop-backend-contract.js";
 
@@ -114,9 +116,9 @@ export default plugin;
  *  `request` DISPATCHES on the operation name (plan step 8 + the git-actions
  *  plan's Phase B step 9): `doorstop.run` → the run backend,
  *  `doorstop.item-baseline` → the read-only baseline backend, and the
- *  `doorstop.git-status` / `doorstop.git-stage` / `doorstop.git-commit`
- *  trio → their project-scoped git handlers; anything else → the
- *  unsupported-operation error. */
+ *  `doorstop.git-status` / `doorstop.git-stage` / `doorstop.git-unstage` /
+ *  `doorstop.git-commit` quartet → their project-scoped git handlers;
+ *  anything else → the unsupported-operation error. */
 export function createDoorstopWorkspaceProvider(context: ServerPluginActivationContext): WorkspaceProvider {
   return Object.freeze({
     async probe(project: ProjectInput, signal: AbortSignal): Promise<ProviderClaim> {
@@ -145,8 +147,8 @@ export function createDoorstopWorkspaceProvider(context: ServerPluginActivationC
     },
     request: (request: ProviderRequestContext) => {
       // Operation dispatch (plan-add-git-actions.md Phase B step 9): the
-      // five contract operations route to their shared backend handlers
-      // (all five serialize per workspace path and share the deadline
+      // six contract operations route to their shared backend handlers
+      // (all six serialize per workspace path and share the deadline
       // budget inside doorstop-backend.ts); every other operation gets the
       // existing unsupported-operation error — the same message the run
       // handler's own guard throws.
@@ -159,6 +161,8 @@ export function createDoorstopWorkspaceProvider(context: ServerPluginActivationC
           return requestDoorstopGitStatus(context, request);
         case DOORSTOP_GIT_STAGE_OPERATION:
           return requestDoorstopGitStage(context, request);
+        case DOORSTOP_GIT_UNSTAGE_OPERATION:
+          return requestDoorstopGitUnstage(context, request);
         case DOORSTOP_GIT_COMMIT_OPERATION:
           return requestDoorstopGitCommit(context, request);
         default:

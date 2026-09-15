@@ -25,6 +25,7 @@ import {
   DOORSTOP_GIT_STAGE_OPERATION,
   DOORSTOP_GIT_STATUS_FILES_MAX,
   DOORSTOP_GIT_STATUS_OPERATION,
+  DOORSTOP_GIT_UNSTAGE_OPERATION,
   DOORSTOP_RUN_OPERATION,
   isValidDoorstopItemPath,
   isValidDoorstopUid,
@@ -40,6 +41,8 @@ import {
   parseDoorstopGitStageResponse,
   parseDoorstopGitStatusRequest,
   parseDoorstopGitStatusResponse,
+  parseDoorstopGitUnstageRequest,
+  parseDoorstopGitUnstageResponse,
   parseDoorstopRunRequest,
   parseDoorstopRunResponse,
   type DoorstopBaselineResponse,
@@ -680,11 +683,17 @@ describe("git count guards (negative counts are impossible junk, nothing coerced
 });
 
 describe("git operations (plan-add-git-actions Phase A steps 1–5)", () => {
-  it("exposes the three git operation names matching the host grammar", () => {
+  it("exposes the four git operation names matching the host grammar", () => {
     expect(DOORSTOP_GIT_STATUS_OPERATION).toBe("doorstop.git-status");
     expect(DOORSTOP_GIT_STAGE_OPERATION).toBe("doorstop.git-stage");
+    expect(DOORSTOP_GIT_UNSTAGE_OPERATION).toBe("doorstop.git-unstage");
     expect(DOORSTOP_GIT_COMMIT_OPERATION).toBe("doorstop.git-commit");
-    for (const name of [DOORSTOP_GIT_STATUS_OPERATION, DOORSTOP_GIT_STAGE_OPERATION, DOORSTOP_GIT_COMMIT_OPERATION]) {
+    for (const name of [
+      DOORSTOP_GIT_STATUS_OPERATION,
+      DOORSTOP_GIT_STAGE_OPERATION,
+      DOORSTOP_GIT_UNSTAGE_OPERATION,
+      DOORSTOP_GIT_COMMIT_OPERATION,
+    ]) {
       expect(name).toMatch(/^[a-z][a-z0-9.-]*$/);
     }
   });
@@ -879,6 +888,98 @@ describe("git operations (plan-add-git-actions Phase A steps 1–5)", () => {
       expect(() => parseDoorstopGitStageResponse({})).toThrow(/string field: status/);
       expect(() => parseDoorstopGitStageResponse(null)).toThrow(/Doorstop git stage response/);
       expect(() => parseDoorstopGitStageResponse({ status: "failed", stderr: 3 })).toThrow(/string field: stderr/);
+    });
+  });
+
+  describe("parseDoorstopGitUnstageRequest (the inverse request shape)", () => {
+    it("accepts validated workspace-relative paths and preserves order", () => {
+      expect(
+        parseDoorstopGitUnstageRequest({ paths: [".doorstop.yml", "reqs/reqs.yml", "reqs/REQ0001.yml"] }),
+      ).toEqual({ paths: [".doorstop.yml", "reqs/reqs.yml", "reqs/REQ0001.yml"] });
+    });
+
+    it("deduplicates paths preserving first-occurrence order", () => {
+      expect(
+        parseDoorstopGitUnstageRequest({ paths: ["reqs/REQ0001.yml", "reqs/REQ0002.yml", "reqs/REQ0001.yml"] }),
+      ).toEqual({ paths: ["reqs/REQ0001.yml", "reqs/REQ0002.yml"] });
+    });
+
+    it("rejects a missing paths field, a non-array, and non-string entries", () => {
+      expect(() => parseDoorstopGitUnstageRequest({})).toThrow(/paths must be an array/);
+      expect(() => parseDoorstopGitUnstageRequest({ paths: "reqs/REQ0001.yml" })).toThrow(/paths must be an array/);
+      expect(() => parseDoorstopGitUnstageRequest({ paths: [3] })).toThrow(/string array field: paths/);
+      expect(() => parseDoorstopGitUnstageRequest(null)).toThrow(/Doorstop git unstage request/);
+    });
+
+    it("rejects an EMPTY paths array (a contradiction the browser never emits)", () => {
+      expect(() => parseDoorstopGitUnstageRequest({ paths: [] })).toThrow(/at least one path is required/);
+    });
+
+    it("rejects paths outside the item-path grammar (empty, absolute, traversal, backslash)", () => {
+      for (const path of [
+        "",
+        "/abs/REQ0001.yml",
+        "C:/win/REQ0001.yml",
+        "..",
+        "../REQ0001.yml",
+        "docs/../../etc/passwd",
+        "docs\\REQ0001.yml",
+      ]) {
+        expect(() => parseDoorstopGitUnstageRequest({ paths: [path] })).toThrow(/Invalid doorstop item path/);
+      }
+    });
+  });
+
+  describe("parseDoorstopGitUnstageResponse (field/status coupling)", () => {
+    it("parses every status with only its own fields", () => {
+      expect(parseDoorstopGitUnstageResponse({ status: "unstaged", unstaged: 2 })).toEqual({
+        status: "unstaged",
+        unstaged: 2,
+      });
+      expect(parseDoorstopGitUnstageResponse({ status: "clean" })).toEqual({ status: "clean" });
+      expect(parseDoorstopGitUnstageResponse({ status: "skipped" })).toEqual({ status: "skipped" });
+      expect(parseDoorstopGitUnstageResponse({ status: "failed", stderr: "boom" })).toEqual({
+        status: "failed",
+        stderr: "boom",
+      });
+    });
+
+    it("rejects an unstaged count on any status but unstaged, and stderr on any status but failed", () => {
+      expect(() => parseDoorstopGitUnstageResponse({ status: "clean", unstaged: 1 })).toThrow(
+        /Only an "unstaged" outcome may carry "unstaged"/,
+      );
+      expect(() => parseDoorstopGitUnstageResponse({ status: "skipped", unstaged: 1 })).toThrow(
+        /Only an "unstaged" outcome may carry "unstaged"/,
+      );
+      expect(() => parseDoorstopGitUnstageResponse({ status: "failed", unstaged: 1 })).toThrow(
+        /Only an "unstaged" outcome may carry "unstaged"/,
+      );
+      expect(() => parseDoorstopGitUnstageResponse({ status: "clean", stderr: "boom" })).toThrow(
+        /Only a "failed" outcome may carry "stderr"/,
+      );
+      expect(() => parseDoorstopGitUnstageResponse({ status: "unstaged", stderr: "boom" })).toThrow(
+        /Only a "failed" outcome may carry "stderr"/,
+      );
+    });
+
+    it("rejects a negative unstaged count (counts are non-negative)", () => {
+      expect(parseDoorstopGitUnstageResponse({ status: "unstaged", unstaged: 3 })).toEqual({
+        status: "unstaged",
+        unstaged: 3,
+      });
+      expect(() => parseDoorstopGitUnstageResponse({ status: "unstaged", unstaged: -1 })).toThrow(
+        /non-negative count field: unstaged/,
+      );
+    });
+
+    it("rejects unknown statuses and wrong-typed fields", () => {
+      expect(() => parseDoorstopGitUnstageResponse({ status: "staged" })).toThrow(
+        /Invalid doorstop git unstage status/,
+      );
+      expect(() => parseDoorstopGitUnstageResponse({ status: 3 })).toThrow(/string field: status/);
+      expect(() => parseDoorstopGitUnstageResponse({})).toThrow(/string field: status/);
+      expect(() => parseDoorstopGitUnstageResponse(null)).toThrow(/Doorstop git unstage response/);
+      expect(() => parseDoorstopGitUnstageResponse({ status: "failed", stderr: 3 })).toThrow(/string field: stderr/);
     });
   });
 

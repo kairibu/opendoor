@@ -26,11 +26,13 @@ import {
   DOORSTOP_GIT_COMMIT_OPERATION,
   DOORSTOP_GIT_STAGE_OPERATION,
   DOORSTOP_GIT_STATUS_OPERATION,
+  DOORSTOP_GIT_UNSTAGE_OPERATION,
   DOORSTOP_RUN_OPERATION,
   parseDoorstopBaselineResponse,
   parseDoorstopGitCommitResponse,
   parseDoorstopGitStageResponse,
   parseDoorstopGitStatusResponse,
+  parseDoorstopGitUnstageResponse,
   parseDoorstopRunResponse,
 } from "./doorstop-backend-contract.js";
 
@@ -155,7 +157,7 @@ describe("createDoorstopWorkspaceProvider", () => {
     expect(provider.prepareRemove).toBeUndefined();
   });
 
-  it("dispatches all five operations to their handlers; anything else errors", async () => {
+  it("dispatches all six operations to their handlers; anything else errors", async () => {
     const requests: ServerPluginExecFileRequest[] = [];
     /** The host's exact exec result shape every canned answer starts from. */
     const RESULT: ServerPluginExecFileResult = {
@@ -172,12 +174,16 @@ describe("createDoorstopWorkspaceProvider", () => {
         requests.push(request);
         const args = request.args ?? [];
         // rev-parse answers "true"; log/show and the commit's rev-parse
-        // --short produce a blob/sha; the stage's plain `-z` porcelain reports
-        // one changed path; the status's v1 -z -b porcelain reports branch
-        // + one path; diff --cached --quiet reports staged changes (exit 1).
+        // --short produce a blob/sha; the shared plain `-z` porcelain reports
+        // one path changed in BOTH columns (`MM`): the stage handler selects
+        // it by its worktree (Y) column and the unstage handler selects it by
+        // its index (X) column, so a single canned record routes both
+        // operations through their own selection rule; the status's v1 -z -b
+        // porcelain reports branch + one path; diff --cached --quiet reports
+        // staged changes (exit 1).
         if (args[0] === "rev-parse" && args.includes("--is-inside-work-tree")) return { ...RESULT, stdout: "true" };
         if (args[0] === "rev-parse") return { ...RESULT, stdout: "sha1\n" };
-        if (args[0] === "status" && !args.includes("--porcelain=v1")) return { ...RESULT, stdout: " M reqs/REQ0001.yml\0" };
+        if (args[0] === "status" && !args.includes("--porcelain=v1")) return { ...RESULT, stdout: "MM reqs/REQ0001.yml\0" };
         if (args[0] === "status") return { ...RESULT, stdout: "## main\0 M reqs/REQ0001.yml\0" };
         if (args[0] === "diff") return { ...RESULT, exitCode: 1 };
         return { ...RESULT, stdout: "sha1\n" };
@@ -211,6 +217,18 @@ describe("createDoorstopWorkspaceProvider", () => {
     // `doorstop.git-stage` routes to the Stage-all handler (rev-parse → status → add).
     const stage = await provider.request?.(requestFor(DOORSTOP_GIT_STAGE_OPERATION, { paths: ["reqs/REQ0001.yml"] }));
     expect(parseDoorstopGitStageResponse(stage)).toEqual({ status: "staged", staged: 1 });
+
+    // `doorstop.git-unstage` routes to the Unstage handler
+    // (rev-parse → status → reset). The shared plain-porcelain record is
+    // changed in BOTH columns (`MM`), so the unstage handler selects it by
+    // its index (X) column, issues the reset, and narrates `unstaged` (a
+    // misrouted stage response would fail the unstage parser's status enum).
+    const unstage = await provider.request?.(requestFor(DOORSTOP_GIT_UNSTAGE_OPERATION, { paths: ["reqs/REQ0001.yml"] }));
+    expect(parseDoorstopGitUnstageResponse(unstage)).toEqual({ status: "unstaged", unstaged: 1 });
+    // The reset really crossed the provider boundary (not just the narration).
+    expect(requests.filter((request) => request.args?.[0] === "reset").map((request) => request.args)).toEqual([
+      ["reset", "-q", "--", ":(literal)reqs/REQ0001.yml"],
+    ]);
 
     // `doorstop.git-commit` routes to the Commit handler (rev-parse → diff → commit → sha).
     const commit = await provider.request?.(requestFor(DOORSTOP_GIT_COMMIT_OPERATION, { message: "docs" }));

@@ -31,11 +31,13 @@ import {
   DOORSTOP_GIT_STAGE_OPERATION,
   DOORSTOP_GIT_STATUS_FILES_MAX,
   DOORSTOP_GIT_STATUS_OPERATION,
+  DOORSTOP_GIT_UNSTAGE_OPERATION,
   DOORSTOP_RUN_OPERATION,
   parseDoorstopBaselineResponse,
   parseDoorstopGitCommitResponse,
   parseDoorstopGitStageResponse,
   parseDoorstopGitStatusResponse,
+  parseDoorstopGitUnstageResponse,
   parseDoorstopRunResponse,
   type DoorstopRunRequest,
 } from "./doorstop-backend-contract.js";
@@ -45,6 +47,7 @@ import {
   requestDoorstopGitCommit,
   requestDoorstopGitStage,
   requestDoorstopGitStatus,
+  requestDoorstopGitUnstage,
 } from "./doorstop-backend.js";
 
 /** The host's exact exec result shape a doorstop run usually resolves with. */
@@ -1016,6 +1019,22 @@ function gitStageRequest(
   };
 }
 
+/** One `doorstop.git-unstage` provider request. `input` is widened to
+ *  `JsonValue` so junk-request cases need no casts. */
+function gitUnstageRequest(
+  unstage: JsonValue,
+  options: { workspacePath?: string; signal?: AbortSignal; operation?: string } = {},
+): ProviderRequestContext {
+  const workspacePath = options.workspacePath ?? "/workspace/demo checkout";
+  return {
+    project: { id: "project-demo", name: "demo", path: workspacePath },
+    workspace: { key: workspacePath, path: workspacePath, label: "demo", isMain: true },
+    operation: options.operation ?? DOORSTOP_GIT_UNSTAGE_OPERATION,
+    input: unstage,
+    signal: options.signal ?? new AbortController().signal,
+  };
+}
+
 /** One `doorstop.git-commit` provider request. `input` is widened to
  *  `JsonValue` so junk-request cases need no casts. */
 function gitCommitRequest(
@@ -1464,6 +1483,299 @@ describe("doorstop.git-stage handler", () => {
       parseDoorstopGitStageResponse(await requestDoorstopGitStage(context, gitStageRequest({ paths: ["reqs/REQ0001.yml"] }))),
     ).toEqual({ status: "skipped" });
     expect(requests).toHaveLength(1); // never reaches the porcelain/add steps
+  });
+});
+
+describe("doorstop.git-unstage handler", () => {
+  it("runs the exact rev-parse → status → reset argv sequence and selects only the index (X) column", async () => {
+    const { context, requests } = createFakeContext({
+      results: [
+        { ...DEFAULT_RESULT, stdout: "true" },
+        // unstaged-only (` M` — X blank → skip) + staged-only (`M ` → reset).
+        { ...DEFAULT_RESULT, stdout: " M reqs/REQ0001.yml\0M  reqs/REQ0002.yml\0" },
+        { ...DEFAULT_RESULT }, // reset
+      ],
+    });
+    const response = await requestDoorstopGitUnstage(
+      context,
+      gitUnstageRequest({ paths: ["reqs/REQ0001.yml", "reqs/REQ0002.yml"] }),
+    );
+    expect(parseDoorstopGitUnstageResponse(response)).toEqual({ status: "unstaged", unstaged: 1 });
+    // Every pathspec is literalized (`:(literal)`) so a crafted path can
+    // never widen the matched set beyond the Doorstop files; only the
+    // X-changed path reaches `git reset`.
+    expect(requests.map((request) => request.args)).toEqual([
+      ["rev-parse", "--is-inside-work-tree"],
+      ["status", "--porcelain", "-z", "--", ":(literal)reqs/REQ0001.yml", ":(literal)reqs/REQ0002.yml"],
+      ["reset", "-q", "--", ":(literal)reqs/REQ0002.yml"],
+    ]);
+    expect(requests[0]?.unsetEnv).toEqual(GIT_UNSET_ENV_EXPECTED);
+  });
+
+  it("reports clean (no reset exec) when no requested path has an index change", async () => {
+    const { context, requests } = createFakeContext({
+      results: [
+        { ...DEFAULT_RESULT, stdout: "true" },
+        // Both records have a BLANK X column (unstaged modification and
+        // unstaged deletion): the worktree (Y) column is irrelevant to
+        // unstaging, so neither is selected and no reset runs.
+        { ...DEFAULT_RESULT, stdout: " M reqs/REQ0001.yml\0 D reqs/REQ0002.yml\0" },
+      ],
+    });
+    expect(
+      parseDoorstopGitUnstageResponse(
+        await requestDoorstopGitUnstage(context, gitUnstageRequest({ paths: ["reqs/REQ0001.yml", "reqs/REQ0002.yml"] })),
+      ),
+    ).toEqual({ status: "clean" });
+    expect(requests.map((request) => request.args)).toEqual([
+      ["rev-parse", "--is-inside-work-tree"],
+      ["status", "--porcelain", "-z", "--", ":(literal)reqs/REQ0001.yml", ":(literal)reqs/REQ0002.yml"],
+    ]);
+  });
+
+  it("never selects untracked (??) or unmerged (UU/AA/DD) records: no reset exec, narrated clean", async () => {
+    // Untracked/ignored paths are not in the index (reset would be a no-op
+    // and the narrated count would lie); an unmerged entry must never be
+    // touched server-side (`git reset` silently resolves the conflict).
+    for (const record of ["??", "!!", "UU", "AA", "DD"]) {
+      const { context, requests } = createFakeContext({
+        results: [
+          { ...DEFAULT_RESULT, stdout: "true" },
+          { ...DEFAULT_RESULT, stdout: `${record} reqs/REQ0001.yml\0` },
+        ],
+      });
+      expect(
+        parseDoorstopGitUnstageResponse(
+          await requestDoorstopGitUnstage(context, gitUnstageRequest({ paths: ["reqs/REQ0001.yml"] })),
+        ),
+        record,
+      ).toEqual({ status: "clean" });
+      expect(requests.map((request) => request.args), record).toEqual([
+        ["rev-parse", "--is-inside-work-tree"],
+        ["status", "--porcelain", "-z", "--", ":(literal)reqs/REQ0001.yml"],
+      ]);
+    }
+  });
+
+  it("selects only the staged path of a mixed request (staged M + untracked ??)", async () => {
+    const { context, requests } = createFakeContext({
+      results: [
+        { ...DEFAULT_RESULT, stdout: "true" },
+        { ...DEFAULT_RESULT, stdout: "M  reqs/REQ0001.yml\0?? reqs/REQ0002.yml\0" },
+        { ...DEFAULT_RESULT }, // reset
+      ],
+    });
+    expect(
+      parseDoorstopGitUnstageResponse(
+        await requestDoorstopGitUnstage(context, gitUnstageRequest({ paths: ["reqs/REQ0001.yml", "reqs/REQ0002.yml"] })),
+      ),
+    ).toEqual({ status: "unstaged", unstaged: 1 });
+    expect(requests[2]?.args).toEqual(["reset", "-q", "--", ":(literal)reqs/REQ0001.yml"]);
+  });
+
+  it("resets staged additions (A ) and staged deletions (D ) — the shapes git add would fatal on", async () => {
+    const added = createFakeContext({
+      results: [
+        { ...DEFAULT_RESULT, stdout: "true" },
+        { ...DEFAULT_RESULT, stdout: "A  reqs/REQ0001.yml\0" },
+        { ...DEFAULT_RESULT },
+      ],
+    });
+    expect(
+      parseDoorstopGitUnstageResponse(
+        await requestDoorstopGitUnstage(added.context, gitUnstageRequest({ paths: ["reqs/REQ0001.yml"] })),
+      ),
+    ).toEqual({ status: "unstaged", unstaged: 1 });
+    expect(added.requests[2]?.args).toEqual(["reset", "-q", "--", ":(literal)reqs/REQ0001.yml"]);
+
+    const deleted = createFakeContext({
+      results: [
+        { ...DEFAULT_RESULT, stdout: "true" },
+        { ...DEFAULT_RESULT, stdout: "D  reqs/REQ0001.yml\0" },
+        { ...DEFAULT_RESULT },
+      ],
+    });
+    expect(
+      parseDoorstopGitUnstageResponse(
+        await requestDoorstopGitUnstage(deleted.context, gitUnstageRequest({ paths: ["reqs/REQ0001.yml"] })),
+      ),
+    ).toEqual({ status: "unstaged", unstaged: 1 });
+    expect(deleted.requests[2]?.args).toEqual(["reset", "-q", "--", ":(literal)reqs/REQ0001.yml"]);
+  });
+
+  it("resets a staged rename at the renamed-to path and never selects the bare source record", async () => {
+    const { context, requests } = createFakeContext({
+      results: [
+        { ...DEFAULT_RESULT, stdout: "true" },
+        // Fully staged rename: `R  new\0old\0` — the record's own path is
+        // the NEW one, the bare old-path record is consumed, never reset.
+        { ...DEFAULT_RESULT, stdout: "R  reqs/REQ0002.yml\0reqs/REQ0001.yml\0" },
+        { ...DEFAULT_RESULT },
+      ],
+    });
+    expect(
+      parseDoorstopGitUnstageResponse(
+        await requestDoorstopGitUnstage(
+          context,
+          gitUnstageRequest({ paths: ["reqs/REQ0001.yml", "reqs/REQ0002.yml"] }),
+        ),
+      ),
+    ).toEqual({ status: "unstaged", unstaged: 1 });
+    expect(requests[2]?.args).toEqual(["reset", "-q", "--", ":(literal)reqs/REQ0002.yml"]);
+  });
+
+  it("resets a staged copy at the copied-to path and never selects the bare source record", async () => {
+    const { context, requests } = createFakeContext({
+      results: [
+        { ...DEFAULT_RESULT, stdout: "true" },
+        // Staged copy: `C  new\0old\0` — the same NEW-then-SOURCE record
+        // shape as a rename, so the bare source record is consumed too.
+        { ...DEFAULT_RESULT, stdout: "C  reqs/REQ0002.yml\0reqs/REQ0001.yml\0" },
+        { ...DEFAULT_RESULT },
+      ],
+    });
+    expect(
+      parseDoorstopGitUnstageResponse(
+        await requestDoorstopGitUnstage(
+          context,
+          gitUnstageRequest({ paths: ["reqs/REQ0001.yml", "reqs/REQ0002.yml"] }),
+        ),
+      ),
+    ).toEqual({ status: "unstaged", unstaged: 1 });
+    expect(requests[2]?.args).toEqual(["reset", "-q", "--", ":(literal)reqs/REQ0002.yml"]);
+  });
+
+  it("skips on a non-repo workspace (rev-parse false) and on an exhausted deadline budget", async () => {
+    const nonRepo = createFakeContext({
+      results: [{ ...DEFAULT_RESULT, exitCode: 128, stdout: "", stderr: "fatal: not a git repository" }],
+    });
+    expect(
+      parseDoorstopGitUnstageResponse(
+        await requestDoorstopGitUnstage(nonRepo.context, gitUnstageRequest({ paths: ["reqs/REQ0001.yml"] })),
+      ),
+    ).toEqual({ status: "skipped" });
+
+    // rev-parse prints `false` with exit 0 on a bare repo / .git dir.
+    const bare = createFakeContext({ results: [{ ...DEFAULT_RESULT, stdout: "false\n" }] });
+    expect(
+      parseDoorstopGitUnstageResponse(
+        await requestDoorstopGitUnstage(bare.context, gitUnstageRequest({ paths: ["reqs/REQ0001.yml"] })),
+      ),
+    ).toEqual({ status: "skipped" });
+
+    // First exec consumes the whole 9.5 s budget → the phase is SKIPPED.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const exhausted = createFakeContext({
+        execFile: async () => {
+          vi.setSystemTime(new Date(Date.now() + 10_000));
+          return DEFAULT_RESULT;
+        },
+      });
+      const response = await requestDoorstopGitUnstage(
+        exhausted.context,
+        gitUnstageRequest({ paths: ["reqs/REQ0001.yml"] }),
+      );
+      expect(parseDoorstopGitUnstageResponse(response)).toEqual({ status: "skipped" });
+      expect(exhausted.requests).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("collapses a reset failure into status failed with a bounded excerpt (response resolves)", async () => {
+    const hugeStderr = "fatal: could not resolve HEAD\n".repeat(200);
+    const { context } = createFakeContext({
+      results: [
+        { ...DEFAULT_RESULT, stdout: "true" },
+        { ...DEFAULT_RESULT, stdout: "M  reqs/REQ0001.yml\0" },
+        { ...DEFAULT_RESULT, exitCode: 128, stderr: hugeStderr },
+      ],
+    });
+    // Resolves, never rejects — the outcome is narration.
+    const response = await requestDoorstopGitUnstage(context, gitUnstageRequest({ paths: ["reqs/REQ0001.yml"] }));
+    const parsed = parseDoorstopGitUnstageResponse(response);
+    expect(parsed.status).toBe("failed");
+    expect(parsed.stderr).toBeDefined();
+    expect(parsed.stderr?.length ?? 0).toBeLessThan(hugeStderr.length);
+    expect(parsed.stderr?.length ?? 0).toBeLessThanOrEqual(2048 + 40);
+    // The excerpt is a PREFIX of the git stderr plus the truncation marker —
+    // pinning the content, not just the length bound.
+    const excerpt = parsed.stderr ?? "";
+    const marker = "\n… (stderr truncated)";
+    expect(excerpt.endsWith(marker)).toBe(true);
+    expect(hugeStderr.startsWith(excerpt.slice(0, -marker.length))).toBe(true);
+    expect(excerpt.slice(0, -marker.length).length).toBeGreaterThan(0);
+  });
+
+  it("maps a missing git binary to status failed with the git-not-found message (resolves)", async () => {
+    const { context, requests } = createFakeContext({
+      execFile: async () => {
+        throw Object.assign(new Error("spawn git ENOENT"), { code: "ENOENT" });
+      },
+    });
+    const response = await requestDoorstopGitUnstage(context, gitUnstageRequest({ paths: ["reqs/REQ0001.yml"] }));
+    const parsed = parseDoorstopGitUnstageResponse(response);
+    expect(parsed.status).toBe("failed");
+    expect(parsed.stderr).toMatch(
+      /git not found on the sessiond host PATH — configure plugins\.opendoor\.settings\.gitPath/,
+    );
+    expect(requests).toHaveLength(1);
+  });
+
+  it("rejects out-of-grammar requests and a non-unstage operation before any exec", async () => {
+    const { context, requests } = createFakeContext();
+    await expect(requestDoorstopGitUnstage(context, gitUnstageRequest({ paths: [] }))).rejects.toThrow(
+      /at least one path is required/,
+    );
+    await expect(requestDoorstopGitUnstage(context, gitUnstageRequest({ paths: ["../escape.yml"] }))).rejects.toThrow(
+      /Invalid doorstop item path in field: paths/,
+    );
+    await expect(requestDoorstopGitUnstage(context, gitUnstageRequest({}))).rejects.toThrow(/paths must be an array/);
+    await expect(
+      requestDoorstopGitUnstage(
+        context,
+        gitUnstageRequest({ paths: ["reqs/REQ0001.yml"] }, { operation: "doorstop.purge" }),
+      ),
+    ).rejects.toThrow(/opendoor: unsupported workspace backend operation: doorstop\.purge/);
+    expect(requests).toHaveLength(0);
+  });
+
+  it("honors the configured gitPath for every git exec of the unstage", async () => {
+    const { context, requests } = createFakeContext({
+      settings: { gitPath: "/usr/local/bin/git" },
+      results: [
+        { ...DEFAULT_RESULT, stdout: "true" },
+        { ...DEFAULT_RESULT, stdout: "M  reqs/REQ0001.yml\0" },
+        { ...DEFAULT_RESULT },
+      ],
+    });
+    await requestDoorstopGitUnstage(context, gitUnstageRequest({ paths: ["reqs/REQ0001.yml"] }));
+    expect(requests.map((request) => request.file)).toEqual([
+      "/usr/local/bin/git",
+      "/usr/local/bin/git",
+      "/usr/local/bin/git",
+    ]);
+    // git execs share the settings timeout, bounded by the pipeline budget.
+    expect(requests[0]?.timeoutMs).toBe(8500);
+  });
+
+  it("unstage is idempotent: a second run over an already-clean index reports clean with no reset exec", async () => {
+    const { context, requests } = createFakeContext({
+      results: [
+        { ...DEFAULT_RESULT, stdout: "true" },
+        { ...DEFAULT_RESULT, stdout: " M reqs/REQ0001.yml\0" }, // already unstaged
+      ],
+    });
+    expect(
+      parseDoorstopGitUnstageResponse(
+        await requestDoorstopGitUnstage(context, gitUnstageRequest({ paths: ["reqs/REQ0001.yml"] })),
+      ),
+    ).toEqual({ status: "clean" });
+    expect(requests.map((request) => request.args)).toEqual([
+      ["rev-parse", "--is-inside-work-tree"],
+      ["status", "--porcelain", "-z", "--", ":(literal)reqs/REQ0001.yml"],
+    ]);
   });
 });
 

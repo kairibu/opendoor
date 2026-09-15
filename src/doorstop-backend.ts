@@ -17,12 +17,14 @@ import {
   DOORSTOP_GIT_STAGE_OPERATION,
   DOORSTOP_GIT_STATUS_FILES_MAX,
   DOORSTOP_GIT_STATUS_OPERATION,
+  DOORSTOP_GIT_UNSTAGE_OPERATION,
   DOORSTOP_RUN_OPERATION,
   isValidDoorstopItemPath,
   parseDoorstopBaselineRequest,
   parseDoorstopGitCommitRequest,
   parseDoorstopGitStageRequest,
   parseDoorstopGitStatusRequest,
+  parseDoorstopGitUnstageRequest,
   parseDoorstopRunRequest,
   type DoorstopBaselineCandidate,
   type DoorstopBaselineResponse,
@@ -31,6 +33,7 @@ import {
   type DoorstopGitStageResponse,
   type DoorstopGitStatusFile,
   type DoorstopGitStatusResponse,
+  type DoorstopGitUnstageResponse,
   type DoorstopRunRequest,
   type DoorstopRunResponse,
 } from "./doorstop-backend-contract.js";
@@ -761,8 +764,9 @@ function itemFileBase(name: string): string | undefined {
 }
 
 // ---------------------------------------------------------------------------
-// Git status / stage / commit handlers (plan-add-git-actions.md Phase B
-// steps 6–8) — the project-scoped git trio. All three reuse the
+// Git status / stage / unstage / commit handlers (plan-add-git-actions.md
+// Phase B steps 6–8, plus the per-item unstage follow-up) — the
+// project-scoped git quartet. All four reuse the
 // review→commit infrastructure wholesale (runGit, runSerialized,
 // literalPathspec, gitStepFailure, commitStderrExcerpt, the shared
 // `startedAt` deadline budget); per-handler specifics live on each
@@ -1051,6 +1055,51 @@ function stageAddTargets(stdout: string, paths: readonly string[]): string[] {
   return [...targets];
 }
 
+/** The request paths an unstage's `-z` porcelain output still needs `git
+ *  reset` — the INVERSE selection of {@link stageAddTargets}: every record
+ *  whose INDEX (X) column is present, non-blank, and not `?`/`!`/`U`, or an
+ *  unmerged pair (`AA`/`DD`, X or Y `U`), mapped back onto the request set
+ *  (the pathspecs already constrain the porcelain to the request paths). A
+ *  blank X column means the path already matches HEAD — nothing to unstage;
+ *  the WORKTREE (Y) column is irrelevant here, so a staged-deletion (`D `) or
+ *  a staged-only modification (`M `) both reset correctly. Untracked (`??`)
+ *  and ignored (`!!`) paths are not in the index at all, so `git reset` would
+ *  be a no-op and selecting one would make the narrated count lie; an
+ *  UNMERGED entry (`UU` et al.) must never be touched server-side — `git
+ *  reset` on one exits 0 and silently resolves the merge conflict in the
+ *  index (stages 1–3 replaced by HEAD's stage 0), the destructive side effect
+ *  the browser's itemUnstageable gate exists to prevent. Rename/copy records
+ *  in `-z` mode print the NEW path followed by a SEPARATE bare record with
+ *  the SOURCE path (`R  new\0old\0`): the source path must be stepped past
+ *  (the status/stage parser idiom) so it is never mis-selected; `git reset`
+ *  on the record's own (new) path resets both sides of the rename. Requesting
+ *  ONLY a rename's SOURCE (old) path is therefore a deliberate no-op — the
+ *  porcelain reports the record under its NEW path, so the old path is never
+ *  selected and the rename stays staged. */
+function unstageResetTargets(stdout: string, paths: readonly string[]): string[] {
+  const output = stdout.split("\0");
+  const records = output[output.length - 1] === "" ? output.slice(0, -1) : output;
+  const requestSet = new Set(paths);
+  const targets = new Set<string>();
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    if (record === undefined) continue;
+    const entry = /^(.{2}) (.*)$/s.exec(record);
+    if (entry === null) continue;
+    const xCode = entry[1]?.[0];
+    const yCode = entry[1]?.[1];
+    if (xCode === "R" || xCode === "C") index += 1;
+    // Untracked/ignored paths are not in the index (reset is a no-op) and an
+    // unmerged shape must never be reset (it resolves the conflict): see the
+    // JSDoc above for why each code is excluded.
+    if (xCode === undefined || xCode === " " || xCode === "?" || xCode === "!" || xCode === "U") continue;
+    if (yCode === "U" || ((xCode === "A" || xCode === "D") && xCode === yCode)) continue;
+    const path = entry[2] ?? "";
+    if (requestSet.has(path)) targets.add(path);
+  }
+  return [...targets];
+}
+
 /**
  * The `doorstop.git-stage` handler — Stage all. Validates the request
  * BEFORE any exec and before queueing; then, each step budgeted and
@@ -1150,6 +1199,107 @@ function stageResponse(status: DoorstopGitStageResponse["status"], staged?: numb
     ...(staged === undefined ? {} : { staged }),
     ...(stderr === undefined ? {} : { stderr }),
   } satisfies DoorstopGitStageResponse;
+}
+
+/**
+ * The `doorstop.git-unstage` handler — the per-item Unstage action, the
+ * INVERSE of {@link requestDoorstopGitStage}. Validates the request BEFORE
+ * any exec and before queueing; then, each step budgeted and skipped on
+ * exhaustion, inside `runSerialized`: a repo check, a `-z` porcelain status
+ * over the literalized pathspecs, and `git reset -q --
+ * :(literal)<selected paths>` for exactly the REQUEST paths whose INDEX (X)
+ * column is non-blank. `git reset` (mixed) restores the index entry from
+ * HEAD and leaves the WORKTREE untouched (no data loss): `M ` → ` M`,
+ * `A ` → `??`, `D ` → ` D`, `R ` → both sides reset. An already-clean path is
+ * skipped (the Y column is irrelevant), so a second Unstage reports `clean`,
+ * never a fatal reset. The outcome is NARRATION: the response RESOLVES on
+ * every git outcome (`skipped` for non-repo / exhausted budget, `failed` +
+ * bounded stderr excerpt for a git error) and only a host-attributed ABORT
+ * rethrows.
+ */
+export async function requestDoorstopGitUnstage(
+  context: ServerPluginActivationContext,
+  request: ProviderRequestContext,
+): Promise<JsonValue> {
+  if (request.operation !== DOORSTOP_GIT_UNSTAGE_OPERATION) {
+    throw unsupportedBackendOperationError(request.operation);
+  }
+  // Strict parse before any exec and before queueing — an empty or
+  // out-of-grammar path list never reaches git.
+  const unstage = parseDoorstopGitUnstageRequest(request.input);
+  const settings = parseDoorstopBackendSettings(context.settings);
+  const cwd = request.workspace.path;
+  return runSerialized(context, cwd, async () => {
+    const startedAt = Date.now();
+    try {
+      if (remainingBudgetMs(startedAt) <= 0) return unstagedResponse("skipped");
+      const inWorkTree = await runGit(
+        context,
+        settings,
+        cwd,
+        ["rev-parse", "--is-inside-work-tree"],
+        request.signal,
+        gitExecTimeoutMs(settings, startedAt),
+      );
+      if (!isWorkTreeResult(inWorkTree)) return unstagedResponse("skipped");
+
+      // Same `-z` fetch as the stage handler: NUL-delimited records with
+      // VERBATIM paths (plain porcelain re-quotes non-ASCII/spaces and would
+      // silently drop such paths from the selection below).
+      if (remainingBudgetMs(startedAt) <= 0) return unstagedResponse("skipped");
+      const pathspecs = unstage.paths.map(literalPathspec);
+      const status = await runGit(
+        context,
+        settings,
+        cwd,
+        ["status", "--porcelain", "-z", "--", ...pathspecs],
+        request.signal,
+        gitExecTimeoutMs(settings, startedAt),
+      );
+      if (status.exitCode !== 0) {
+        gitStepFailure(status, ["status", "--porcelain", "-z", "--", ...pathspecs]);
+      }
+      // The reset set is the REQUEST paths with an index (X) change
+      // (unstageResetTargets); nothing staged → clean, no reset exec.
+      const resetPaths = unstageResetTargets(status.stdout, unstage.paths);
+      if (resetPaths.length === 0) return unstagedResponse("clean");
+
+      // `git reset -q` (mixed) restores the index from HEAD, leaving the
+      // worktree untouched; `--` separates the pathspecs from any option-like
+      // path (the literalized `:(literal)` magic prevents widening).
+      if (remainingBudgetMs(startedAt) <= 0) return unstagedResponse("skipped");
+      const reset = await runGit(
+        context,
+        settings,
+        cwd,
+        ["reset", "-q", "--", ...resetPaths.map(literalPathspec)],
+        request.signal,
+        gitExecTimeoutMs(settings, startedAt),
+      );
+      if (reset.exitCode !== 0) gitStepFailure(reset, ["reset", "-q", "--", ...resetPaths.map(literalPathspec)]);
+      return unstagedResponse("unstaged", resetPaths.length);
+    } catch (error) {
+      // Any git failure collapses into the bounded `failed` outcome (the
+      // response RESOLVES); a host-attributed ABORT rethrows untouched.
+      if (request.signal.aborted) throw error;
+      return unstagedResponse("failed", undefined, commitStderrExcerpt(formatUnknownError(error)));
+    }
+  });
+}
+
+/** The `doorstop.git-unstage` response literal (see doorstopRunResponse for
+ *  the JsonValue idiom); `unstaged`/`stderr` are OMITTED except on the status
+ *  that declares them — the strict response parser's field/status coupling. */
+function unstagedResponse(
+  status: DoorstopGitUnstageResponse["status"],
+  unstaged?: number,
+  stderr?: string,
+): JsonValue {
+  return {
+    status,
+    ...(unstaged === undefined ? {} : { unstaged }),
+    ...(stderr === undefined ? {} : { stderr }),
+  } satisfies DoorstopGitUnstageResponse;
 }
 
 /**

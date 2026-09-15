@@ -45,14 +45,15 @@ The plugin is fully wired and green, in two halves:
 - **Server entry** (`src/server-plugin.ts`, default export `PiWebServerPlugin`)
   contributes a workspace provider that claims only projects whose root
   contains a `.doorstop.yml` (cheap `fs.access` probe — everything else stays
-  with the bundled Git provider) and serves a five-operation backend:
+  with the bundled Git provider) and serves a six-operation backend:
   `doorstop.run` runs one Doorstop CLI invocation — a review request carrying
   the opt-in `commit: true` flag is followed by a pathspec-limited git commit
   of the item file (`doorstop: review <uid>`) — the read-only
   `doorstop.item-baseline` recovers the reviewed version of an item file from
-  git history, and the three git actions `doorstop.git-status`,
-  `doorstop.git-stage`, and `doorstop.git-commit` power the panel's git strip
-  and stage/commit controls (see **Git actions** below). `src/doorstop-backend.ts` validates each request, builds argv
+  git history, and the four git actions `doorstop.git-status`,
+  `doorstop.git-stage`, `doorstop.git-unstage`, and `doorstop.git-commit`
+  power the panel's git strip and stage/unstage/commit controls (see **Git
+  actions** below). `src/doorstop-backend.ts` validates each request, builds argv
   server-side (the browser never sends shell strings), and runs through the
   host's `execFile()` helper with `cwd` = the workspace path, timeouts
   clamped to 8.5 s (the review+git pipeline shares one deadline budget under
@@ -70,9 +71,10 @@ install, or a workspace the provider does not own), the action falls back to
 and auditable in the terminal.
 
   `doorstop.run` and `doorstop.item-baseline`) shared by both halves, plus the
-  three git-action contracts (`doorstop.git-status`, `doorstop.git-stage`,
-  `doorstop.git-commit`), live in `src/doorstop-backend-contract.ts`. Later
-  modules import these and must not redefine them.
+  four git-action contracts (`doorstop.git-status`, `doorstop.git-stage`,
+  `doorstop.git-unstage`, `doorstop.git-commit`), live in
+  `src/doorstop-backend-contract.ts`. Later modules import these and must not
+  redefine them.
 
 ## Workspace settings (`.pi-web/opendoor.json`)
 
@@ -126,8 +128,8 @@ restart to take effect). Parsed leniently; wrong types fall back to defaults:
   on the **sessiond host PATH** (the daemon environment, not your login shell
   — set this when the CLI lives in a venv or is not on the service PATH).
 - `gitPath` — the git binary used by the review→commit pipeline, the
-  `doorstop.item-baseline` fetch, and the three git actions (status strip,
-  Stage all, Git commit). Defaults to `"git"` resolved on the
+  `doorstop.item-baseline` fetch, and the four git actions (status strip,
+  Stage all, per-item Unstage, Git commit). Defaults to `"git"` resolved on the
   **sessiond host PATH** — set it when git is not on the service PATH (the
   same escape hatch as `doorstopPath`).
 - `timeoutMs` — per-run exec timeout in ms. May SHORTEN the 8 500 ms default
@@ -197,17 +199,22 @@ bottom:
   `commitAfterReview` enabled and paired, followed by the pathspec-limited
   review commit), Clear suspect links (`doorstop clear UID [parents…]`),
   Edit (`doorstop edit UID`), Link/Unlink via inline UID input (validated
-  against the Doorstop UID grammar; shell metacharacters rejected).
-- **Git actions** (paired installs only; all three controls are hidden
+  against the Doorstop UID grammar; shell metacharacters rejected), and — on
+  paired installs — Stage / Unstage for the selected item's own file
+  (`doorstop.git-stage` / `doorstop.git-unstage` with just that item's
+  path; see **Git actions** below). Each is independently disabled: Stage
+  when the file has no unstaged (`Y`) changes, Unstage when it has nothing
+  staged (`X`), and both while a run is in flight.
+- **Git actions** (paired installs only; every git control is hidden
   without the paired backend — terminal-fallback users commit manually as
   today):
   - **Git status strip** — a compact readout above the item list:
     `⎇ <branch> · <n> staged · <n> dirty · ↑<ahead> ↓<behind>` (zero/absent
     parts omitted; `no git` outside a repository; a retry link on fetch
-    errors). The strip refreshes on panel load, after every run (a stage or
-    commit invalidates the cache), and whenever you click it. Outside a git
-    repository the strip shows `no git` and the stage/commit controls are
-    no-ops that report `skipped`.
+    errors). The strip refreshes on panel load, after every run (a stage,
+    unstage, or commit invalidates the cache), and whenever you click it.
+    Outside a git repository the strip shows `no git` and the stage/unstage/
+    commit controls are no-ops that report `skipped`.
   - **Stage all** — stages every Doorstop-managed file (the root
     `.doorstop.yml`, each document's config file, each item file) via the
     `doorstop.git-stage` backend operation. Staging is idempotent: a second
@@ -217,6 +224,24 @@ bottom:
     loaded index has no documents. Note: staging is only as fresh as the
     loaded index — files created on disk after the last **Refresh** are
     missed until you refresh and stage again.
+  - **Unstage (per item)** — while an item's file has staged (index)
+    changes, its list row shows a **minus** in place of the usual plus, and
+    the item palette enables an **Unstage** button, both served by the
+    `doorstop.git-unstage` operation (`git reset -q -- :(literal)<path>`
+    server-side). The row's pointer shortcut prefers the minus when a file
+    is both staged and further modified (`MM`), so "I staged by mistake"
+    always surfaces a minus; the palette shows Stage and Unstage as two
+    independently-disabled buttons in that case. Unstaging restores the
+    index entry but never touches the working tree: a staged addition
+    returns to `??` untracked, a staged deletion returns to an unstaged
+    deletion. It is idempotent — a second Unstage over an already-clean path
+    reports `clean — nothing to unstage`. Unmerged paths (`UU`, `AA`, `DD`,
+    `DU`, `AU`, `UD`, `UA`) are excluded — a `git reset` on an unmerged path
+    would silently resolve the conflict in the index. On unpaired installs no
+    git control is rendered at all; while a run is in flight no minus appears
+    and the palette buttons are disabled (the per-row affordance is also
+    suppressed when the status file list is truncated, so stale path data is
+    never acted on).
   - **Git commit** — a single-line message input plus a **Commit** button,
     served by the `doorstop.git-commit` operation. The commit records **the
     staged index** (`git commit -m <message>` with no pathspec and no

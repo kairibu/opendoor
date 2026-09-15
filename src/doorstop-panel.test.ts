@@ -22,6 +22,7 @@ import {
   type DoorstopGitStageResponse,
   type DoorstopGitStatusFile,
   type DoorstopGitStatusResponse,
+  type DoorstopGitUnstageResponse,
 } from "./doorstop-backend-contract.js";
 import { buildDoorstopIndex } from "./doorstop-model.js";
 import { computeItemStamp, computeItemStates } from "./doorstop-state.js";
@@ -41,6 +42,7 @@ import {
 } from "./doorstop-panel.js";
 import { DEFAULT_OPENDOOR_SETTINGS } from "./doorstop-settings.js";
 import {
+  commitOutcomeText,
   GIT_CHIP_LABELS,
   gitChipKind,
   gitStatusFileFor,
@@ -48,6 +50,7 @@ import {
   gitStatusFilesTruncated,
   itemGitState,
   itemStageable,
+  itemUnstageable,
 } from "./doorstop-panel-view-model.js";
 import { createFakeFiles, dirEntry, fileEntry, text, tree, type FakeWorkspaceFiles } from "./test-support.js";
 
@@ -845,6 +848,40 @@ describe("itemGitState / itemStageable / gitStatusFilesByPath (per-item git stat
     }
   });
 
+  it("marks exactly the index-dirty paths unstageable (the X-column mirror; every unmerged shape excluded)", () => {
+    const table: Array<[string, DoorstopGitStatusFile | undefined, boolean]> = [
+      ["absent", undefined, false],
+      ["unmodified/unmodified", gitFile("unmodified", "unmodified"), false],
+      ["ignored", gitFile("ignored", "ignored"), false],
+      ["staged modification ('M ')", gitFile("modified", "unmodified"), true],
+      ["staged addition ('A ')", gitFile("added", "unmodified"), true],
+      ["fully-staged deletion ('D ')", gitFile("deleted", "unmodified"), true],
+      ["staged rename ('R ')", gitFile("renamed", "unmodified"), true],
+      ["unstaged modification (' M')", gitFile("unmodified", "modified"), false],
+      ["unstaged deletion (' D')", gitFile("unmodified", "deleted"), false],
+      ["staged + unstaged ('MM')", gitFile("modified", "modified"), true],
+      ["untracked ('??') — never in the index", gitFile("untracked", "untracked"), false],
+      ["conflicted ('UU') — reset would resolve the conflict", gitFile("conflicted", "conflicted"), false],
+      ["both added ('AA') — unmerged pair", gitFile("added", "added"), false],
+      ["both deleted ('DD') — unmerged pair", gitFile("deleted", "deleted"), false],
+      ["deleted by us ('DU') — unmerged pair", gitFile("deleted", "conflicted"), false],
+      ["added by us ('AU') — unmerged pair", gitFile("added", "conflicted"), false],
+      ["deleted by them ('UD') — unmerged pair", gitFile("conflicted", "deleted"), false],
+      ["added by them ('UA') — unmerged pair", gitFile("conflicted", "added"), false],
+    ];
+    for (const [label, file, expected] of table) {
+      expect(itemUnstageable(file), label).toBe(expected);
+    }
+  });
+
+  it("narrates the unstage run's own outcome voice (the shared status set + `unstaged`)", () => {
+    expect(commitOutcomeText("git-unstage", { status: "unstaged", unstaged: 2 })).toBe("unstaged 2 paths");
+    expect(commitOutcomeText("git-unstage", { status: "unstaged", unstaged: 0 })).toBe("unstaged 0 paths");
+    expect(commitOutcomeText("git-unstage", { status: "clean" })).toBe("clean — nothing to unstage");
+    expect(commitOutcomeText("git-unstage", { status: "skipped" })).toBe("skipped");
+    expect(commitOutcomeText("git-unstage", { status: "failed", stderr: "boom" })).toBe("failed — boom");
+  });
+
   it("labels and colors every state; clean is empty because the chip is skipped", () => {
     expect(GIT_CHIP_LABELS).toEqual({
       clean: "",
@@ -956,7 +993,7 @@ describe("doorstopPaths (plan-add-git-actions Phase C step 11)", () => {
   });
 });
 
-describe("DoorstopWorkspaceController (git stage/commit dispatch, plan-add-git-actions Phase C step 12)", () => {
+describe("DoorstopWorkspaceController (git stage/unstage/commit dispatch, plan-add-git-actions Phase C step 12)", () => {
   /** A controller with a counting load job whose backend answers the given
    *  operation (mirrors the baseline describe's `baselineController`). */
   function gitRunController(backend: Mock, loadCount: { calls: number }) {
@@ -977,6 +1014,13 @@ describe("DoorstopWorkspaceController (git stage/commit dispatch, plan-add-git-a
   function stageBackend(response: DoorstopGitStageResponse): Mock {
     return vi.fn((operation: string) => {
       if (operation === "doorstop.git-stage") return Promise.resolve(response);
+      return Promise.reject(new Error(`unexpected operation ${operation}`));
+    });
+  }
+
+  function unstageBackend(response: DoorstopGitUnstageResponse): Mock {
+    return vi.fn((operation: string) => {
+      if (operation === "doorstop.git-unstage") return Promise.resolve(response);
       return Promise.reject(new Error(`unexpected operation ${operation}`));
     });
   }
@@ -1013,6 +1057,122 @@ describe("DoorstopWorkspaceController (git stage/commit dispatch, plan-add-git-a
 
     expect(controller.lastRun?.op).toBe("git-stage");
     expect(controller.lastRun?.title).toBe("Git: stage REQ0002");
+  });
+
+  it("runGitUnstage sends the paths and commits the mapped run view (unstaged outcome, ok status, per-item title)", async () => {
+    const loadCount = { calls: 0 };
+    const { controller, backend } = gitRunController(
+      unstageBackend({ status: "unstaged", unstaged: 2 }),
+      loadCount,
+    );
+    await settle();
+    const loadsBefore = loadCount.calls;
+
+    await controller.runGitUnstage(["reqs/REQ0001.yml", "reqs/REQ0002.yml"], "Git: unstage REQ0001");
+
+    expect(backend).toHaveBeenCalledWith("doorstop.git-unstage", {
+      paths: ["reqs/REQ0001.yml", "reqs/REQ0002.yml"],
+    });
+    const run = controller.lastRun;
+    expect(run?.op).toBe("git-unstage");
+    expect(run?.title).toBe("Git: unstage REQ0001");
+    expect(run?.status).toBe("ok");
+    expect(run?.exitCode).toBeNull();
+    expect(run?.commit).toEqual({ status: "unstaged", unstaged: 2 });
+    // Success invalidates: the load reran and the strip cache cleared.
+    expect(loadCount.calls).toBe(loadsBefore + 1);
+    expect(controller.gitStatusView).toBeUndefined();
+    expect(controller.runInProgress).toBeUndefined();
+  });
+
+  it("runGitUnstage defaults its title to `Git: unstage all` (the non-per-item form)", async () => {
+    const loadCount = { calls: 0 };
+    const { controller } = gitRunController(unstageBackend({ status: "unstaged", unstaged: 1 }), loadCount);
+    await settle();
+
+    await controller.runGitUnstage(["reqs/REQ0001.yml"]);
+
+    expect(controller.lastRun?.op).toBe("git-unstage");
+    expect(controller.lastRun?.title).toBe("Git: unstage all");
+  });
+
+  it("maps a clean unstage outcome to an ok run (nothing to unstage) and still invalidates", async () => {
+    const loadCount = { calls: 0 };
+    const { controller } = gitRunController(unstageBackend({ status: "clean" }), loadCount);
+    await settle();
+    const loadsBefore = loadCount.calls;
+
+    await controller.runGitUnstage(["reqs/REQ0001.yml"]);
+
+    const run = controller.lastRun;
+    expect(run?.op).toBe("git-unstage");
+    // The operation RESOLVED — `clean` is narration (nothing to unstage),
+    // not failure: the badge stays ok and the outcome rides in `commit`.
+    expect(run?.status).toBe("ok");
+    expect(run?.commit).toEqual({ status: "clean" });
+    expect(loadCount.calls).toBe(loadsBefore + 1);
+    expect(controller.gitStatusView).toBeUndefined();
+    expect(controller.runInProgress).toBeUndefined();
+  });
+
+  it("maps a skipped unstage outcome to an ok run (not a repo / deadline)", async () => {
+    const loadCount = { calls: 0 };
+    const { controller } = gitRunController(unstageBackend({ status: "skipped" }), loadCount);
+    await settle();
+    const loadsBefore = loadCount.calls;
+
+    await controller.runGitUnstage(["reqs/REQ0001.yml"]);
+
+    expect(controller.lastRun?.op).toBe("git-unstage");
+    expect(controller.lastRun?.status).toBe("ok");
+    expect(controller.lastRun?.commit).toEqual({ status: "skipped" });
+    // `skipped` still RESOLVED, so the run is ok and the success path's
+    // invalidate contract holds symmetrically with the unstaged/clean
+    // cases above: the load reran and the strip cache cleared.
+    expect(loadCount.calls).toBe(loadsBefore + 1);
+    expect(controller.gitStatusView).toBeUndefined();
+    expect(controller.runInProgress).toBeUndefined();
+  });
+
+  it("maps a failed unstage outcome to a failed run, the excerpt riding in the commit narration", async () => {
+    const loadCount = { calls: 0 };
+    const { controller } = gitRunController(
+      unstageBackend({ status: "failed", stderr: "fatal: bad revision" }),
+      loadCount,
+    );
+    await settle();
+
+    await controller.runGitUnstage(["reqs/REQ0001.yml"], "Git: unstage REQ0001");
+
+    const run = controller.lastRun;
+    expect(run?.op).toBe("git-unstage");
+    expect(run?.status).toBe("failed");
+    // The excerpt rides in the `commit` narration; the run's own stderr stays
+    // empty (the review→commit idiom).
+    expect(run?.stderr).toBe("");
+    expect(run?.commit).toEqual({ status: "failed", stderr: "fatal: bad revision" });
+    expect(controller.runInProgress).toBeUndefined();
+  });
+
+  it("a rejected unstage request commits an error run, does NOT invalidate, and clears runInProgress", async () => {
+    const loadCount = { calls: 0 };
+    const backend = vi.fn((operation: string) => {
+      if (operation === "doorstop.git-unstage") throw new Error("bridge hiccup");
+      return Promise.reject(new Error(`unexpected operation ${operation}`));
+    });
+    const { controller } = gitRunController(backend, loadCount);
+    await settle();
+    const loadsBefore = loadCount.calls;
+
+    await controller.runGitUnstage(["reqs/REQ0001.yml"]);
+
+    const run = controller.lastRun;
+    expect(run?.status).toBe("error");
+    if (run?.status === "error") expect(run.errorMessage).toContain("bridge hiccup");
+    expect(run?.op).toBe("git-unstage");
+    expect(run?.commit).toBeUndefined();
+    expect(loadCount.calls).toBe(loadsBefore);
+    expect(controller.runInProgress).toBeUndefined();
   });
 
   it("runGitCommit sends only the message and maps committed/sha onto the view", async () => {

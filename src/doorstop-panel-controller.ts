@@ -37,15 +37,18 @@ import {
   DOORSTOP_GIT_COMMIT_OPERATION,
   DOORSTOP_GIT_STAGE_OPERATION,
   DOORSTOP_GIT_STATUS_OPERATION,
+  DOORSTOP_GIT_UNSTAGE_OPERATION,
   parseDoorstopBaselineResponse,
   parseDoorstopGitCommitResponse,
   parseDoorstopGitStageResponse,
   parseDoorstopGitStatusResponse,
+  parseDoorstopGitUnstageResponse,
   type DoorstopBaselineCandidate,
   type DoorstopBaselineResponse,
   type DoorstopCommitOutcome,
   type DoorstopGitStageResponse,
   type DoorstopGitStatusResponse,
+  type DoorstopGitUnstageResponse,
   type DoorstopRunRequest,
 } from "./doorstop-backend-contract.js";
 import { parseDoorstopItem } from "./doorstop-model.js";
@@ -54,21 +57,27 @@ import { diffItemFields, type ItemFieldDiff } from "./doorstop-diff.js";
 import type { DoorstopWorkspaceResult } from "./doorstop-panel.js";
 
 /**
- * The op discriminators of the two project-scoped git runs (plan Phase C
- * step 12) — the git operations are their OWN backend operations
- * (`doorstop.git-stage` / `doorstop.git-commit`), NOT `doorstop.run` ops, so
+ * The op discriminators of the project-scoped git runs (plan Phase C step 12,
+ * extended by plan-add-git-actions Phase 4 with the unstage inverse) — the git
+ * operations are their OWN backend operations (`doorstop.git-stage` /
+ * `doorstop.git-unstage` / `doorstop.git-commit`), NOT `doorstop.run` ops, so
  * the {@link DoorstopLastRunView.op} union widens without touching
  * `DoorstopRunRequest`.
  */
-export type DoorstopGitRunOp = "git-stage" | "git-commit";
+export type DoorstopGitRunOp = "git-stage" | "git-commit" | "git-unstage";
 
 /** The git outcome a git run narrates in its Last-run `commit` field: the
  *  stage response on `git-stage` runs (status `staged`/`clean`/`skipped`/
- *  `failed` + the optional `staged` count) and the review→commit outcome on
- *  `git-commit` runs (`committed`/`clean`/`skipped`/`failed` + `sha`/
- *  `stderr`) — the status bar's existing outcome rendering switches on the
- *  `status` value, so one union serves both. */
-export type DoorstopGitRunOutcome = DoorstopCommitOutcome | DoorstopGitStageResponse;
+ *  `failed` + the optional `staged` count), the unstage response on
+ *  `git-unstage` runs (`unstaged`/`clean`/`skipped`/`failed` + the optional
+ *  `unstaged` count), and the review→commit outcome on `git-commit` runs
+ *  (`committed`/`clean`/`skipped`/`failed` + `sha`/`stderr`) — the status
+ *  bar's existing outcome rendering switches on the `status` value, so one
+ *  union serves all three. */
+export type DoorstopGitRunOutcome =
+  | DoorstopCommitOutcome
+  | DoorstopGitStageResponse
+  | DoorstopGitUnstageResponse;
 
 /**
  * The panel's view of the workspace's git status readout (plan Phase C step
@@ -102,13 +111,15 @@ export type DoorstopGitStatusView =
  * SURVIVES `invalidate()`/`load()` and is cleared only by `dismissRun()` or
  * the next commit of a new run.
  *
- * The two project-scoped git runs (`doorstop.git-stage` / `doorstop.git-commit`,
- * plan-add-git-actions.md Phase C) commit this same record: the git outcome
- * (the stage/commit response) rides in the {@link DoorstopLastRunView.commit}
- * field, so the panel's status bar renders it with the SAME outcome
- * narration it already renders review-commit outcomes with — `status` is
+ * The project-scoped git runs (`doorstop.git-stage` / `doorstop.git-unstage` /
+ * `doorstop.git-commit`, plan-add-git-actions.md Phase C, extended by its
+ * Phase 4) commit this same record: the git outcome (the stage/unstage/commit
+ * response) rides in the {@link DoorstopLastRunView.commit} field, so the
+ * panel's status bar renders it with the SAME outcome narration it already
+ * renders review-commit outcomes with — `status` is
  * `"ok"` when the requested git operation resolved (its outcome —
- * staged/committed/clean/skipped — is the `commit` narration), `"failed"`
+ * staged/unstaged/committed/clean/skipped — is the `commit` narration),
+ * `"failed"`
  * when the git step itself failed, and `"error"` when the bridge request
  * rejected (nothing ran).
  */
@@ -140,11 +151,11 @@ export interface DoorstopLastRunView {
    *  present only when the request carried `commit: true` and the backend
    *  ran the review→commit pipeline (narration, never infrastructure: a
    *  failed / skipped commit leaves the run's `status` — the review itself —
-   *  unchanged). On git-stage/git-commit RUNS, the operation's own parsed
-   *  response rides here (`staged`/`clean`/`skipped`/`failed` + the `staged`
-   *  count or `committed` `sha`/`stderr` excerpt) — the status bar renders
-   *  it with the same outcome narration. */
-  commit?: DoorstopCommitOutcome | DoorstopGitStageResponse;
+   *  unchanged). On git-stage/git-unstage/git-commit RUNS, the operation's
+   *  own parsed response rides here (`staged`/`unstaged`/`clean`/`skipped`/
+   *  `failed` + the `staged`/`unstaged` count or `committed` `sha`/`stderr`
+   *  excerpt) — the status bar renders it with the same outcome narration. */
+  commit?: DoorstopGitRunOutcome;
 }
 
 /**
@@ -467,6 +478,27 @@ export class DoorstopWorkspaceController implements ReactiveController {
     );
   }
 
+  /** Run the Unstage action (plan-add-git-actions Phase 4): unstage one
+   *  item's own staged changes (the element's per-item minus affordance and
+   *  palette Unstage button), or — for the (currently unused) all form —
+   *  every given path, with `title = "Git: unstage <uid>"` on the per-item
+   *  path. Runs the `doorstop.git-unstage` backend operation through the
+   *  shared {@link DoorstopWorkspaceController.runGitOperation} dispatch; the
+   *  response mirrors {@link DoorstopGitStageResponse} as
+   *  `unstaged`/`clean`/`skipped`/`failed`. */
+  async runGitUnstage(paths: readonly string[], title = "Git: unstage all"): Promise<void> {
+    await this.runGitOperation(
+      "git-unstage",
+      title,
+      DOORSTOP_GIT_UNSTAGE_OPERATION,
+      // Fresh object literal — the request shape is validated server-side
+      // (`parseDoorstopGitUnstageRequest`: non-empty, grammar-checked,
+      // deduplicated paths).
+      { paths },
+      parseDoorstopGitUnstageResponse,
+    );
+  }
+
   /** Run the Git commit action (plan Phase C step 12): commit the staged
    *  index with `message` (NO pathspec, NO add — whatever the index holds).
    *  Runs the `doorstop.git-commit` backend operation through the shared
@@ -486,9 +518,10 @@ export class DoorstopWorkspaceController implements ReactiveController {
 
   /**
    * The shared git run dispatch (plan Phase C step 12) — the
-   * `runDoorstopBackend` idiom for the two project-scoped git operations:
+   * `runDoorstopBackend` idiom for the project-scoped git operations:
    * `beginRun(title)` → structured backend request → strict response parse →
-   * map onto a `DoorstopLastRunView` (`op`: `git-stage`/`git-commit`;
+   * map onto a `DoorstopLastRunView` (`op`: `git-stage`/`git-unstage`/
+   * `git-commit`;
    * `status`: `"ok"` when the operation resolved — even when its OUTCOME
    * was skipped/clean, which the `commit` narration carries — `"failed"`
    * when the git step itself failed, `"error"` when the bridge rejected. A
@@ -496,14 +529,14 @@ export class DoorstopWorkspaceController implements ReactiveController {
    * exec rejects the bridge request, which maps to `"error"` below — the
    * abort-rethrow taxonomy (the `killed` mapping belongs to the doorstop CLI
    * runs, which observe a signal themselves). Do not "fix" this mapping) →
-   * `commitRun` → `invalidate()` on success (a successful stage/commit
-   * changed the workspace — and, since `invalidate()` is the strip's single
-   * cache-clearing point, the git-status view is dropped for the element to
-   * refetch) → `endRun()` in `finally`. A rejected request commits
-   * `status: "error"` with the server error text and does NOT invalidate
-   * (nothing ran — the `runDoorstopBackend` contract verbatim). The
-   * element's existing `runInProgress` disable covers the new buttons for
-   * free.
+   * `commitRun` → `invalidate()` on success (a successful stage/unstage/
+   * commit changed the workspace — and, since `invalidate()` is the
+   * strip's single cache-clearing point, the git-status view is dropped for
+   * the element to refetch) → `endRun()` in `finally`. A rejected request
+   * commits `status: "error"` with the server error text and does NOT
+   * invalidate (nothing ran — the `runDoorstopBackend` contract verbatim).
+   * The element's existing `runInProgress` disable covers the new buttons
+   * for free.
    */
   private async runGitOperation(
     op: DoorstopGitRunOp,
@@ -529,10 +562,10 @@ export class DoorstopWorkspaceController implements ReactiveController {
         op,
         title,
         // The git operation itself is the run: a `failed` outcome (git
-        // step error — add/commit failure, failing pre-commit hook, missing
-        // identity) fails the badge; an `ok` outcome carries its result as
-        // the `commit` narration (`staged <n> paths` / `committed <sha>` /
-        // `clean` / `skipped`).
+        // step error — add/reset/commit failure, failing pre-commit hook,
+        // missing identity) fails the badge; an `ok` outcome carries its
+        // result as the `commit` narration (`staged <n> paths` /
+        // `unstaged <n> paths` / `committed <sha>` / `clean` / `skipped`).
         status: parsed.status === "failed" ? "failed" : "ok",
         exitCode: null,
         signal: null,

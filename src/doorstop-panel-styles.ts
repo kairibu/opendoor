@@ -386,10 +386,13 @@ export const panelStyles = css`
           justify-content: flex-end;
         }
 
-        /* The per-row "git add" affordance. It is a pointer-only <span>
-           (aria-hidden, no role) because the row IS a <button> and a nested
-           <button> would be hoisted out by the HTML parser; the keyboard path
-           is the region-4 Stage button. */
+        /* The per-row "git add"/"git reset" affordance. It is a pointer-only
+           <span> (aria-hidden, no role) because the row IS a <button> and a
+           nested <button> would be hoisted out by the HTML parser; the
+           keyboard path is the region-4 Stage/Unstage buttons. The same class
+           hosts both directions: the plus (git add) icon and the unstage
+           minus (git reset) icon, chosen by {@link itemUnstageable} /
+           {@link itemStageable} precedence. */
         .doorstop-item-add {
           display: inline-flex;
           align-items: center;

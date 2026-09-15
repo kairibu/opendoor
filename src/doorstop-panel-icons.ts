@@ -11,5 +11,9 @@ export const publishIconSvg = svg`<svg width="14" height="14" viewBox="0 0 24 24
 
 export const gitStageIconSvg = svg`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/></svg>`;
 
+/** The unstage/minus icon: the stage circle WITHOUT the vertical bar, so the
+ *  plus reads as "add to the index" and this as "remove from the index". */
+export const gitUnstageIconSvg = svg`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/></svg>`;
+
 export const gitCommitIconSvg = svg`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>`;
 

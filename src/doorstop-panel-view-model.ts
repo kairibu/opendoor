@@ -12,6 +12,7 @@ import {
   type DoorstopGitStageResponse,
   type DoorstopGitStatusFile,
   type DoorstopGitStatusResponse,
+  type DoorstopGitUnstageResponse,
 } from "./doorstop-backend-contract.js";
 import { computeItemStamp } from "./doorstop-state.js";
 import type { DoorstopLastRunView } from "./doorstop-panel-controller.js";
@@ -177,23 +178,30 @@ export function doorstopCommitAfterReview(result: DoorstopWorkspaceResult | unde
   return result?.settings?.commitAfterReview ?? DEFAULT_OPENDOOR_SETTINGS.commitAfterReview;
 }
 
-/** `op` picks the narrative voice: the two outcome types SHARE the
+/** `op` picks the narrative voice: the outcome types SHARE the
  *  `clean`/`skipped`/`failed` statuses and are indistinguishable on them —
- *  a stage's `clean` means "nothing to stage", a commit's "nothing staged"
- *  — so the status alone cannot narrate correctly. The outcome is
- *  informational: for a REVIEW run it never flips the run's ok/failed
- *  badge, and on the git runs the run's own `status` already reflects a
- *  `failed` outcome. */
-export function commitOutcomeText(op: DoorstopLastRunView["op"], outcome: DoorstopCommitOutcome | DoorstopGitStageResponse): string {
-  const gitRun = op === "git-stage" || op === "git-commit";
+ *  a stage's `clean` means "nothing to stage", an unstage's "nothing to
+ *  unstage", a commit's "nothing staged" — so the status alone cannot
+ *  narrate correctly. The outcome is informational: for a REVIEW run it
+ *  never flips the run's ok/failed badge, and on the git runs the run's own
+ *  `status` already reflects a `failed` outcome. */
+export function commitOutcomeText(
+  op: DoorstopLastRunView["op"],
+  outcome: DoorstopCommitOutcome | DoorstopGitStageResponse | DoorstopGitUnstageResponse,
+): string {
+  const gitRun = op === "git-stage" || op === "git-commit" || op === "git-unstage";
   switch (outcome.status) {
     case "staged":
       return `staged ${String(outcome.staged ?? 0)} paths`;
+    case "unstaged":
+      return `unstaged ${String(outcome.unstaged ?? 0)} paths`;
     case "committed":
       return gitRun ? `committed ${outcome.sha ?? "<unknown sha>"}` : `commit: ${outcome.sha ?? "<unknown sha>"}`;
     case "clean":
       if (!gitRun) return "commit: clean (already committed)";
-      return op === "git-stage" ? "clean — nothing to stage" : "clean — nothing staged";
+      if (op === "git-stage") return "clean — nothing to stage";
+      if (op === "git-unstage") return "clean — nothing to unstage";
+      return "clean — nothing staged";
     case "skipped":
       return gitRun ? "skipped" : "commit: skipped (not a git repository | review failed | deadline)";
     case "failed":
@@ -323,6 +331,28 @@ export function gitChipKind(state: ItemGitState): "ok" | "warning" | "danger" | 
 export function itemStageable(file: DoorstopGitStatusFile | undefined): boolean {
   if (file === undefined) return false;
   return file.workingTree !== "unmodified" && file.workingTree !== "ignored";
+}
+
+/** True when `git reset -- <path>` would restore the path's index entry: the
+ *  X column (index/staged) is dirty. This is the exact MIRROR of
+ *  {@link itemStageable}, but on the X column instead of Y. `unmodified`
+ *  (nothing staged), `untracked` (`??` is never in the index), and `ignored`
+ *  are excluded; every unmerged shape is excluded too, in agreement with the
+ *  server's `unstageResetTargets`: an X of `conflicted` (the `U*` shapes —
+ *  `UU`/`UD`/`UA`), a Y of `conflicted` (the `*U` shapes — `UU`/`DU`/`AU`),
+ *  and the both-sides-added/deleted pairs (`AA`/`DD`, where X and Y are both
+ *  `added` or both `deleted`). `git reset` on any of those would silently
+ *  resolve the conflict (or otherwise act on an unmerged pair) in the index,
+ *  which the user must not trigger from a one-click Unstage — the server
+ *  excludes them too, as defense-in-depth. An absent entry (omitted from
+ *  porcelain) is not unstageable either. */
+export function itemUnstageable(file: DoorstopGitStatusFile | undefined): boolean {
+  if (file === undefined) return false;
+  const { index, workingTree } = file;
+  if (index === "unmodified" || index === "untracked" || index === "ignored") return false;
+  if (index === "conflicted" || workingTree === "conflicted") return false;
+  if ((index === "added" || index === "deleted") && index === workingTree) return false;
+  return true;
 }
 
 /** Shell-inert alphabet for a publish target (the UID guard's `\w` alphabet

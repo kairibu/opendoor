@@ -1,10 +1,11 @@
 // ---------------------------------------------------------------------------
-// Opendoor paired-server contract: the FIVE backend operation names
-// (`doorstop.run`, `doorstop.item-baseline`, and the three project-scoped
+// Opendoor paired-server contract: the SIX backend operation names
+// (`doorstop.run`, `doorstop.item-baseline`, and the four project-scoped
 // git operations `doorstop.git-status` / `doorstop.git-stage` /
-// `doorstop.git-commit`), their request/response shapes, and runtime parse
-// validators shared by the browser bundle (panel dispatcher) and the server
-// bundle (`doorstop-backend.ts` request handler), plus the UID/publish-
+// `doorstop.git-unstage` / `doorstop.git-commit`), their request/response
+// shapes, and runtime parse validators shared by the browser bundle (panel
+// dispatcher) and the server bundle (`doorstop-backend.ts` request handler),
+// plus the UID/publish-
 // target/item-path/commit-message grammars both sides validate with.
 //
 // This follows the git-plugin contract idiom exactly
@@ -609,14 +610,15 @@ export function parseDoorstopBaselineResponse(value: unknown): DoorstopBaselineR
 
 // ---------------------------------------------------------------------------
 // Git operations — `doorstop.git-status`, `doorstop.git-stage`,
-// `doorstop.git-commit` (plan-add-git-actions.md Phase A steps 1–5): the
-// project-scoped git trio behind the Requirements panel's project-actions
-// group. Status is READ-ONLY and best-effort — a `git` flag, not an error
-// channel (the baseline idiom); stage and commit are mutating runs whose
-// outcomes reuse the review→commit `DoorstopCommitOutcome` grammar
-// (`status`/`sha`/`stderr`). The stage request is a path ARRAY — the same
-// operation backs the future per-item staging palette with `{ paths:
-// [item.path] }`, no new operation, no contract change.
+// `doorstop.git-unstage`, `doorstop.git-commit` (plan-add-git-actions.md
+// Phase A steps 1–5; unstage is the per-item follow-up): the project-scoped
+// git quartet behind the Requirements panel's project-actions group. Status
+// is READ-ONLY and best-effort — a `git` flag, not an error channel (the
+// baseline idiom); stage and commit are mutating runs whose outcomes reuse
+// the review→commit `DoorstopCommitOutcome` grammar (`status`/`sha`/
+// `stderr`). The stage request is a path ARRAY — the same operation backs
+// the future per-item staging palette with `{ paths: [item.path] }`, no new
+// operation, no contract change.
 // ---------------------------------------------------------------------------
 
 /** The third backend operation — the read-only git status readout:
@@ -931,6 +933,118 @@ export function parseDoorstopGitStageResponse(value: unknown): DoorstopGitStageR
   return {
     status,
     ...(staged === undefined ? {} : { staged }),
+    ...(stderr === undefined ? {} : { stderr }),
+  };
+}
+
+/** The sixth backend operation — the per-path unstage action, the inverse of
+ *  `doorstop.git-stage`: `backend.request(DOORSTOP_GIT_UNSTAGE_OPERATION, {
+ *  paths })`. The server checks the repo, lists the given (literalized)
+ *  pathspecs, and `git reset -q`s whatever among them has a staged INDEX (X)
+ *  change — restoring the index entry from HEAD while leaving the worktree
+ *  untouched (`M ` → ` M`, `A ` → `??`, `D ` → ` D`, `R ` → both sides
+ *  reset). `git reset` (mixed), not `git restore --staged`: the repo only
+ *  assumes git ≥ 2.x `add` semantics, and `reset -- <path>` handles the
+ *  staged-deletion and unborn-branch shapes that `git add`/`restore` would
+ *  fatal on. The path ARRAY makes the operation generic: per-item unstaging
+ *  is the same operation with `{ paths: [item.path] }` — no new operation,
+ *  no contract change. */
+export const DOORSTOP_GIT_UNSTAGE_OPERATION = "doorstop.git-unstage";
+
+/** One unstage request: the Doorstop-managed workspace-relative paths to
+ *  unstage — identical shape and semantics to {@link DoorstopGitStageRequest}.
+ *  NEVER empty (an empty unstage request is a contradiction the browser never
+ *  emits); each path is validated by {@link isValidDoorstopItemPath} and
+ *  deduplicated by the parser. */
+export interface DoorstopGitUnstageRequest {
+  paths: readonly string[];
+}
+
+/** The backend's structured result for one `doorstop.git-unstage` request —
+ *  the inverse narration of {@link DoorstopGitStageResponse}. The outcome
+ *  RESOLVES on every outcome and never surfaces as an infrastructure error. */
+export interface DoorstopGitUnstageResponse {
+  /** unstaged → paths were unstaged (`unstaged` count set); clean → nothing
+   *  to unstage (every selected path already matches HEAD); skipped → not a
+   *  git repository / deadline budget exhausted; failed → a git step errored
+   *  (`stderr` excerpt). */
+  status: "unstaged" | "clean" | "skipped" | "failed";
+  /** Number of selected paths the `reset` covered ("unstaged" only). */
+  unstaged?: number;
+  /** Bounded stderr excerpt (≤ ~2 KiB; "failed" only). */
+  stderr?: string;
+}
+
+/** The recognized unstage statuses (strict-enum style — the stage status set
+ *  with `unstaged` in `staged`'s slot). */
+const DOORSTOP_GIT_UNSTAGE_STATUSES = new Set<DoorstopGitUnstageResponse["status"]>([
+  "unstaged",
+  "clean",
+  "skipped",
+  "failed",
+]);
+
+/** Validate that `value` is one of the known unstage statuses. */
+function parseDoorstopGitUnstageStatus(value: string): DoorstopGitUnstageResponse["status"] {
+  if (!DOORSTOP_GIT_UNSTAGE_STATUSES.has(value as DoorstopGitUnstageResponse["status"])) {
+    throw new Error(`Invalid doorstop git unstage status: ${JSON.stringify(value)}`);
+  }
+  return value as DoorstopGitUnstageResponse["status"];
+}
+
+/**
+ * Parse and validate a `doorstop.git-unstage` request. Throws on junk:
+ * non-object input, a missing or non-array `paths` field, an EMPTY `paths`
+ * array (strict parity with the element guard — an empty unstage request is
+ * a contradiction the browser never emits), or any path outside the
+ * workspace-relative item-path grammar ({@link isValidDoorstopItemPath}).
+ * Duplicate paths are deduplicated (first occurrence order preserved). Extra
+ * keys are tolerated.
+ */
+export function parseDoorstopGitUnstageRequest(value: unknown): DoorstopGitUnstageRequest {
+  const record = requireRecord(value, "Doorstop git unstage request");
+  const paths = requireStringArray(record, "paths");
+  if (paths.length === 0) {
+    throw new Error("Invalid doorstop.git-unstage request: at least one path is required");
+  }
+  const seen = new Set<string>();
+  const uniquePaths: string[] = [];
+  for (const path of paths) {
+    if (!isValidDoorstopItemPath(path)) {
+      throw new Error(`Invalid doorstop item path in field: paths`);
+    }
+    if (!seen.has(path)) {
+      seen.add(path);
+      uniquePaths.push(path);
+    }
+  }
+  return { paths: uniquePaths };
+}
+
+/**
+ * Parse and validate a `doorstop.git-unstage` response — strict, with the
+ * same field/status coupling {@link parseDoorstopGitStageResponse} enforces:
+ * an `unstaged` count on any status but `"unstaged"`, or a `stderr` excerpt
+ * on any status but `"failed"`, is a malformed response and throws (nothing
+ * is coerced or defaulted; extra keys tolerated).
+ */
+export function parseDoorstopGitUnstageResponse(value: unknown): DoorstopGitUnstageResponse {
+  const record = requireRecord(value, "Doorstop git unstage response");
+  const status = parseDoorstopGitUnstageStatus(requireString(record, "status"));
+  const unstaged = optionalNumber(record, "unstaged");
+  const stderr = optionalString(record, "stderr");
+  // The JSDoc on {@link DoorstopGitUnstageResponse} couples the fields to
+  // their statuses: `unstaged` is "unstaged" only, `stderr` is "failed"
+  // only — the sibling stage parser's exact idiom.
+  if (status !== "unstaged" && unstaged !== undefined) {
+    throw new Error(`Only an "unstaged" outcome may carry "unstaged" (status: ${JSON.stringify(status)})`);
+  }
+  if (status !== "failed" && stderr !== undefined) {
+    throw new Error(`Only a "failed" outcome may carry "stderr" (status: ${JSON.stringify(status)})`);
+  }
+  return {
+    status,
+    ...(unstaged === undefined ? {} : { unstaged }),
     ...(stderr === undefined ? {} : { stderr }),
   };
 }
