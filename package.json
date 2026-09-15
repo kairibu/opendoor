@@ -1,9 +1,20 @@
 {
   "name": "opendoor-plugin",
   "version": "0.1.0",
-  "private": true,
   "description": "Opendoor — a pi-web browser plugin that surfaces Doorstop requirements stored in the workspace: the document tree, per-item state (reviewed/unreviewed changes, suspect links), validation findings, and one-click doorstop CLI actions.",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kairibu/opendoor.git"
+  },
+  "keywords": [
+    "pi",
+    "pi-web",
+    "plugin",
+    "doorstop",
+    "requirements"
+  ],
   "piWeb": {
     "plugins": [
       {
@@ -24,10 +35,6 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {
-    "js-yaml": "^4.3.2",
-    "lit": "^3.3.3"
-  },
   "peerDependencies": {
     "@jmfederico/pi-web": ">=1.202608.1"
   },
@@ -36,6 +43,8 @@
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^24.0.0",
     "esbuild": "^0.27.7",
+    "js-yaml": "^4.3.2",
+    "lit": "^3.3.3",
     "happy-dom": "^20.11.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10"
