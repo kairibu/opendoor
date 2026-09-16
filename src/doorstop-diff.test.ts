@@ -6,44 +6,19 @@
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "vitest";
-import type { DoorstopDocumentConfig, ItemRecord } from "./doorstop-contract.js";
+import type { ItemRecord } from "./doorstop-contract.js";
 import { computeItemStamp } from "./doorstop-state.js";
 import { diffItemFields, diffLines, type DiffLine } from "./doorstop-diff.js";
+import { makeDocument, makeItem } from "./test-fixtures.js";
 
 // --- fixtures -----------------------------------------------------------------
 
-function makeDocument(overrides: Partial<DoorstopDocumentConfig> = {}): DoorstopDocumentConfig {
-  return {
-    directoryPath: overrides.directoryPath ?? "reqs",
-    configPath: overrides.configPath ?? "reqs/.doorstop.yml",
-    prefix: overrides.prefix ?? "REQ",
-    digits: overrides.digits ?? 4,
-    separator: overrides.separator ?? "",
-    itemformat: overrides.itemformat ?? "yaml",
-    extra: overrides.extra ?? {},
-    ...(overrides.parentPrefix === undefined ? {} : { parentPrefix: overrides.parentPrefix }),
-  };
-}
-
-function makeItem(overrides: Partial<ItemRecord> = {}): ItemRecord {
-  return {
-    uid: overrides.uid ?? "REQ0001",
-    documentPrefix: overrides.documentPrefix ?? "REQ",
-    path: overrides.path ?? "reqs/REQ0001.yml",
-    level: overrides.level ?? "1.0",
-    active: overrides.active ?? true,
-    derived: overrides.derived ?? false,
-    normative: overrides.normative ?? true,
-    text: overrides.text ?? "",
-    ref: overrides.ref ?? "",
-    links: overrides.links ?? [],
-    reviewed: overrides.reviewed ?? null,
-    attributes: overrides.attributes ?? {},
-    raw: overrides.raw ?? {},
-    stateKeys: overrides.stateKeys ?? [],
-    ...(overrides.header === undefined ? {} : { header: overrides.header }),
-    ...(overrides.references === undefined ? {} : { references: overrides.references }),
-  };
+/** Pre-P2 this suite's local `makeItem` defaulted `path` to
+ *  `"reqs/REQ0001.yml"`, while the shared factory defaults it to `<uid>.yml`.
+ *  The diff tests never assert on `path`, but pinning the old default here
+ *  keeps the migration value-neutral (see plan §7). */
+function diffItem(overrides: Partial<ItemRecord> = {}): ItemRecord {
+  return makeItem({ path: "reqs/REQ0001.yml", ...overrides });
 }
 
 /** Compare a diff to an array of [kind, text] pairs (terse). */
@@ -130,15 +105,15 @@ describe("diffLines (LCS line diff)", () => {
 
 describe("diffItemFields (semantic field compare)", () => {
   it("flags added and removed link UIDs (raw-UID set diff, sorted)", () => {
-    const before = makeItem({ links: [{ uid: "REQ0001", fingerprint: null }, { uid: "REQ0002", fingerprint: null }] });
-    const after = makeItem({ links: [{ uid: "REQ0001", fingerprint: null }, { uid: "REQ0003", fingerprint: null }] });
+    const before = diffItem({ links: [{ uid: "REQ0001", fingerprint: null }, { uid: "REQ0002", fingerprint: null }] });
+    const after = diffItem({ links: [{ uid: "REQ0001", fingerprint: null }, { uid: "REQ0003", fingerprint: null }] });
     const diff = diffItemFields(before, after, makeDocument());
     expect(diff.linksAdded).toEqual(["REQ0003"]);
     expect(diff.linksRemoved).toEqual(["REQ0002"]);
     // A reorder only (same UID set) reads as unchanged.
     const reordered = diffItemFields(
-      makeItem({ links: [{ uid: "REQ0002", fingerprint: null }, { uid: "REQ0001", fingerprint: null }] }),
-      makeItem({ links: [{ uid: "REQ0001", fingerprint: null }, { uid: "REQ0002", fingerprint: null }] }),
+      diffItem({ links: [{ uid: "REQ0002", fingerprint: null }, { uid: "REQ0001", fingerprint: null }] }),
+      diffItem({ links: [{ uid: "REQ0001", fingerprint: null }, { uid: "REQ0002", fingerprint: null }] }),
       makeDocument(),
     );
     expect(reordered.linksAdded).toEqual([]);
@@ -147,35 +122,35 @@ describe("diffItemFields (semantic field compare)", () => {
 
   it("reports a ref change as before → after", () => {
     const diff = diffItemFields(
-      makeItem({ ref: "docs/old.md" }),
-      makeItem({ ref: "docs/new.md" }),
+      diffItem({ ref: "docs/old.md" }),
+      diffItem({ ref: "docs/new.md" }),
       makeDocument(),
     );
     expect(diff.ref).toEqual({ before: "docs/old.md", after: "docs/new.md" });
     // Unchanged refs are omitted.
-    const same = diffItemFields(makeItem({ ref: "docs/a.md" }), makeItem({ ref: "docs/a.md" }), makeDocument());
+    const same = diffItemFields(diffItem({ ref: "docs/a.md" }), diffItem({ ref: "docs/a.md" }), makeDocument());
     expect(same.ref).toBeUndefined();
   });
 
   it("reports a references-list change (and only when the list serializes differently)", () => {
-    const before = makeItem({ references: [{ type: "file", path: "docs/a.md" }] });
-    const after = makeItem({ references: [{ type: "file", path: "docs/a.md" }, { type: "file", path: "docs/b.md" }] });
+    const before = diffItem({ references: [{ type: "file", path: "docs/a.md" }] });
+    const after = diffItem({ references: [{ type: "file", path: "docs/a.md" }, { type: "file", path: "docs/b.md" }] });
     const diff = diffItemFields(before, after, makeDocument());
     expect(diff.references).toEqual({
       before: [{ type: "file", path: "docs/a.md" }],
       after: [{ type: "file", path: "docs/a.md" }, { type: "file", path: "docs/b.md" }],
     });
-    const same = diffItemFields(before, makeItem({ references: [{ type: "file", path: "docs/a.md" }] }), makeDocument());
+    const same = diffItemFields(before, diffItem({ references: [{ type: "file", path: "docs/a.md" }] }), makeDocument());
     expect(same.references).toBeUndefined();
     // Absent → absent (both undefined) is unchanged.
-    const neither = diffItemFields(makeItem(), makeItem(), makeDocument());
+    const neither = diffItemFields(diffItem(), diffItem(), makeDocument());
     expect(neither.references).toBeUndefined();
   });
 
   it("reports changed extended REVIEWED attribute values only, in config order", () => {
     const config = makeDocument({ extra: { attributes: { reviewed: ["priority", "owner"] } } });
-    const before = makeItem({ attributes: { owner: "team-a", priority: 1, note: "ignored" } });
-    const after = makeItem({ attributes: { owner: "team-b", priority: 1, note: "also ignored" } });
+    const before = diffItem({ attributes: { owner: "team-a", priority: 1, note: "ignored" } });
+    const after = diffItem({ attributes: { owner: "team-b", priority: 1, note: "also ignored" } });
     const diff = diffItemFields(before, after, config);
     // `priority` is unchanged (same value), `owner` changed; `note` is not a
     // configured reviewed attribute, so its change is invisible to the stamp.
@@ -184,16 +159,16 @@ describe("diffItemFields (semantic field compare)", () => {
 
   it("reports a configured reviewed attribute added or removed (undefined on one side)", () => {
     const config = makeDocument({ extra: { attributes: { reviewed: ["owner"] } } });
-    const added = diffItemFields(makeItem({ attributes: {} }), makeItem({ attributes: { owner: "team-a" } }), config);
+    const added = diffItemFields(diffItem({ attributes: {} }), diffItem({ attributes: { owner: "team-a" } }), config);
     expect(added.extended).toEqual([{ name: "owner", before: undefined, after: "team-a" }]);
-    const removed = diffItemFields(makeItem({ attributes: { owner: "team-a" } }), makeItem({ attributes: {} }), config);
+    const removed = diffItemFields(diffItem({ attributes: { owner: "team-a" } }), diffItem({ attributes: {} }), config);
     expect(removed.extended).toEqual([{ name: "owner", before: "team-a", after: undefined }]);
   });
 
   it("skips the line diff but keeps every field diff when the text exceeds the cell budget", () => {
     const huge = Array.from({ length: 501 }, () => "line").join("\n");
-    const before = makeItem({ text: huge });
-    const after = makeItem({ text: huge, attributes: { owner: "team-b" } });
+    const before = diffItem({ text: huge });
+    const after = diffItem({ text: huge, attributes: { owner: "team-b" } });
     const config = makeDocument({ extra: { attributes: { reviewed: ["owner"] } } });
     const diff = diffItemFields(before, after, config);
     // The text rows are skipped, but the fingerprint-visible field change
@@ -204,13 +179,13 @@ describe("diffItemFields (semantic field compare)", () => {
 
   it("text diff and the stamp field set are consistent: any stamp mismatch has at least one visible field change", () => {
     const config = makeDocument({ extra: { attributes: { reviewed: ["owner"] } } });
-    const before = makeItem({
+    const before = diffItem({
       text: "The system shall do X.",
       ref: "docs/a.md",
       links: [{ uid: "REQ0001", fingerprint: null }],
       attributes: { owner: "team-a" },
     });
-    const after = makeItem({
+    const after = diffItem({
       text: "The system shall do Y.",
       ref: "docs/b.md",
       links: [{ uid: "REQ0001", fingerprint: null }, { uid: "REQ0002", fingerprint: null }],

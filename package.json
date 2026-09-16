@@ -33,6 +33,7 @@
     "build": "node scripts/build-plugin.mjs",
     "dev": "node scripts/build-plugin.mjs --watch",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
@@ -42,10 +43,11 @@
     "@jmfederico/pi-web": "^1.202608.2",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^24.0.0",
+    "@vitest/coverage-v8": "^4.1.11",
     "esbuild": "^0.27.7",
+    "happy-dom": "^20.11.1",
     "js-yaml": "^4.3.2",
     "lit": "^3.3.3",
-    "happy-dom": "^20.11.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10"
   }

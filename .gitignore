@@ -3,3 +3,4 @@ dist/
 plans/
 notes/
 *.tsbuildinfo
+coverage/

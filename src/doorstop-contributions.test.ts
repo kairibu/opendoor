@@ -12,7 +12,7 @@
 // plain flows stay end-to-end and the failure/deferred/LRU cases get
 // deterministic control. Structural wiring for the host-facing entry itself
 // lives in pi-web-plugin.test.ts; the controller/element internals are
-// covered by doorstop-panel.test.ts / doorstop-panel-elements.test.ts.
+// covered by doorstop-panel.test.ts / doorstop-panel-element.test.ts.
 
 import { html, svg, type TemplateResult } from "lit";
 import {
@@ -31,7 +31,7 @@ import type {
   WorkspaceLabelItem,
   WorkspacePanelContext,
 } from "@jmfederico/pi-web/plugin-api";
-import type { DoorstopCounts, DoorstopDocumentConfig } from "./doorstop-contract.js";
+import type { DoorstopCounts } from "./doorstop-contract.js";
 import { buildDoorstopIndex } from "./doorstop-model.js";
 import type { DoorstopWorkspaceResult } from "./doorstop-panel.js";
 import { DEFAULT_OPENDOOR_SETTINGS } from "./doorstop-settings.js";
@@ -39,6 +39,7 @@ import { loadDoorstopWorkspace } from "./doorstop-panel.js";
 import type { DoorstopWorkspaceController } from "./doorstop-panel-controller.js";
 import { createOpendoorBrowserContributions } from "./doorstop-contributions.js";
 import { createFakeFiles, dirEntry, fileEntry, text, tree, type FakeWorkspaceFiles } from "./test-support.js";
+import { doorstopWorkspace, flushAll, makeDocument, makeWorkspace, panelContext } from "./test-fixtures.js";
 
 // The label cache's LRU bound (DOORSTOP_LABEL_STATE_LIMIT in
 // doorstop-contributions.ts, deliberately module-private); tests pin the
@@ -69,27 +70,7 @@ beforeEach(() => {
   loadMock.mockImplementation((files) => realLoad(files));
 });
 
-const doorstopWorkspace: Workspace = {
-  id: "workspace-1",
-  projectId: "project-1",
-  path: "/repo",
-  label: "main",
-  isMain: true,
-};
-
 // --- small real-shape fixtures -------------------------------------------------
-
-function makeDocument(): DoorstopDocumentConfig {
-  return {
-    directoryPath: "reqs",
-    configPath: "reqs/.doorstop.yml",
-    prefix: "REQ",
-    digits: 4,
-    separator: "",
-    itemformat: "yaml",
-    extra: {},
-  };
-}
 
 /** A real in-memory workspace with one REQ document and one item
  *  (REQ0001) — enough for the genuine discovery → load pipeline to land a
@@ -123,10 +104,6 @@ function emptyFiles(): FakeWorkspaceFiles {
 function makeResult(counts: Partial<DoorstopCounts> = {}): DoorstopWorkspaceResult {
   const index = buildDoorstopIndex([makeDocument()], [], [], new Set());
   return { index: { ...index, counts: { ...index.counts, ...counts } }, settings: DEFAULT_OPENDOOR_SETTINGS };
-}
-
-function makeWorkspace(id: string): Workspace {
-  return { ...doorstopWorkspace, id };
 }
 
 // --- helpers -----------------------------------------------------------------
@@ -164,37 +141,8 @@ function labelContext(
   return { context, requestRender };
 }
 
-/** One panel context (for the render-wiring test): the real controller
- *  surface a rendered panel hands the body element. */
-function panelContext(
-  fake: FakeWorkspaceFiles,
-  workspace: Workspace = doorstopWorkspace,
-): { context: WorkspacePanelContext; requestRender: Mock } {
-  const requestRender = vi.fn();
-  const context: WorkspacePanelContext = {
-    machine: { id: "local", name: "local", kind: "local" },
-    workspace,
-    state: {
-      selectedWorkspace: workspace,
-      workspaceTool: "opendoor:workspace.doorstop",
-      mainView: "opendoor:workspace.doorstop",
-    },
-    files: fake.files,
-    host: { requestRender },
-    prompt: { insertText: () => undefined, getText: () => "", getSelection: () => null },
-    terminal: { open: () => undefined, runCommand: () => Promise.reject(new Error("not implemented")) },
-  };
-  return { context, requestRender };
-}
-
-/** All promise-based work (the load pipeline is pure microtasks) drains
- *  before the next macrotask, so one timer flush deterministically lets any
- *  number of landed loads run. */
-async function flush(): Promise<void> {
-  await new Promise((resolve) => {
-    setTimeout(resolve, 0);
-  });
-}
+// `flushAll()` (from test-fixtures) waits one macrotask, which runs after all
+// microtasks, so it deterministically lets any number of landed loads run.
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void;
@@ -256,7 +204,7 @@ describe("panel render wiring", () => {
     const panel = contributions.workspacePanels?.[0];
     if (panel === undefined) throw new Error("Expected opendoor panel contribution");
 
-    const { context, requestRender } = panelContext(docFiles());
+    const { context, requestRender } = panelContext({ fake: docFiles() });
     const rendered = panel.render(context);
 
     // The render function hands the body element the per-workspace
@@ -266,7 +214,7 @@ describe("panel render wiring", () => {
     if (controller === undefined) throw new Error("Expected the render to bind the controller");
     expect(rendered.values[1]).toBe(context);
     controller.hostConnected();
-    await flush();
+    await flushAll();
     expect(requestRender).toHaveBeenCalled();
     if (controller.result === undefined) throw new Error("Expected the controller load to land");
     expect(controller.result.index.byUid.has("REQ0001")).toBe(true);
@@ -371,7 +319,7 @@ describe("workspace status label cache", () => {
     // Landing caches the result, bumps the LRU, and asks the host to
     // re-render — after which the label appears.
     first.resolve(makeResult({ items: 42, suspectLinks: 3, unreviewedChanges: 5 }));
-    await flush();
+    await flushAll();
     expect(requestRender).toHaveBeenCalledTimes(1);
     expect(visible(context)).toBe(true);
     expect(items(context)).toEqual([
@@ -392,7 +340,7 @@ describe("workspace status label cache", () => {
     loadMock.mockImplementationOnce(() => Promise.resolve(makeResult({ items: 3 })));
     const { context } = labelContext(docFiles());
     items(context);
-    await flush();
+    await flushAll();
     expect(visible(context)).toBe(true);
     expect(items(context)).toEqual([
       { type: "text", text: "REQ 3", title: "Doorstop requirements — informational" },
@@ -402,7 +350,7 @@ describe("workspace status label cache", () => {
     loadMock.mockImplementationOnce(() => Promise.resolve(makeResult({ items: 7, unreviewedChanges: 2 })));
     const { context: context2 } = labelContext(docFiles(), makeWorkspace("workspace-2"));
     items(context2);
-    await flush();
+    await flushAll();
     expect(items(context2)).toEqual([
       { type: "text", text: "REQ 7 · 2 unreviewed", title: "Doorstop requirements — informational" },
     ]);
@@ -411,7 +359,7 @@ describe("workspace status label cache", () => {
     loadMock.mockImplementationOnce(() => Promise.resolve(makeResult({ items: 9, suspectLinks: 4 })));
     const { context: context3 } = labelContext(docFiles(), makeWorkspace("workspace-3"));
     items(context3);
-    await flush();
+    await flushAll();
     expect(items(context3)).toEqual([
       { type: "text", text: "REQ 9 · 4 suspect", title: "Doorstop requirements — informational" },
     ]);
@@ -425,7 +373,7 @@ describe("workspace status label cache", () => {
     const { context, requestRender } = labelContext(emptyFiles());
     expect(visible(context)).toBe(false);
     expect(items(context)).toEqual([]);
-    await flush();
+    await flushAll();
     expect(loadMock).toHaveBeenCalledTimes(1);
     // The landing re-renders, but the empty workspace still has nothing to say.
     expect(requestRender).toHaveBeenCalledTimes(1);
@@ -444,7 +392,7 @@ describe("workspace status label cache", () => {
 
     // The transient failure hides the label for this cycle but never throws.
     expect(items(context)).toEqual([]);
-    await flush();
+    await flushAll();
     expect(loadMock).toHaveBeenCalledTimes(1);
     expect(visible(context)).toBe(false);
     // Nothing new to render on a failure — and no re-render → no retry loop.
@@ -454,7 +402,7 @@ describe("workspace status label cache", () => {
     // the load; when it lands the label appears.
     expect(items(context)).toEqual([]);
     expect(loadMock).toHaveBeenCalledTimes(2);
-    await flush();
+    await flushAll();
     expect(requestRender).toHaveBeenCalledTimes(1);
     expect(visible(context)).toBe(true);
     expect(items(context)).toEqual([
@@ -472,7 +420,7 @@ describe("workspace status label cache", () => {
     );
     for (let index = 0; index < LABEL_LIMIT; index += 1) {
       items(contexts[index]!.context);
-      await flush();
+      await flushAll();
     }
     expect(loadMock).toHaveBeenCalledTimes(LABEL_LIMIT);
     for (let index = 0; index < LABEL_LIMIT; index += 1) {
@@ -498,7 +446,7 @@ describe("workspace status label cache", () => {
     expect(loadMock).toHaveBeenCalledTimes(LABEL_LIMIT + 2);
 
     // The ninth load lands and shows its label like any other.
-    await flush();
+    await flushAll();
     expect(visible(workspace8.context)).toBe(true);
   });
 
@@ -520,7 +468,7 @@ describe("workspace status label cache", () => {
     );
     for (const { context } of fillers) {
       items(context);
-      await flush();
+      await flushAll();
     }
     expect(loadMock).toHaveBeenCalledTimes(LABEL_LIMIT + 1);
     expect(renderA).not.toHaveBeenCalled(); // A's load never landed
@@ -529,7 +477,7 @@ describe("workspace status label cache", () => {
     // (default = the real pipeline).
     items(contextA);
     expect(loadMock).toHaveBeenCalledTimes(LABEL_LIMIT + 2);
-    await flush();
+    await flushAll();
     expect(renderA).toHaveBeenCalledTimes(1);
     const freshText = items(contextA);
     expect(freshText).toEqual([
@@ -541,7 +489,7 @@ describe("workspace status label cache", () => {
     // result.
     renderA.mockClear();
     firstLoad.resolve(makeResult({ items: 999, suspectLinks: 1, unreviewedChanges: 1 }));
-    await flush();
+    await flushAll();
     expect(renderA).not.toHaveBeenCalled();
     expect(items(contextA)).toEqual(freshText);
     expect(visible(contextA)).toBe(true);

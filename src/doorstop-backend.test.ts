@@ -1051,6 +1051,105 @@ function gitCommitRequest(
   };
 }
 
+/**
+ * The shared degradation matrix every mutating git handler (stage/unstage/
+ * commit) runs through. The `it(...)` declarations below stay per handler so
+ * the scenario names and the 548-test count are unchanged; only the bodies are
+ * shared. Handler-distinct happy paths and porcelain semantics stay explicit.
+ */
+interface GitHandlerSpec {
+  /** Verb name, used only in assertion failure context. */
+  verb: string;
+  run: (context: ServerPluginActivationContext, request: ProviderRequestContext) => Promise<JsonValue>;
+  parse: (response: JsonValue) => { status: string; stderr?: string };
+  /** Build a valid request from an input, with an optional operation override. */
+  build: (input: JsonValue, operation?: string) => ProviderRequestContext;
+  /** A valid in-grammar input for this verb (paths / message). */
+  validInput: JsonValue;
+}
+
+const GIT_NOT_FOUND =
+  /git not found on the sessiond host PATH — configure plugins\.opendoor\.settings\.gitPath/;
+
+/** Non-repo workspace (rev-parse exits 128) → the phase skips after one exec. */
+async function expectGitSkipsOnNonRepo(spec: GitHandlerSpec): Promise<void> {
+  const { context, requests } = createFakeContext({
+    results: [{ ...DEFAULT_RESULT, exitCode: 128, stdout: "", stderr: "fatal: not a git repository" }],
+  });
+  expect(spec.parse(await spec.run(context, spec.build(spec.validInput))), spec.verb).toEqual({ status: "skipped" });
+  expect(requests, spec.verb).toHaveLength(1);
+}
+
+/** Bare repo / .git dir (rev-parse prints 'false' with exit 0) → skipped. */
+async function expectGitSkipsOnBareRepo(spec: GitHandlerSpec): Promise<void> {
+  const { context, requests } = createFakeContext({ results: [{ ...DEFAULT_RESULT, stdout: "false\n" }] });
+  expect(spec.parse(await spec.run(context, spec.build(spec.validInput))), spec.verb).toEqual({ status: "skipped" });
+  expect(requests, spec.verb).toHaveLength(1); // never reaches the verb's own step
+}
+
+/** First exec consumes the whole 9.5 s budget → the phase is SKIPPED. */
+async function expectGitSkipsOnExhaustedBudget(spec: GitHandlerSpec): Promise<void> {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    const exhausted = createFakeContext({
+      execFile: async () => {
+        vi.setSystemTime(new Date(Date.now() + 10_000));
+        return DEFAULT_RESULT;
+      },
+    });
+    const response = await spec.run(exhausted.context, spec.build(spec.validInput));
+    expect(spec.parse(response), spec.verb).toEqual({ status: "skipped" });
+    expect(exhausted.requests, spec.verb).toHaveLength(1);
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
+/** Out-of-grammar inputs and a non-verb operation are rejected before any exec. */
+async function expectGitRejectsBeforeExec(
+  spec: GitHandlerSpec,
+  rejections: ReadonlyArray<{ input: JsonValue; match: RegExp }>,
+): Promise<void> {
+  const { context, requests } = createFakeContext();
+  for (const rejection of rejections) {
+    await expect(spec.run(context, spec.build(rejection.input))).rejects.toThrow(rejection.match);
+  }
+  await expect(spec.run(context, spec.build(spec.validInput, "doorstop.purge"))).rejects.toThrow(
+    /opendoor: unsupported workspace backend operation: doorstop\.purge/,
+  );
+  expect(requests, spec.verb).toHaveLength(0);
+}
+
+/** A missing git binary narrates failed (never rejects) with the actionable message. */
+async function expectGitMissingBinaryFails(spec: GitHandlerSpec): Promise<void> {
+  const { context, requests } = createFakeContext({
+    execFile: async () => {
+      throw Object.assign(new Error("spawn git ENOENT"), { code: "ENOENT" });
+    },
+  });
+  const parsed = spec.parse(await spec.run(context, spec.build(spec.validInput)));
+  expect(parsed.status, spec.verb).toBe("failed");
+  expect(parsed.stderr, spec.verb).toMatch(GIT_NOT_FOUND);
+  expect(requests, spec.verb).toHaveLength(1);
+}
+
+/** The configured gitPath (and the 8.5 s share of the budget) reaches every exec. */
+async function expectGitForwardsGitPath(
+  spec: GitHandlerSpec,
+  happyResults: readonly ServerPluginExecFileResult[],
+): Promise<void> {
+  const { context, requests } = createFakeContext({
+    settings: { gitPath: "/usr/local/bin/git" },
+    results: happyResults,
+  });
+  await spec.run(context, spec.build(spec.validInput));
+  expect(requests.map((request) => request.file), spec.verb).toEqual(
+    happyResults.map(() => "/usr/local/bin/git"),
+  );
+  // git execs share the settings timeout, bounded by the pipeline budget.
+  expect(requests[0]?.timeoutMs, spec.verb).toBe(8500);
+}
+
 describe("doorstop.git-status handler", () => {
   it("runs the exact rev-parse + porcelain argv pair and parses the fixture into per-file states and counts", async () => {
     const { context, requests } = createFakeContext({
@@ -1223,6 +1322,14 @@ describe("doorstop.git-status handler", () => {
 });
 
 describe("doorstop.git-stage handler", () => {
+  const spec: GitHandlerSpec = {
+    verb: "stage",
+    run: requestDoorstopGitStage,
+    parse: parseDoorstopGitStageResponse,
+    build: (input, operation) => gitStageRequest(input, operation === undefined ? {} : { operation }),
+    validInput: { paths: ["reqs/REQ0001.yml"] },
+  };
+
   it("runs the exact rev-parse → status → add argv sequence with literalized paths", async () => {
     const { context, requests } = createFakeContext({
       results: [
@@ -1277,28 +1384,8 @@ describe("doorstop.git-stage handler", () => {
   });
 
   it("skips on a non-repo workspace and on an exhausted deadline budget", async () => {
-    const nonRepo = createFakeContext({
-      results: [{ ...DEFAULT_RESULT, exitCode: 128, stdout: "", stderr: "fatal: not a git repository" }],
-    });
-    expect(
-      parseDoorstopGitStageResponse(await requestDoorstopGitStage(nonRepo.context, gitStageRequest({ paths: ["reqs/REQ0001.yml"] }))),
-    ).toEqual({ status: "skipped" });
-
-    // First exec consumes the whole 9.5 s budget → the phase is SKIPPED.
-    vi.useFakeTimers({ toFake: ["Date"] });
-    try {
-      const exhausted = createFakeContext({
-        execFile: async () => {
-          vi.setSystemTime(new Date(Date.now() + 10_000));
-          return DEFAULT_RESULT;
-        },
-      });
-      const response = await requestDoorstopGitStage(exhausted.context, gitStageRequest({ paths: ["reqs/REQ0001.yml"] }));
-      expect(parseDoorstopGitStageResponse(response)).toEqual({ status: "skipped" });
-      expect(exhausted.requests).toHaveLength(1);
-    } finally {
-      vi.useRealTimers();
-    }
+    await expectGitSkipsOnNonRepo(spec);
+    await expectGitSkipsOnExhaustedBudget(spec);
   });
 
   it("collapses an add failure into status failed with a bounded excerpt (response resolves)", async () => {
@@ -1320,37 +1407,19 @@ describe("doorstop.git-stage handler", () => {
   });
 
   it("rejects out-of-grammar requests and a non-stage operation before any exec", async () => {
-    const { context, requests } = createFakeContext();
-    await expect(requestDoorstopGitStage(context, gitStageRequest({ paths: [] }))).rejects.toThrow(
-      /at least one path is required/,
-    );
-    await expect(requestDoorstopGitStage(context, gitStageRequest({ paths: ["../escape.yml"] }))).rejects.toThrow(
-      /Invalid doorstop item path in field: paths/,
-    );
-    await expect(requestDoorstopGitStage(context, gitStageRequest({}))).rejects.toThrow(/paths must be an array/);
-    await expect(
-      requestDoorstopGitStage(context, gitStageRequest({ paths: ["reqs/REQ0001.yml"] }, { operation: "doorstop.purge" })),
-    ).rejects.toThrow(/opendoor: unsupported workspace backend operation: doorstop\.purge/);
-    expect(requests).toHaveLength(0);
+    await expectGitRejectsBeforeExec(spec, [
+      { input: { paths: [] }, match: /at least one path is required/ },
+      { input: { paths: ["../escape.yml"] }, match: /Invalid doorstop item path in field: paths/ },
+      { input: {}, match: /paths must be an array/ },
+    ]);
   });
 
   it("honors the configured gitPath for every git exec of the stage", async () => {
-    const { context, requests } = createFakeContext({
-      settings: { gitPath: "/usr/local/bin/git" },
-      results: [
-        { ...DEFAULT_RESULT, stdout: "true" },
-        { ...DEFAULT_RESULT, stdout: " M reqs/REQ0001.yml\0" },
-        { ...DEFAULT_RESULT },
-      ],
-    });
-    await requestDoorstopGitStage(context, gitStageRequest({ paths: ["reqs/REQ0001.yml"] }));
-    expect(requests.map((request) => request.file)).toEqual([
-      "/usr/local/bin/git",
-      "/usr/local/bin/git",
-      "/usr/local/bin/git",
+    await expectGitForwardsGitPath(spec, [
+      { ...DEFAULT_RESULT, stdout: "true" },
+      { ...DEFAULT_RESULT, stdout: " M reqs/REQ0001.yml\0" },
+      { ...DEFAULT_RESULT },
     ]);
-    // git execs share the settings timeout, bounded by the pipeline budget.
-    expect(requests[0]?.timeoutMs).toBe(8500);
   });
 
   it("is idempotent across a staged deletion: a second Stage all reports clean with no add exec", async () => {
@@ -1463,30 +1532,23 @@ describe("doorstop.git-stage handler", () => {
   });
 
   it("maps a missing git binary to status failed with the git-not-found message (resolves)", async () => {
-    const { context, requests } = createFakeContext({
-      execFile: async () => {
-        throw Object.assign(new Error("spawn git ENOENT"), { code: "ENOENT" });
-      },
-    });
-    const response = await requestDoorstopGitStage(context, gitStageRequest({ paths: ["reqs/REQ0001.yml"] }));
-    const parsed = parseDoorstopGitStageResponse(response);
-    expect(parsed.status).toBe("failed");
-    expect(parsed.stderr).toMatch(
-      /git not found on the sessiond host PATH — configure plugins\.opendoor\.settings\.gitPath/,
-    );
-    expect(requests).toHaveLength(1);
+    await expectGitMissingBinaryFails(spec);
   });
 
   it("skips on a bare repo or .git directory (rev-parse prints 'false' with exit 0)", async () => {
-    const { context, requests } = createFakeContext({ results: [{ ...DEFAULT_RESULT, stdout: "false\n" }] });
-    expect(
-      parseDoorstopGitStageResponse(await requestDoorstopGitStage(context, gitStageRequest({ paths: ["reqs/REQ0001.yml"] }))),
-    ).toEqual({ status: "skipped" });
-    expect(requests).toHaveLength(1); // never reaches the porcelain/add steps
+    await expectGitSkipsOnBareRepo(spec);
   });
 });
 
 describe("doorstop.git-unstage handler", () => {
+  const spec: GitHandlerSpec = {
+    verb: "unstage",
+    run: requestDoorstopGitUnstage,
+    parse: parseDoorstopGitUnstageResponse,
+    build: (input, operation) => gitUnstageRequest(input, operation === undefined ? {} : { operation }),
+    validInput: { paths: ["reqs/REQ0001.yml"] },
+  };
+
   it("runs the exact rev-parse → status → reset argv sequence and selects only the index (X) column", async () => {
     const { context, requests } = createFakeContext({
       results: [
@@ -1646,41 +1708,10 @@ describe("doorstop.git-unstage handler", () => {
   });
 
   it("skips on a non-repo workspace (rev-parse false) and on an exhausted deadline budget", async () => {
-    const nonRepo = createFakeContext({
-      results: [{ ...DEFAULT_RESULT, exitCode: 128, stdout: "", stderr: "fatal: not a git repository" }],
-    });
-    expect(
-      parseDoorstopGitUnstageResponse(
-        await requestDoorstopGitUnstage(nonRepo.context, gitUnstageRequest({ paths: ["reqs/REQ0001.yml"] })),
-      ),
-    ).toEqual({ status: "skipped" });
-
+    await expectGitSkipsOnNonRepo(spec);
     // rev-parse prints `false` with exit 0 on a bare repo / .git dir.
-    const bare = createFakeContext({ results: [{ ...DEFAULT_RESULT, stdout: "false\n" }] });
-    expect(
-      parseDoorstopGitUnstageResponse(
-        await requestDoorstopGitUnstage(bare.context, gitUnstageRequest({ paths: ["reqs/REQ0001.yml"] })),
-      ),
-    ).toEqual({ status: "skipped" });
-
-    // First exec consumes the whole 9.5 s budget → the phase is SKIPPED.
-    vi.useFakeTimers({ toFake: ["Date"] });
-    try {
-      const exhausted = createFakeContext({
-        execFile: async () => {
-          vi.setSystemTime(new Date(Date.now() + 10_000));
-          return DEFAULT_RESULT;
-        },
-      });
-      const response = await requestDoorstopGitUnstage(
-        exhausted.context,
-        gitUnstageRequest({ paths: ["reqs/REQ0001.yml"] }),
-      );
-      expect(parseDoorstopGitUnstageResponse(response)).toEqual({ status: "skipped" });
-      expect(exhausted.requests).toHaveLength(1);
-    } finally {
-      vi.useRealTimers();
-    }
+    await expectGitSkipsOnBareRepo(spec);
+    await expectGitSkipsOnExhaustedBudget(spec);
   });
 
   it("collapses a reset failure into status failed with a bounded excerpt (response resolves)", async () => {
@@ -1709,55 +1740,23 @@ describe("doorstop.git-unstage handler", () => {
   });
 
   it("maps a missing git binary to status failed with the git-not-found message (resolves)", async () => {
-    const { context, requests } = createFakeContext({
-      execFile: async () => {
-        throw Object.assign(new Error("spawn git ENOENT"), { code: "ENOENT" });
-      },
-    });
-    const response = await requestDoorstopGitUnstage(context, gitUnstageRequest({ paths: ["reqs/REQ0001.yml"] }));
-    const parsed = parseDoorstopGitUnstageResponse(response);
-    expect(parsed.status).toBe("failed");
-    expect(parsed.stderr).toMatch(
-      /git not found on the sessiond host PATH — configure plugins\.opendoor\.settings\.gitPath/,
-    );
-    expect(requests).toHaveLength(1);
+    await expectGitMissingBinaryFails(spec);
   });
 
   it("rejects out-of-grammar requests and a non-unstage operation before any exec", async () => {
-    const { context, requests } = createFakeContext();
-    await expect(requestDoorstopGitUnstage(context, gitUnstageRequest({ paths: [] }))).rejects.toThrow(
-      /at least one path is required/,
-    );
-    await expect(requestDoorstopGitUnstage(context, gitUnstageRequest({ paths: ["../escape.yml"] }))).rejects.toThrow(
-      /Invalid doorstop item path in field: paths/,
-    );
-    await expect(requestDoorstopGitUnstage(context, gitUnstageRequest({}))).rejects.toThrow(/paths must be an array/);
-    await expect(
-      requestDoorstopGitUnstage(
-        context,
-        gitUnstageRequest({ paths: ["reqs/REQ0001.yml"] }, { operation: "doorstop.purge" }),
-      ),
-    ).rejects.toThrow(/opendoor: unsupported workspace backend operation: doorstop\.purge/);
-    expect(requests).toHaveLength(0);
+    await expectGitRejectsBeforeExec(spec, [
+      { input: { paths: [] }, match: /at least one path is required/ },
+      { input: { paths: ["../escape.yml"] }, match: /Invalid doorstop item path in field: paths/ },
+      { input: {}, match: /paths must be an array/ },
+    ]);
   });
 
   it("honors the configured gitPath for every git exec of the unstage", async () => {
-    const { context, requests } = createFakeContext({
-      settings: { gitPath: "/usr/local/bin/git" },
-      results: [
-        { ...DEFAULT_RESULT, stdout: "true" },
-        { ...DEFAULT_RESULT, stdout: "M  reqs/REQ0001.yml\0" },
-        { ...DEFAULT_RESULT },
-      ],
-    });
-    await requestDoorstopGitUnstage(context, gitUnstageRequest({ paths: ["reqs/REQ0001.yml"] }));
-    expect(requests.map((request) => request.file)).toEqual([
-      "/usr/local/bin/git",
-      "/usr/local/bin/git",
-      "/usr/local/bin/git",
+    await expectGitForwardsGitPath(spec, [
+      { ...DEFAULT_RESULT, stdout: "true" },
+      { ...DEFAULT_RESULT, stdout: "M  reqs/REQ0001.yml\0" },
+      { ...DEFAULT_RESULT },
     ]);
-    // git execs share the settings timeout, bounded by the pipeline budget.
-    expect(requests[0]?.timeoutMs).toBe(8500);
   });
 
   it("unstage is idempotent: a second run over an already-clean index reports clean with no reset exec", async () => {
@@ -1780,6 +1779,14 @@ describe("doorstop.git-unstage handler", () => {
 });
 
 describe("doorstop.git-commit handler", () => {
+  const spec: GitHandlerSpec = {
+    verb: "commit",
+    run: requestDoorstopGitCommit,
+    parse: parseDoorstopGitCommitResponse,
+    build: (input, operation) => gitCommitRequest(input, operation === undefined ? {} : { operation }),
+    validInput: { message: "m" },
+  };
+
   it("runs the exact rev-parse → diff --cached → commit → rev-parse --short sequence with NO add and NO pathspec", async () => {
     const signal = new AbortController().signal;
     const { context, requests } = createFakeContext({
@@ -1851,13 +1858,7 @@ describe("doorstop.git-commit handler", () => {
   });
 
   it("skips on a non-repo workspace", async () => {
-    const { context, requests } = createFakeContext({
-      results: [{ ...DEFAULT_RESULT, exitCode: 128, stdout: "", stderr: "fatal: not a git repository" }],
-    });
-    expect(
-      parseDoorstopGitCommitResponse(await requestDoorstopGitCommit(context, gitCommitRequest({ message: "m" }))),
-    ).toEqual({ status: "skipped" });
-    expect(requests).toHaveLength(1);
+    await expectGitSkipsOnNonRepo(spec);
   });
 
   it("surfaces a failing pre-commit hook's stderr in the bounded failed excerpt", async () => {
@@ -1883,38 +1884,17 @@ describe("doorstop.git-commit handler", () => {
   });
 
   it("maps a missing git binary to status failed with the git-not-found message (resolves)", async () => {
-    const { context, requests } = createFakeContext({
-      execFile: async () => {
-        throw Object.assign(new Error("spawn git ENOENT"), { code: "ENOENT" });
-      },
-    });
-    const response = await requestDoorstopGitCommit(context, gitCommitRequest({ message: "m" }));
-    const parsed = parseDoorstopGitCommitResponse(response);
-    expect(parsed.status).toBe("failed");
-    expect(parsed.stderr).toMatch(
-      /git not found on the sessiond host PATH — configure plugins\.opendoor\.settings\.gitPath/,
-    );
-    expect(requests).toHaveLength(1);
+    await expectGitMissingBinaryFails(spec);
   });
 
   it("rejects out-of-grammar messages and a non-commit operation before any exec", async () => {
-    const { context, requests } = createFakeContext();
-    const badMessages: Array<JsonValue> = [
-      { message: "" }, // empty — git would open $EDITOR and hang the exec
-      { message: "   " }, // whitespace-only — git aborts after cleanup
-      { message: "two\nlines" }, // control characters / multi-line
-      { message: "a".repeat(2001) }, // over the 2 000-char cap
-      {}, // missing field
-    ];
-    for (const bad of badMessages) {
-      await expect(requestDoorstopGitCommit(context, gitCommitRequest(bad))).rejects.toThrow(
-        /(Invalid git commit message|Expected string field: message)/,
-      );
-    }
-    await expect(
-      requestDoorstopGitCommit(context, gitCommitRequest({ message: "m" }, { operation: "doorstop.purge" })),
-    ).rejects.toThrow(/opendoor: unsupported workspace backend operation: doorstop\.purge/);
-    expect(requests).toHaveLength(0);
+    await expectGitRejectsBeforeExec(spec, [
+      { input: { message: "" }, match: /(Invalid git commit message|Expected string field: message)/ },
+      { input: { message: "   " }, match: /(Invalid git commit message|Expected string field: message)/ },
+      { input: { message: "two\nlines" }, match: /(Invalid git commit message|Expected string field: message)/ },
+      { input: { message: "a".repeat(2001) }, match: /(Invalid git commit message|Expected string field: message)/ },
+      { input: {}, match: /(Invalid git commit message|Expected string field: message)/ },
+    ]);
   });
 
   it("narrates committed with the bracket sha when rev-parse --short fails after the commit landed", async () => {
@@ -1968,48 +1948,20 @@ describe("doorstop.git-commit handler", () => {
   });
 
   it("skips when the deadline budget is exhausted before any step runs", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    try {
-      const exhausted = createFakeContext({
-        execFile: async () => {
-          vi.setSystemTime(new Date(Date.now() + 10_000));
-          return DEFAULT_RESULT;
-        },
-      });
-      const response = await requestDoorstopGitCommit(exhausted.context, gitCommitRequest({ message: "m" }));
-      expect(parseDoorstopGitCommitResponse(response)).toEqual({ status: "skipped" });
-      expect(exhausted.requests).toHaveLength(1);
-    } finally {
-      vi.useRealTimers();
-    }
+    await expectGitSkipsOnExhaustedBudget(spec);
   });
 
   it("skips on a bare repo or .git directory (rev-parse prints 'false' with exit 0)", async () => {
-    const { context, requests } = createFakeContext({ results: [{ ...DEFAULT_RESULT, stdout: "false\n" }] });
-    expect(
-      parseDoorstopGitCommitResponse(await requestDoorstopGitCommit(context, gitCommitRequest({ message: "m" }))),
-    ).toEqual({ status: "skipped" });
-    expect(requests).toHaveLength(1);
+    await expectGitSkipsOnBareRepo(spec);
   });
 
   it("honors the configured gitPath for every git exec of the commit", async () => {
-    const { context, requests } = createFakeContext({
-      settings: { gitPath: "/usr/local/bin/git" },
-      results: [
-        { ...DEFAULT_RESULT, stdout: "true" },
-        { ...DEFAULT_RESULT, exitCode: 1 }, // diff: staged changes
-        { ...DEFAULT_RESULT, stdout: "[main abc1234] docs\n" }, // commit
-        { ...DEFAULT_RESULT, stdout: "abc1234\n" }, // rev-parse --short
-      ],
-    });
-    await requestDoorstopGitCommit(context, gitCommitRequest({ message: "docs" }));
-    expect(requests.map((request) => request.file)).toEqual([
-      "/usr/local/bin/git",
-      "/usr/local/bin/git",
-      "/usr/local/bin/git",
-      "/usr/local/bin/git",
+    await expectGitForwardsGitPath(spec, [
+      { ...DEFAULT_RESULT, stdout: "true" },
+      { ...DEFAULT_RESULT, exitCode: 1 }, // diff: staged changes
+      { ...DEFAULT_RESULT, stdout: "[main abc1234] docs\n" }, // commit
+      { ...DEFAULT_RESULT, stdout: "abc1234\n" }, // rev-parse --short
     ]);
-    expect(requests[0]?.timeoutMs).toBe(8500);
   });
 
   it("trims padding from the message (the element guard trims before sending; the contract agrees both ways)", async () => {

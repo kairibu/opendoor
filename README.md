@@ -271,6 +271,7 @@ bottom:
 ```sh
 npm install        # install dependencies
 npm test           # vitest (unit tests under src/**/*.test.ts)
+npm run test:coverage  # v8 coverage report
 npm run typecheck  # tsc --noEmit (strict)
 npm run build      # esbuild: dist/browser/pi-web-plugin.js + dist/server-plugin.js
                    # (+ verbatim package.json manifest copy into dist/)

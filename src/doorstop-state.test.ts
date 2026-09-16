@@ -45,6 +45,7 @@ import {
   splitDoorstopUid,
   stampFromFingerprintParts,
 } from "./doorstop-state.js";
+import { makeDocument, makeItem } from "./test-fixtures.js";
 
 // --- fixture loading -----------------------------------------------------------
 
@@ -850,46 +851,6 @@ describe("integration with the model chain (parse → stamp → states)", () => 
 
 // --- synthetic state scenarios ------------------------------------------------------
 
-function makeDocument(
-  prefix: string,
-  parentPrefix: string | undefined,
-  directoryPath: string,
-): DoorstopDocumentConfig {
-  return {
-    directoryPath,
-    configPath: `${directoryPath === "" ? "." : directoryPath}/.doorstop.yml`,
-    prefix,
-    digits: 4,
-    separator: "",
-    ...(parentPrefix === undefined ? {} : { parentPrefix }),
-    itemformat: "yaml",
-    extra: {},
-  };
-}
-
-function makeItem(
-  uid: string,
-  documentPrefix: string,
-  fields: Partial<Pick<ItemRecord, "text" | "links" | "reviewed">> & { path: string },
-): ItemRecord {
-  return {
-    uid,
-    documentPrefix,
-    path: fields.path,
-    level: "1.0",
-    active: true,
-    derived: false,
-    normative: true,
-    text: fields.text ?? "",
-    ref: "",
-    links: fields.links ?? [],
-    attributes: {},
-    reviewed: fields.reviewed ?? null,
-    raw: {},
-    stateKeys: [],
-  };
-}
-
 function makeIndex(items: ItemRecord[]): DoorstopIndex {
   const byUid = new Map(items.map((item) => [item.uid, item]));
   const childrenByUid = new Map<string, ItemRecord[]>();
@@ -928,8 +889,8 @@ function makeIndex(items: ItemRecord[]): DoorstopIndex {
 }
 
 describe("computeItemStates — synthetic suspect-link scenario", () => {
-  const reqConfig = makeDocument("REQ", undefined, "");
-  const tstConfig = makeDocument("TST", "REQ", "tests");
+  const reqConfig = makeDocument({ prefix: "REQ", directoryPath: "" });
+  const tstConfig = makeDocument({ prefix: "TST", parentPrefix: "REQ", directoryPath: "tests" });
   const documents = [reqConfig, tstConfig];
 
   const v1Stamp = computeItemStamp(
@@ -938,8 +899,16 @@ describe("computeItemStates — synthetic suspect-link scenario", () => {
     true,
   );
 
-  const req001 = makeItem("REQ001", "REQ", { path: "REQ001.yml", text: "v1", reviewed: v1Stamp });
-  const tst001 = makeItem("TST001", "TST", {
+  const req001 = makeItem({
+    uid: "REQ001",
+    documentPrefix: "REQ",
+    path: "REQ001.yml",
+    text: "v1",
+    reviewed: v1Stamp,
+  });
+  const tst001 = makeItem({
+    uid: "TST001",
+    documentPrefix: "TST",
     path: "tests/TST001.yml",
     text: "verify v1",
     links: [{ uid: "REQ001", fingerprint: v1Stamp }],
@@ -986,8 +955,8 @@ describe("computeItemStates — synthetic suspect-link scenario", () => {
 
 describe("computeItemStates — re-running over a changed index drops stale findings", () => {
   it("removes a stale suspect-link finding once the recorded fingerprint matches again", () => {
-    const reqConfig = makeDocument("REQ", undefined, "");
-    const tstConfig = makeDocument("TST", "REQ", "tests");
+    const reqConfig = makeDocument({ prefix: "REQ", directoryPath: "" });
+    const tstConfig = makeDocument({ prefix: "TST", parentPrefix: "REQ", directoryPath: "tests" });
     const documents = [reqConfig, tstConfig];
 
     const v1Stamp = computeItemStamp(
@@ -995,8 +964,16 @@ describe("computeItemStates — re-running over a changed index drops stale find
       reqConfig,
       true,
     );
-    const req001 = makeItem("REQ001", "REQ", { path: "REQ001.yml", text: "v1", reviewed: v1Stamp });
-    const tst001 = makeItem("TST001", "TST", {
+    const req001 = makeItem({
+      uid: "REQ001",
+      documentPrefix: "REQ",
+      path: "REQ001.yml",
+      text: "v1",
+      reviewed: v1Stamp,
+    });
+    const tst001 = makeItem({
+      uid: "TST001",
+      documentPrefix: "TST",
       path: "tests/TST001.yml",
       text: "verify",
       links: [{ uid: "REQ001", fingerprint: v1Stamp }],
@@ -1025,9 +1002,15 @@ describe("computeItemStates — re-running over a changed index drops stale find
   });
 
   it("removes a stale 'needs initial review' finding after the item is reviewed", () => {
-    const reqConfig = makeDocument("REQ", undefined, "");
+    const reqConfig = makeDocument({ prefix: "REQ", directoryPath: "" });
     const documents = [reqConfig];
-    const req001 = makeItem("REQ001", "REQ", { path: "REQ001.yml", text: "v1", reviewed: null });
+    const req001 = makeItem({
+      uid: "REQ001",
+      documentPrefix: "REQ",
+      path: "REQ001.yml",
+      text: "v1",
+      reviewed: null,
+    });
     const index = makeIndex([req001]);
     index.documents = documents;
     index.byPrefix = new Map(documents.map((document) => [document.prefix, document]));
@@ -1052,17 +1035,21 @@ describe("computeItemStates — re-running over a changed index drops stale find
 
 describe("computeItemStates — childrenByUid child-document scoping", () => {
   it("ignores same-document links when deciding no-child-links", () => {
-    const parentDoc = makeDocument("SYS", undefined, "sys");
-    const childDoc = makeDocument("TST", "SYS", "tests");
+    const parentDoc = makeDocument({ prefix: "SYS", directoryPath: "sys" });
+    const childDoc = makeDocument({ prefix: "TST", parentPrefix: "SYS", directoryPath: "tests" });
     const documents = [parentDoc, childDoc];
 
-    const sys001 = makeItem("SYS001", "SYS", { path: "sys/SYS001.yml", text: "parent" });
-    const sys002 = makeItem("SYS002", "SYS", {
+    const sys001 = makeItem({ uid: "SYS001", documentPrefix: "SYS", path: "sys/SYS001.yml", text: "parent" });
+    const sys002 = makeItem({
+      uid: "SYS002",
+      documentPrefix: "SYS",
       path: "sys/SYS002.yml",
       text: "links to SYS001 from the SAME document",
       links: [{ uid: "SYS001", fingerprint: null }],
     });
-    const tst001 = makeItem("TST001", "TST", {
+    const tst001 = makeItem({
+      uid: "TST001",
+      documentPrefix: "TST",
       path: "tests/TST001.yml",
       text: "links to SYS002 from the child document",
       links: [{ uid: "SYS002", fingerprint: null }],

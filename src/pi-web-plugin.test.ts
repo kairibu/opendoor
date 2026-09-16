@@ -9,23 +9,13 @@
 // actions reach the host navigation/refresh entry points with the
 // runtime-qualified panel id. Structural wiring only; the render/load
 // behavior is covered by doorstop-panel.test.ts /
-// doorstop-panel-elements.test.ts / doorstop-contributions.test.ts.
+// doorstop-panel-element.test.ts / doorstop-contributions.test.ts.
 
 import { html, svg } from "lit";
 import { describe, expect, it, vi } from "vitest";
-import type { PluginRuntimeContext, Workspace, WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
+import type { PluginRuntimeContext, WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
 import plugin from "./pi-web-plugin.js";
-
-const projectId = "project-1";
-const workspaceId = "workspace-1";
-
-const doorstopWorkspace: Workspace = {
-  id: workspaceId,
-  projectId,
-  path: "/repo",
-  label: "main",
-  isMain: true,
-};
+import { doorstopWorkspace, runtimeContext } from "./test-fixtures.js";
 
 describe("bundled opendoor browser entry", () => {
   it("exports the host-expected plugin shape and contributes panel, actions, and label", () => {
@@ -110,34 +100,5 @@ function panelContext(workspace = doorstopWorkspace, machineId = "local"): Works
     host: { requestRender: noop },
     prompt: { insertText: noop, getText: () => "", getSelection: () => null },
     terminal: { open: noop, runCommand: () => Promise.reject(new Error("not implemented")) },
-  };
-}
-
-function runtimeContext(patch: Partial<PluginRuntimeContext> = {}): PluginRuntimeContext {
-  const noop = () => undefined;
-  return {
-    state: {
-      selectedWorkspace: doorstopWorkspace,
-      workspaceTool: "opendoor:workspace.doorstop",
-      mainView: "opendoor:workspace.doorstop",
-    },
-    prompt: { insertText: noop, getText: () => "", getSelection: () => null },
-    openActionPalette: noop,
-    focusPrompt: noop,
-    addProject: noop,
-    configureAuth: noop,
-    logoutAuth: noop,
-    openThemePicker: noop,
-    selectMainView: noop,
-    selectWorkspaceTool: noop,
-    openTerminal: noop,
-    refreshFiles: noop,
-    refreshWorkspacePanels: noop,
-    refreshAppData: noop,
-    reloadPage: noop,
-    startSession: noop,
-    archiveSession: noop,
-    stopActiveWork: noop,
-    ...patch,
   };
 }

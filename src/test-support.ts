@@ -1,7 +1,11 @@
 // ---------------------------------------------------------------------------
-// Shared test fixtures for the opendoor test suite (root-level module, excluded
+// Shared test fixtures for the opendoor test suite (test-only module, excluded
 // from the runtime build by scripts/build-plugin.mjs: only reachable from
 // *.test.ts).
+//
+// This module owns the in-memory workspace-files fake. Real-shaped Doorstop
+// document/item/result factories and host-context builders live in
+// ./test-fixtures.ts.
 //
 // One in-memory workspace-files fake serves the discovery tests (which need
 // call-order tracking) and the panel tests (which need a full

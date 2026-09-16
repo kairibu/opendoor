@@ -16,25 +16,19 @@ import {
   reviewReadinessPrompt,
   validatePrompt,
 } from "./doorstop-prompts.js";
+import { makeItem as makeFixtureItem } from "./test-fixtures.js";
 
+/** Prompt-shaped item: the shared factory with this suite's baked-in defaults
+ *  (REQ002 at level 1.2 under reqs/srd) applied before the caller's overrides. */
 function makeItem(overrides: Partial<ItemRecord> = {}): ItemRecord {
-  return {
+  return makeFixtureItem({
     uid: "REQ002",
     documentPrefix: "REQ",
     path: "reqs/srd/REQ002.yml",
     level: "1.2",
-    active: true,
-    derived: false,
-    normative: true,
     text: "The system shall expose an interface.",
-    ref: "",
-    links: [],
-    reviewed: null,
-    attributes: {},
-    raw: {},
-    stateKeys: [],
     ...overrides,
-  };
+  });
 }
 
 function makeParent(uid: string, path: string): ItemRecord {

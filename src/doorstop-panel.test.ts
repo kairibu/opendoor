@@ -14,8 +14,7 @@
 // DOM at all.
 
 import { describe, expect, it, vi, type Mock } from "vitest";
-import type { Workspace, WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
-import type { DoorstopDocumentConfig, DoorstopIndex, ItemRecord } from "./doorstop-contract.js";
+import type { WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
 import {
   DOORSTOP_GIT_STATUS_FILES_MAX,
   type DoorstopBaselineResponse,
@@ -52,64 +51,10 @@ import {
   itemStageable,
   itemUnstageable,
 } from "./doorstop-panel-view-model.js";
-import { createFakeFiles, dirEntry, fileEntry, text, tree, type FakeWorkspaceFiles } from "./test-support.js";
-
-const doorstopWorkspace: Workspace = {
-  id: "workspace-1",
-  projectId: "project-1",
-  path: "/repo",
-  label: "main",
-  isMain: true,
-};
+import { createFakeFiles, dirEntry, fileEntry, text, tree } from "./test-support.js";
+import { makeDocument, makeItem, makeResult, makeWorkspace, panelContext, settle } from "./test-fixtures.js";
 
 // --- small real-shape fixtures ---------------------------------------------------------
-
-function makeDocument(overrides: Partial<DoorstopDocumentConfig> = {}): DoorstopDocumentConfig {
-  return {
-    directoryPath: overrides.directoryPath ?? "reqs",
-    configPath: overrides.configPath ?? "reqs/.doorstop.yml",
-    prefix: overrides.prefix ?? "REQ",
-    digits: overrides.digits ?? 4,
-    separator: overrides.separator ?? "",
-    itemformat: overrides.itemformat ?? "yaml",
-    extra: overrides.extra ?? {},
-    ...(overrides.parentPrefix === undefined ? {} : { parentPrefix: overrides.parentPrefix }),
-  };
-}
-
-function makeItem(uid: string, documentPrefix: string, overrides: Partial<ItemRecord> = {}): ItemRecord {
-  return {
-    uid,
-    documentPrefix,
-    path: overrides.path ?? `${uid}.yml`,
-    level: overrides.level ?? "1.0",
-    active: overrides.active ?? true,
-    derived: overrides.derived ?? false,
-    normative: overrides.normative ?? true,
-    text: overrides.text ?? "",
-    ref: overrides.ref ?? "",
-    links: overrides.links ?? [],
-    reviewed: overrides.reviewed ?? null,
-    attributes: overrides.attributes ?? {},
-    raw: overrides.raw ?? {},
-    stateKeys: overrides.stateKeys ?? [],
-    ...(overrides.header === undefined ? {} : { header: overrides.header }),
-    ...(overrides.references === undefined ? {} : { references: overrides.references }),
-  };
-}
-
-/** A genuine index over the given items/documents (real build + state
- *  chains), so the controller's selection/filter paths run against the real
- *  shape instead of a stub that could drift from `DoorstopIndex`. */
-function makeResult(
-  items: ItemRecord[],
-  documents: DoorstopDocumentConfig[] = [makeDocument()],
-  diagnostics: DoorstopIndex["diagnostics"] = [],
-): DoorstopWorkspaceResult {
-  const index = buildDoorstopIndex(documents, items, diagnostics, new Set());
-  computeItemStates(index);
-  return { index, settings: DEFAULT_OPENDOOR_SETTINGS };
-}
 
 describe("DoorstopWorkspaceController (fake host, no DOM)", () => {
   it("kicks the first load on hostConnected and surfaces loading → result", async () => {
@@ -118,7 +63,7 @@ describe("DoorstopWorkspaceController (fake host, no DOM)", () => {
       new Promise<DoorstopWorkspaceResult>((resolve) => {
         resolveJob = resolve;
       });
-    const { context, requestRender } = panelContext(createFakeFiles());
+    const { context, requestRender } = panelContext({ fake: createFakeFiles() });
     const { host } = fakeHost();
     const controller = new DoorstopWorkspaceController(host, context, job);
 
@@ -129,7 +74,7 @@ describe("DoorstopWorkspaceController (fake host, no DOM)", () => {
     expect(host.isConnected).toBe(true);
     expect(requestRender).toHaveBeenCalled();
 
-    resolveJob?.(makeResult([makeItem("REQ0001", "REQ")]));
+    resolveJob?.(makeResult([makeItem({ uid: "REQ0001", documentPrefix: "REQ" })]));
     await settle();
     expect(controller.loading).toBe(false);
     expect(controller.stale).toBe(false);
@@ -144,7 +89,7 @@ describe("DoorstopWorkspaceController (fake host, no DOM)", () => {
       new Promise<DoorstopWorkspaceResult>((resolve) => {
         resolveJob = resolve;
       });
-    const { context } = panelContext(createFakeFiles());
+    const { context } = panelContext({ fake: createFakeFiles() });
     const { host } = fakeHost();
     const controller = new DoorstopWorkspaceController(host, context, job);
 
@@ -167,9 +112,9 @@ describe("DoorstopWorkspaceController (fake host, no DOM)", () => {
 
   it("marks the result stale during an invalidate load and keeps the old result until it lands", async () => {
     let currentJob: () => Promise<DoorstopWorkspaceResult> = () =>
-      Promise.resolve(makeResult([makeItem("REQ0001", "REQ")]));
+      Promise.resolve(makeResult([makeItem({ uid: "REQ0001", documentPrefix: "REQ" })]));
     const job: DoorstopWorkspaceJob = () => currentJob();
-    const { context, requestRender } = panelContext(createFakeFiles());
+    const { context, requestRender } = panelContext({ fake: createFakeFiles() });
     const { host } = fakeHost();
     const controller = new DoorstopWorkspaceController(host, context, job);
     controller.hostConnected();
@@ -192,7 +137,7 @@ describe("DoorstopWorkspaceController (fake host, no DOM)", () => {
     expect(controller.result).toBe(before);
     expect(requestRender).toHaveBeenCalled();
 
-    resolveJob?.(makeResult([makeItem("REQ0002", "REQ")]));
+    resolveJob?.(makeResult([makeItem({ uid: "REQ0002", documentPrefix: "REQ" })]));
     await pending;
     expect(controller.stale).toBe(false);
     expect(controller.loading).toBe(false);
@@ -200,7 +145,7 @@ describe("DoorstopWorkspaceController (fake host, no DOM)", () => {
   });
 
   it("surfaces a rejected load as the formatted error message", async () => {
-    const { context } = panelContext(createFakeFiles());
+    const { context } = panelContext({ fake: createFakeFiles() });
     const { host } = fakeHost();
     const controller = new DoorstopWorkspaceController(host, context, async () => {
       throw new Error("Load crashed");
@@ -218,7 +163,7 @@ describe("DoorstopWorkspaceController (fake host, no DOM)", () => {
       new Promise<DoorstopWorkspaceResult>((resolve) => {
         resolvers.push(resolve);
       });
-    const { context, requestRender } = panelContext(createFakeFiles());
+    const { context, requestRender } = panelContext({ fake: createFakeFiles() });
     const { host } = fakeHost();
     const controller = new DoorstopWorkspaceController(host, context, job);
 
@@ -245,7 +190,7 @@ describe("DoorstopWorkspaceController (fake host, no DOM)", () => {
   });
 
   it("skips requestRender while disconnected and restores it on reconnect", async () => {
-    const { context, requestRender } = panelContext(createFakeFiles());
+    const { context, requestRender } = panelContext({ fake: createFakeFiles() });
     const { host } = fakeHost();
     const controller = new DoorstopWorkspaceController(host, context, () =>
       Promise.resolve(makeResult([])),
@@ -268,12 +213,12 @@ describe("DoorstopWorkspaceController (fake host, no DOM)", () => {
   });
 
   it("selection/navigation setters write their fields and notify the host", async () => {
-    const { context, requestRender } = panelContext(createFakeFiles());
+    const { context, requestRender } = panelContext({ fake: createFakeFiles() });
     const { host } = fakeHost();
     const controller = new DoorstopWorkspaceController(
       host,
       context,
-      () => Promise.resolve(makeResult([makeItem("REQ0001", "REQ")])),
+      () => Promise.resolve(makeResult([makeItem({ uid: "REQ0001", documentPrefix: "REQ" })])),
     );
     controller.hostConnected();
     await settle();
@@ -291,8 +236,8 @@ describe("DoorstopWorkspaceController (fake host, no DOM)", () => {
   });
 
   it("drops a selection hidden by the state filter and on a vanished re-load", async () => {
-    const req001 = makeItem("REQ0001", "REQ");
-    const { context } = panelContext(createFakeFiles());
+    const req001 = makeItem({ uid: "REQ0001", documentPrefix: "REQ" });
+    const { context } = panelContext({ fake: createFakeFiles() });
     const { host } = fakeHost();
     let currentJob: () => Promise<DoorstopWorkspaceResult> = () => Promise.resolve(makeResult([req001]));
     const controller = new DoorstopWorkspaceController(host, context, () => currentJob());
@@ -324,7 +269,7 @@ describe("DoorstopWorkspaceController (fake host, no DOM)", () => {
     const contexts: WorkspacePanelContext[] = [];
     const controllers: DoorstopWorkspaceController[] = [];
     for (let i = 0; i < DOORSTOP_WORKSPACE_STATE_LIMIT; i += 1) {
-      const { context } = panelContext(createFakeFiles(), makeWorkspace(i));
+      const { context } = panelContext({ fake: createFakeFiles(), workspace: makeWorkspace(`workspace-${String(i)}`) });
       contexts.push(context);
       const controller = registry.for(context);
       controller.hostConnected();
@@ -335,20 +280,20 @@ describe("DoorstopWorkspaceController (fake host, no DOM)", () => {
 
     // Adding one more past the limit evicts the least-recently-used — now
     // workspace 1 (workspace 0 was bumped to the tail).
-    const { context: nextContext } = panelContext(createFakeFiles(), makeWorkspace(99));
+    const { context: nextContext } = panelContext({ fake: createFakeFiles(), workspace: makeWorkspace("workspace-99") });
     const next = registry.for(nextContext);
     next.hostConnected();
     expect(controllers[1]!.host.isConnected).toBe(false); // evicted
     expect(controllers[0]!.host.isConnected).toBe(true); // bumped tail survives
 
     // The evicted workspace's old controller is gone; a fresh get creates a new one.
-    const { context: freshContext } = panelContext(createFakeFiles(), makeWorkspace(1));
+    const { context: freshContext } = panelContext({ fake: createFakeFiles(), workspace: makeWorkspace("workspace-1") });
     const fresh = registry.for(freshContext);
     expect(fresh).not.toBe(controllers[1]);
   });
 
   it("toggles runInProgress and commits/dismisses lastRun through the run mutators", async () => {
-    const { context, requestRender } = panelContext(createFakeFiles());
+    const { context, requestRender } = panelContext({ fake: createFakeFiles() });
     const { host } = fakeHost();
     const controller = new DoorstopWorkspaceController(host, context, () =>
       Promise.resolve(makeResult([])),
@@ -388,7 +333,7 @@ describe("DoorstopWorkspaceController (fake host, no DOM)", () => {
   });
 
   it("keeps lastRun across invalidate()/load() and drops only the render notification while disconnected", async () => {
-    const { context, requestRender } = panelContext(createFakeFiles());
+    const { context, requestRender } = panelContext({ fake: createFakeFiles() });
     const { host } = fakeHost();
     const controller = new DoorstopWorkspaceController(host, context, () =>
       Promise.resolve(makeResult([])),
@@ -448,16 +393,20 @@ describe("DoorstopWorkspaceController (baseline cache, Phase D step 13)", () => 
       digits: 4,
       extra: { attributes: { reviewed: ["owner"] } },
     });
-    const req0001 = makeItem("REQ0001", "REQ", { path: "reqs/REQ0001.yml", level: "1.0", text: "X" });
-    const req0002 = makeItem("REQ0002", "REQ", { path: "reqs/REQ0002.yml", level: "1.1", text: "Y" });
-    const oldVersion = makeItem("REQ0003", "REQ", {
+    const req0001 = makeItem({ uid: "REQ0001", documentPrefix: "REQ", path: "reqs/REQ0001.yml", level: "1.0", text: "X" });
+    const req0002 = makeItem({ uid: "REQ0002", documentPrefix: "REQ", path: "reqs/REQ0002.yml", level: "1.1", text: "Y" });
+    const oldVersion = makeItem({
+      uid: "REQ0003",
+      documentPrefix: "REQ",
       path: "reqs/REQ0003.yml",
       level: "1.2",
       text: "The system shall do Z.\nAnd approve.",
       links: [{ uid: "REQ0001", fingerprint: null }],
       attributes: { owner: "team-a" },
     });
-    const current = makeItem("REQ0003", "REQ", {
+    const current = makeItem({
+      uid: "REQ0003",
+      documentPrefix: "REQ",
       path: "reqs/REQ0003.yml",
       level: "1.2",
       text: "The system shall do Z.\nAnd approve.\nAsync.",
@@ -490,10 +439,9 @@ describe("DoorstopWorkspaceController (baseline cache, Phase D step 13)", () => 
   }
 
   function baselineController(backend: Mock) {
-    const { context, requestRender } = panelContext(createFakeFiles());
-    const contextWithBackend: WorkspacePanelContext = { ...context, backend: { request: backend } };
+    const { context, requestRender } = panelContext({ fake: createFakeFiles(), backend });
     const { host } = fakeHost();
-    const controller = new DoorstopWorkspaceController(host, contextWithBackend, () =>
+    const controller = new DoorstopWorkspaceController(host, context, () =>
       Promise.resolve(baselineResult()),
     );
     controller.hostConnected();
@@ -609,12 +557,11 @@ describe("DoorstopWorkspaceController (git status, plan-add-git-actions Phase C 
   /** A controller with a counting load job (detects invalidate-driven
    *  reloads) and a mock backend. */
   function statusController(backend: Mock, loadCount: { calls: number }) {
-    const { context, requestRender } = panelContext(createFakeFiles());
-    const contextWithBackend: WorkspacePanelContext = { ...context, backend: { request: backend } };
+    const { context, requestRender } = panelContext({ fake: createFakeFiles(), backend });
     const { host } = fakeHost();
-    const controller = new DoorstopWorkspaceController(host, contextWithBackend, () => {
+    const controller = new DoorstopWorkspaceController(host, context, () => {
       loadCount.calls += 1;
-      return Promise.resolve(makeResult([makeItem("REQ0001", "REQ")]));
+      return Promise.resolve(makeResult([makeItem({ uid: "REQ0001", documentPrefix: "REQ" })]));
     });
     controller.hostConnected();
     return { controller, requestRender };
@@ -964,8 +911,8 @@ describe("doorstopPaths (plan-add-git-actions Phase C step 11)", () => {
     const rootDoc = makeDocument({ directoryPath: "", configPath: ".doorstop.yml" });
     const reqsDoc = makeDocument();
     const items = [
-      makeItem("REQ0001", "REQ", { path: "reqs/REQ0001.yml" }),
-      makeItem("REQ0002", "REQ", { path: "reqs/REQ0002.yml" }),
+      makeItem({ uid: "REQ0001", documentPrefix: "REQ", path: "reqs/REQ0001.yml" }),
+      makeItem({ uid: "REQ0002", documentPrefix: "REQ", path: "reqs/REQ0002.yml" }),
     ];
     const index = buildDoorstopIndex(
       [rootDoc, reqsDoc],
@@ -988,7 +935,7 @@ describe("doorstopPaths (plan-add-git-actions Phase C step 11)", () => {
 
   it("omits the root marker when discovery did not enumerate it", () => {
     // makeResult's index carries no knownFilePaths at all.
-    const result = makeResult([makeItem("REQ0001", "REQ", { path: "reqs/REQ0001.yml" })]);
+    const result = makeResult([makeItem({ uid: "REQ0001", documentPrefix: "REQ", path: "reqs/REQ0001.yml" })]);
     expect(doorstopPaths(result)).toEqual(["reqs/.doorstop.yml", "reqs/REQ0001.yml"]);
   });
 });
@@ -997,14 +944,14 @@ describe("DoorstopWorkspaceController (git stage/unstage/commit dispatch, plan-a
   /** A controller with a counting load job whose backend answers the given
    *  operation (mirrors the baseline describe's `baselineController`). */
   function gitRunController(backend: Mock, loadCount: { calls: number }) {
-    const { context } = panelContext(createFakeFiles());
+    const { context } = panelContext({ fake: createFakeFiles(), backend });
     const { host } = fakeHost();
     const controller = new DoorstopWorkspaceController(
       host,
-      { ...context, backend: { request: backend } },
+      context,
       () => {
         loadCount.calls += 1;
-        return Promise.resolve(makeResult([makeItem("REQ0001", "REQ")]));
+        return Promise.resolve(makeResult([makeItem({ uid: "REQ0001", documentPrefix: "REQ" })]));
       },
     );
     controller.hostConnected();
@@ -1667,41 +1614,4 @@ describe("loadDoorstopWorkspace (end-to-end over the fake files adapter)", () =>
 
 function fakeHost(): { host: DoorstopWorkspaceHost } {
   return { host: { isConnected: false } };
-}
-
-function makeWorkspace(id: number): Workspace {
-  return { ...doorstopWorkspace, id: `workspace-${String(id)}` };
-}
-
-/** Build one panel context wrapping the fake files adapter plus a
- *  `requestRender` spy — the controller's render path fires this (via the
- *  context host). */
-function panelContext(
-  fake: FakeWorkspaceFiles,
-  workspace: Workspace = doorstopWorkspace,
-): { context: WorkspacePanelContext; requestRender: Mock } {
-  const requestRender = vi.fn();
-  const context: WorkspacePanelContext = {
-    machine: { id: "local", name: "local", kind: "local" },
-    workspace,
-    state: {
-      selectedWorkspace: workspace,
-      workspaceTool: "opendoor:workspace.doorstop",
-      mainView: "opendoor:workspace.doorstop",
-    },
-    files: fake.files,
-    host: { requestRender },
-    prompt: { insertText: () => undefined, getText: () => "", getSelection: () => null },
-    terminal: { open: () => undefined, runCommand: () => Promise.reject(new Error("not implemented")) },
-  };
-  return { context, requestRender };
-}
-
-/** How many microtask turns a bare `await settle()` waits for a resolved
- *  promise chain to flush. A magic number, but named and shared so every
- *  test's timing assumption is uniform. */
-const SETTLE_TICKS = 10;
-
-async function settle(): Promise<void> {
-  for (let index = 0; index < SETTLE_TICKS; index += 1) await Promise.resolve();
 }
