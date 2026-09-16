@@ -779,7 +779,7 @@ export const panelStyles = css`
         .doorstop-menu-items {
           position: absolute;
           right: 0;
-          top: calc(100% + 4px);
+          bottom: calc(100% + 4px);
           z-index: 3;
           min-width: 180px;
           display: grid;
