@@ -1062,7 +1062,7 @@ function defineDoorstopPanelBodyElement(): void {
               ? `${item.uid} is already reviewed against its current fingerprint`
               : `Mark ${item.uid} reviewed`}
             @click=${() => { this.reviewItem(item); }}
-          >Review</button>
+          >Approve</button>
           <button
             type="button"
             class="doorstop-clear"
@@ -1072,13 +1072,6 @@ function defineDoorstopPanelBodyElement(): void {
               : `Re-record the parent fingerprints of ${item.uid}`}
             @click=${() => { this.clearSuspects(item, suspectUids); }}
           >Clear suspect links</button>
-          <button
-            type="button"
-            class="doorstop-edit"
-            ?disabled=${this.runInProgress !== undefined}
-            title=${`Open ${item.uid} in the editor`}
-            @click=${() => { this.editItem(item); }}
-          >Edit</button>
           ${gitStatus === undefined
             ? nothing
             : html`<button
