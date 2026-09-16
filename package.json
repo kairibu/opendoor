@@ -1,6 +1,6 @@
 {
   "name": "opendoor-plugin",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Opendoor — a pi-web browser plugin that surfaces Doorstop requirements stored in the workspace: the document tree, per-item state (reviewed/unreviewed changes, suspect links), validation findings, and one-click doorstop CLI actions.",
   "type": "module",
   "license": "MIT",
