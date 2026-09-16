@@ -659,9 +659,32 @@ export const panelStyles = css`
           background: var(--pi-selection-bg);
         }
 
+        /* The per-link trash can (pointer-only, see {@link renderLinkOut}):
+           right-aligned in the flex row, mirroring .doorstop-item-add. */
+        .doorstop-link-remove {
+          display: inline-flex;
+          align-items: center;
+          align-self: center;
+          flex: 0 0 auto;
+          margin-left: auto;
+          color: var(--pi-muted);
+          cursor: pointer;
+        }
+
+        .doorstop-link-remove:hover {
+          color: var(--pi-text);
+        }
+
         .doorstop-fingerprint {
           color: var(--pi-muted);
           font-size: 11px;
+          /* The link row wraps, which could push the trash can onto a second
+             line on narrow panes. Let the fingerprint shrink and ellipsize
+             instead (min-width: 0 lifts the flex min-content floor). */
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
         }
 
         .doorstop-attributes {

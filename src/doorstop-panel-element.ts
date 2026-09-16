@@ -13,6 +13,7 @@ import {
   gitUnstageIconSvg,
   publishIconSvg,
   refreshIconSvg,
+  trashIconSvg,
   validateIconSvg,
 } from "./doorstop-panel-icons.js";
 import type {
@@ -961,12 +962,28 @@ function defineDoorstopPanelBodyElement(): void {
         if (item.links.length === 0) return html`<p class="doorstop-muted">No parent links.</p>`;
         return html`
           <div class="doorstop-links" aria-label="Parent links">
-            ${item.links.map((link) => this.renderLinkOut(link, index))}
+            ${item.links.map((link) => this.renderLinkOut(item, link, index))}
           </div>
         `;
       }
 
-      private renderLinkOut(link: LinkRecord, index: DoorstopIndex): TemplateResult {
+      private renderLinkOut(item: ItemRecord, link: LinkRecord, index: DoorstopIndex): TemplateResult {
+        // The trash can is pointer-only by design: the known-target row IS a
+        // <button>, so a nested <button> would be hoisted out by the HTML
+        // parser. A <span> parses fine, but a role="button" that is not
+        // keyboard-operable would violate the ARIA contract — and the
+        // keyboard path is the palette's Unlink input — so it is hidden from
+        // the accessibility tree (`aria-hidden`) and left as a pointer
+        // shortcut. `stopPropagation` is mandatory on the known-target row so
+        // the click does not also navigate to the link target.
+        const remove = html`
+          <span
+            class="doorstop-link-remove"
+            aria-hidden="true"
+            title=${`doorstop unlink ${item.uid} ${link.uid}`}
+            @click=${(event: Event) => { event.stopPropagation(); this.unlinkLink(item, link.uid); }}
+          >${trashIconSvg}</span>
+        `;
         const target = index.byUid.get(link.uid);
         if (target === undefined) {
           return html`
@@ -974,6 +991,7 @@ function defineDoorstopPanelBodyElement(): void {
               <code>${link.uid}</code>
               <span class="doorstop-chip doorstop-chip-danger">unknown</span>
               <span class="doorstop-fingerprint">not in the index — ${link.fingerprint === null ? "no recorded fingerprint" : `recorded ${shortFingerprint(link.fingerprint)}`}</span>
+              ${remove}
             </div>
           `;
         }
@@ -990,6 +1008,7 @@ function defineDoorstopPanelBodyElement(): void {
             <code>${link.uid}</code>
             <span class=${suspect ? "doorstop-chip doorstop-chip-danger" : "doorstop-chip doorstop-chip-ok"}>${suspect ? "suspect" : "ok"}</span>
             <span class="doorstop-fingerprint">recorded ${shortFingerprint(link.fingerprint)} · current ${shortFingerprint(current)}</span>
+            ${remove}
           </button>
         `;
       }
@@ -1224,6 +1243,28 @@ function defineDoorstopPanelBodyElement(): void {
         const controller = this.controller;
         if (controller === undefined || controller.runInProgress !== undefined) return;
         void controller.runGitUnstage([item.path], `Git: unstage ${item.uid}`);
+      }
+
+      /** Unlink one parent from one item — the same `unlink` run the palette's
+       *  free-text Unlink button dispatches, but with the target sourced from
+       *  the index (`link.uid`) instead of an input. The guard mirrors
+       *  {@link stageItem}: a run already in flight must never be overlapped.
+       *  There is no `targetError` interaction: an index-sourced UID cannot
+       *  fail the free-text validation, and `parseDoorstopRunRequest`
+       *  re-validates server-side. */
+      private unlinkLink(item: ItemRecord, target: string): void {
+        const controller = this.controller;
+        // Deliberately redundant with the guard inside runDoorstop: keeping the
+        // same early-out here as stageItem/unstageItem makes the in-flight
+        // contract uniform across every detail-pane action.
+        if (controller === undefined || controller.runInProgress !== undefined) return;
+        this.runDoorstop(
+          "unlink",
+          `Doorstop: unlink ${item.uid}`,
+          { op: "unlink", uid: item.uid, target },
+          `doorstop unlink ${item.uid} ${target}`,
+          false,
+        );
       }
 
       private onGitStageClick = (): void => {

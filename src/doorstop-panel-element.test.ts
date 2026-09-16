@@ -871,12 +871,111 @@ describe("DoorstopPanelBodyElement (detail pane: links, references, attributes, 
     expect(root.querySelector("script")).toBeNull();
     expect(root.querySelector("img")).toBeNull();
     expect(root.querySelector("b")).toBeNull();
-    expect(body.shadowRoot?.innerHTML).not.toContain("<script>");
-    expect(body.shadowRoot?.innerHTML).not.toContain("<img");
+    // The trash can's `title` is the one place a hostile UID legitimately
+    // appears verbatim: it is an attribute value, and the HTML serializer does
+    // not entity-escape `<`/`>` inside attribute values. Assert it landed in
+    // `getAttribute` (not as parsed markup) and then drop exactly that one
+    // affordance's title before the substring scan, so every OTHER attribute,
+    // text node, and tag name is still checked. A blanket `title="..."`
+    // strip would mask a future injection into any title attribute.
+    const trash = linksOut?.querySelector<HTMLElement>(".doorstop-link-remove");
+    expect(trash?.getAttribute("title")).toBe("doorstop unlink REQ0001 <img src=x onerror=alert(3)>");
+    trash?.removeAttribute("title");
+    const markup = body.shadowRoot?.innerHTML ?? "";
+    expect(markup).not.toContain("<script>");
+    expect(markup).not.toContain("<img");
     // Lit escapes the text into entity form instead.
     expect(detail2.innerHTML).toContain("&lt;script&gt;");
     expect(detail2.innerHTML).toContain("&lt;b&gt;bold&lt;/b&gt;");
     expect(detail2.innerHTML).toContain("&lt;img");
+  });
+
+  it("renders a per-row trash can that unlinks the clicked parent without navigating", async () => {
+    const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()));
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+    root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0002"]')?.click();
+    bindBody(body, controller, context);
+    await flushMicro(body);
+
+    const rows = [...root.querySelectorAll<HTMLElement>('[aria-label="Parent links"] .doorstop-link-row')];
+    expect(rows).toHaveLength(1);
+    const remove = rows[0]?.querySelector<HTMLElement>(".doorstop-link-remove");
+    expect(remove).not.toBeNull();
+    // Pointer-only, aria-hidden affordance: the row IS a <button>, so a nested
+    // button would be hoisted by the HTML parser (see renderLinkOut).
+    expect(remove?.getAttribute("aria-hidden")).toBe("true");
+    expect(remove?.getAttribute("title")).toBe("doorstop unlink REQ0002 REQ0001");
+
+    remove?.click();
+    expect(context.terminal.runCommand).toHaveBeenLastCalledWith({
+      title: "Doorstop: unlink REQ0002",
+      command: "doorstop unlink REQ0002 REQ0001",
+      metadata: { "opendoor.op": "unlink" },
+      open: false,
+    });
+    // stopPropagation: the trash click must not also select the parent link.
+    expect(controller.selectedUid).toBe("REQ0002");
+  });
+
+  it("renders the trash can on an unknown-target link row and dispatches the same unlink", async () => {
+    const item = makeItem({
+      uid: "REQ0002",
+      documentPrefix: "REQ",
+      path: "reqs/REQ0002.yml",
+      links: [{ uid: "REQ0009", fingerprint: null }],
+    });
+    const { body, controller, context } = await mountBody(() =>
+      Promise.resolve(makeResult([item], [makeDocument()])),
+    );
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+    root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0002"]')?.click();
+    bindBody(body, controller, context);
+    await flushMicro(body);
+
+    const row = root.querySelector<HTMLElement>('[aria-label="Parent links"] .doorstop-link-row');
+    // The unknown target renders a <div> (not a clickable <button>).
+    expect(row?.tagName).toBe("DIV");
+    const remove = row?.querySelector<HTMLElement>(".doorstop-link-remove");
+    expect(remove).not.toBeNull();
+    remove?.click();
+    expect(context.terminal.runCommand).toHaveBeenLastCalledWith({
+      title: "Doorstop: unlink REQ0002",
+      command: "doorstop unlink REQ0002 REQ0009",
+      metadata: { "opendoor.op": "unlink" },
+      open: false,
+    });
+  });
+
+  it("does not dispatch the unlink while a run is already in flight", async () => {
+    const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()));
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+    root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0002"]')?.click();
+    bindBody(body, controller, context);
+    await flushMicro(body);
+
+    controller.runInProgress = "Doorstop: validate";
+    bindBody(body, controller, context);
+    await flushMicro(body);
+    const remove = root.querySelector<HTMLElement>('[aria-label="Parent links"] .doorstop-link-remove');
+    expect(remove).not.toBeNull();
+    remove?.click();
+    await settle();
+    expect(context.terminal.runCommand).not.toHaveBeenCalled();
+  });
+
+  it("renders no trash can when the item has no parent links", async () => {
+    const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()));
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+    // TST001 has no outgoing links.
+    root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="TST001"]')?.click();
+    bindBody(body, controller, context);
+    await flushMicro(body);
+    expect(root.querySelector(".doorstop-detail")?.textContent).toContain("No parent links.");
+    expect(root.querySelector(".doorstop-link-remove")).toBeNull();
   });
 });
 
