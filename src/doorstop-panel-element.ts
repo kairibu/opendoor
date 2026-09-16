@@ -888,9 +888,9 @@ function defineDoorstopPanelBodyElement(): void {
             <div class="doorstop-state-chip-row">
               ${item.stateKeys.map((key) => this.renderStateChip(key))}
             </div>
-            ${this.renderChangesSinceReview(item)}
             <h4 class="doorstop-section-title">Text</h4>
             <p class=${item.text === "" ? "doorstop-text doorstop-text-empty" : "doorstop-text"}>${item.text === "" ? "empty" : item.text}</p>
+            ${this.renderChangesSinceReview(item)}
             <h4 class="doorstop-section-title">Parent links</h4>
             ${this.renderLinksOut(item, result.index)}
             <h4 class="doorstop-section-title">Child links</h4>
