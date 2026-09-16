@@ -1115,17 +1115,6 @@ function defineDoorstopPanelBodyElement(): void {
             <input
               type="text"
               class="doorstop-target-input"
-              data-op="unlink"
-              placeholder="parent UID"
-              ${ref(this.unlinkInputRef)}
-              @keydown=${this.onTargetKeydown}
-            />
-            <button type="button" class="doorstop-unlink" title=${`doorstop unlink ${item.uid} <target>`} ?disabled=${this.runInProgress !== undefined} @click=${() => { this.runTargetOp("unlink", this.unlinkInputRef, item); }}>Unlink</button>
-          </div>
-          <div class="doorstop-op">
-            <input
-              type="text"
-              class="doorstop-target-input"
               data-op="link"
               placeholder="parent UID"
               ${ref(this.linkInputRef)}
