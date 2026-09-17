@@ -30,8 +30,8 @@
 
 import type { ReactiveController } from "lit";
 import type { JsonValue, WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
-import type { DoorstopDocumentConfig, DoorstopFiles, ItemRecord, ItemStateKey } from "./doorstop-contract.js";
-import { formatUnknownError } from "./doorstop-contract.js";
+import type { DoorstopDocumentConfig, DoorstopFiles, ItemRecord, ItemStateKey } from "../doorstop-contract.js";
+import { formatUnknownError } from "../doorstop-contract.js";
 import {
   DOORSTOP_BASELINE_OPERATION,
   DOORSTOP_GIT_COMMIT_OPERATION,
@@ -50,10 +50,10 @@ import {
   type DoorstopGitStatusResponse,
   type DoorstopGitUnstageResponse,
   type DoorstopRunRequest,
-} from "./doorstop-backend-contract.js";
-import { parseDoorstopItem } from "./doorstop-model.js";
-import { computeItemStamp } from "./doorstop-state.js";
-import { diffItemFields, type ItemFieldDiff } from "./doorstop-diff.js";
+} from "../doorstop-backend-contract.js";
+import { parseDoorstopItem } from "../doorstop-model.js";
+import { computeItemStamp } from "../doorstop-state.js";
+import { diffItemFields, type ItemFieldDiff } from "../doorstop-diff.js";
 import type { DoorstopWorkspaceResult } from "./doorstop-panel.js";
 
 /**

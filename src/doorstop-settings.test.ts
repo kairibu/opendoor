@@ -6,7 +6,9 @@
 // (warning + defaults, never throwing), the strict `version` gate, unknown
 // keys tolerated for forward compatibility, `publishTarget` safe-relative-
 // path validation, and `excludedDirectories` name validation (invalid
-// entries dropped with warnings, dedup, the 16-cap, the 64-char cap).
+// entries dropped with warnings, dedup, the 16-cap, the 64-char cap), and
+// `showAdditionalAttribute` name validation (invalid entries dropped with
+// warnings, trimmed, dedup, the 16-cap).
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "vitest";
@@ -16,6 +18,7 @@ import {
   DEFAULT_PUBLISH_TARGET,
   MAX_EXCLUDED_DIRECTORY_LENGTH,
   MAX_EXCLUDED_DIRECTORIES,
+  MAX_SHOWN_ATTRIBUTES,
   OPENDOOR_SETTINGS_PATH,
   OPENDOOR_SETTINGS_VERSION,
   parseOpendoorSettings,
@@ -130,7 +133,7 @@ describe("parseOpendoorSettingsText (JSON layer)", () => {
 describe("parseOpendoorSettings (validation)", () => {
   it("tolerates unknown keys silently (forward compatibility)", () => {
     const result = parseOpendoorSettings({ version: 1, futureKey: { anything: [1, 2, 3] }, publishTarget: "site" });
-    expect(result.settings).toEqual({ publishTarget: "site", excludedDirectories: [], commitAfterReview: false });
+    expect(result.settings).toEqual({ publishTarget: "site", excludedDirectories: [], showAdditionalAttribute: [], commitAfterReview: false });
     expect(result.diagnostics).toEqual([]);
   });
 
@@ -235,6 +238,57 @@ describe("parseOpendoorSettings (validation)", () => {
       const result = parseOpendoorSettings({ excludedDirectories: "dist" });
       expect(result.settings.excludedDirectories).toEqual([]);
       expect(result.diagnostics[0]?.message).toContain("must be an array");
+    });
+  });
+
+  describe("showAdditionalAttribute", () => {
+    it("accepts attribute NAMES (trimmed), preserving order and deduplicating duplicates silently", () => {
+      const result = parseOpendoorSettings({
+        showAdditionalAttribute: ["component", "  priority ", "component", "text"],
+      });
+      expect(result.settings.showAdditionalAttribute).toEqual(["component", "priority", "text"]);
+      expect(result.diagnostics).toEqual([]);
+    });
+
+    it("drops non-string and empty entries with a warning each, keeping the valid ones in order", () => {
+      const result = parseOpendoorSettings({
+        showAdditionalAttribute: ["", "   ", 42, null, true, {}, "good"],
+      });
+      expect(result.settings.showAdditionalAttribute).toEqual(["good"]);
+      expect(result.diagnostics.length).toBe(6);
+      expect(result.diagnostics.every((d) => d.message.includes("not a non-empty string"))).toBe(true);
+    });
+
+    it("warns (with none) when showAdditionalAttribute is not an array", () => {
+      for (const bad of ["text", 42, null, true]) {
+        const result = parseOpendoorSettings({ showAdditionalAttribute: bad });
+        expect(result.settings.showAdditionalAttribute).toEqual([]);
+        expect(result.diagnostics).toEqual([
+          { severity: WARNING, path: OPENDOOR_SETTINGS_PATH, message: expect.stringContaining("must be an array") },
+        ]);
+      }
+    });
+
+    it("caps the distinct names at 16 and warns once about the overflow", () => {
+      const entries = Array.from({ length: MAX_SHOWN_ATTRIBUTES + 3 }, (_, index) => `attr${String(index)}`);
+      const result = parseOpendoorSettings({ showAdditionalAttribute: entries });
+      expect(result.settings.showAdditionalAttribute).toEqual(entries.slice(0, MAX_SHOWN_ATTRIBUTES));
+      expect(result.diagnostics).toEqual([
+        { severity: WARNING, path: OPENDOOR_SETTINGS_PATH, message: expect.stringContaining("more than 16 entries") },
+      ]);
+    });
+
+    it("accepts unknown attribute keys silently (the settings chain cannot see the tree)", () => {
+      const result = parseOpendoorSettings({ showAdditionalAttribute: ["no-such-attribute", "text"] });
+      expect(result.settings.showAdditionalAttribute).toEqual(["no-such-attribute", "text"]);
+      expect(result.diagnostics).toEqual([]);
+    });
+
+    it("truncates a hostile entry echo inside the diagnostic", () => {
+      const huge = " ".repeat(10_000); // trims to empty → dropped with the echo truncated
+      const result = parseOpendoorSettings({ showAdditionalAttribute: [huge] });
+      expect(result.settings.showAdditionalAttribute).toEqual([]);
+      expect(result.diagnostics[0]?.message.length ?? 0).toBeLessThan(300);
     });
   });
 

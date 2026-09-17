@@ -46,6 +46,13 @@
 //     at 16 entries. Invalid entries are warned about and dropped; the
 //     extras beyond the cap are dropped with one warning. The discovery
 //     chain merges these with its built-in `.git`/`node_modules` skip set.
+//   - showAdditionalAttribute: NAMES of item attributes to render in the
+//     item-list rows as `key: value` pairs, in the configured order.
+//     Entries are trimmed, deduplicated (first wins), and capped at 16;
+//     invalid entries are warned about and dropped. The modeled `text` and
+//     any extended attribute key are accepted; an attribute an item does
+//     not have is skipped for that row. Empty/absent → no change to today's
+//     rows.
 //   - commitAfterReview: an opt-in boolean (default false) that makes the
 //     Review action record a pathspec-limited git commit of the item file
 //     after the review run succeeds (the review→commit pipeline, plan
@@ -70,6 +77,8 @@ export const OPENDOOR_SETTINGS_VERSION = 1;
 export const DEFAULT_PUBLISH_TARGET = "./public";
 /** Hard cap on distinct excluded-directory names. */
 export const MAX_EXCLUDED_DIRECTORIES = 16;
+/** Hard cap on distinct additionally-shown attribute names. */
+export const MAX_SHOWN_ATTRIBUTES = 16;
 /** Hard cap on the length of one excluded-directory name. */
 export const MAX_EXCLUDED_DIRECTORY_LENGTH = 64;
 
@@ -82,6 +91,13 @@ export interface OpendoorSettings {
    *  built-in `.git`/`node_modules` skip set. Validated, deduplicated, and
    *  capped at {@link MAX_EXCLUDED_DIRECTORIES}. */
   excludedDirectories: readonly string[];
+  /** NAMES of item attributes rendered in the item-list rows as `key: value`
+   *  pairs, in the configured order. `text` addresses the modeled item body;
+   *  every other name is looked up in the item's extended attributes. An
+   *  attribute an item does not have is skipped for that row. Empty/absent
+   *  means no change to today's rows. Validated, deduplicated, and capped at
+   *  {@link MAX_SHOWN_ATTRIBUTES}. */
+  showAdditionalAttribute: readonly string[];
   /** Opt-in review→commit pipeline (plan Phase C step 9): when true, a
    *  backend Review run records a pathspec-limited git commit of the item
    *  file with the conforming `doorstop: review <uid>` message after the
@@ -100,6 +116,7 @@ export interface OpendoorSettings {
 export const DEFAULT_OPENDOOR_SETTINGS: Readonly<OpendoorSettings> = Object.freeze({
   publishTarget: DEFAULT_PUBLISH_TARGET,
   excludedDirectories: Object.freeze([]),
+  showAdditionalAttribute: Object.freeze([]),
   commitAfterReview: false,
 });
 
@@ -250,6 +267,22 @@ export function parseOpendoorSettings(value: unknown): OpendoorSettingsResult {
     }
   }
 
+  // showAdditionalAttribute: an array of attribute NAMES, validated/deduped/
+  // capped (the excludedDirectories precedent — `text` is a legal entry).
+  let showAdditionalAttribute: string[] = [];
+  const rawShown = value["showAdditionalAttribute"];
+  if (rawShown !== undefined) {
+    if (!Array.isArray(rawShown)) {
+      diagnostics.push({
+        severity: "warning",
+        path: OPENDOOR_SETTINGS_PATH,
+        message: `${OPENDOOR_SETTINGS_PATH} "showAdditionalAttribute" must be an array; using none`,
+      });
+    } else {
+      showAdditionalAttribute = parseShowAdditionalAttribute(rawShown, diagnostics);
+    }
+  }
+
   // commitAfterReview: an opt-in boolean (default false). A wrong type is
   // warned about and falls back to the default — the flag is never coerced
   // ("yes" strings must not silently become commits).
@@ -267,7 +300,7 @@ export function parseOpendoorSettings(value: unknown): OpendoorSettingsResult {
     }
   }
 
-  return { settings: { publishTarget, excludedDirectories, commitAfterReview }, diagnostics };
+  return { settings: { publishTarget, excludedDirectories, showAdditionalAttribute, commitAfterReview }, diagnostics };
 }
 
 /** Validate the excluded-directory names: plain names only (no separators, no
@@ -293,6 +326,40 @@ function parseExcludedDirectories(entries: unknown[], diagnostics: DiscoveryDiag
         severity: "warning",
         path: OPENDOOR_SETTINGS_PATH,
         message: `${OPENDOOR_SETTINGS_PATH} "excludedDirectories" has more than ${String(MAX_EXCLUDED_DIRECTORIES)} entries; the rest were ignored`,
+      });
+      break;
+    }
+    seen.add(name);
+    result.push(name);
+  }
+  return result;
+}
+
+/** Validate the additionally-shown attribute NAMES: non-empty strings,
+ *  trimmed, deduplicated (first wins) and capped at
+ *  {@link MAX_SHOWN_ATTRIBUTES}. Invalid entries become warning diagnostics
+ *  and are dropped. Entries address the configured attribute NAMES only — the
+ *  settings chain cannot see the tree, so an unknown key is accepted here and
+ *  simply skipped per row by the view model. */
+function parseShowAdditionalAttribute(entries: unknown[], diagnostics: DiscoveryDiagnostic[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const entry of entries) {
+    const name = typeof entry === "string" ? entry.trim() : "";
+    if (name === "") {
+      diagnostics.push({
+        severity: "warning",
+        path: OPENDOOR_SETTINGS_PATH,
+        message: `${OPENDOOR_SETTINGS_PATH} "showAdditionalAttribute" entry "${truncateEcho(String(entry))}" is not a non-empty string and was dropped`,
+      });
+      continue;
+    }
+    if (seen.has(name)) continue; // duplicates are deduplicated silently
+    if (result.length >= MAX_SHOWN_ATTRIBUTES) {
+      diagnostics.push({
+        severity: "warning",
+        path: OPENDOOR_SETTINGS_PATH,
+        message: `${OPENDOOR_SETTINGS_PATH} "showAdditionalAttribute" has more than ${String(MAX_SHOWN_ATTRIBUTES)} entries; the rest were ignored`,
       });
       break;
     }

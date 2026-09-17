@@ -24,7 +24,7 @@ import type {
 } from "@jmfederico/pi-web/plugin-api";
 import type { DoorstopDocumentConfig, DoorstopIndex, ItemRecord } from "./doorstop-contract.js";
 import { buildDoorstopIndex } from "./doorstop-model.js";
-import type { DoorstopWorkspaceResult } from "./doorstop-panel.js";
+import type { DoorstopWorkspaceResult } from "./browser/doorstop-panel.js";
 import { DEFAULT_OPENDOOR_SETTINGS } from "./doorstop-settings.js";
 import { computeItemStamp, computeItemStates } from "./doorstop-state.js";
 import { createFakeFiles, type FakeWorkspaceFiles } from "./test-support.js";

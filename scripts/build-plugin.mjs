@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // ---------------------------------------------------------------------------
 // Build the opendoor pi-web plugin: esbuild-bundle the browser entry from
-// src/pi-web-plugin.ts into dist/browser/pi-web-plugin.js and the paired
+// src/browser/pi-web-plugin.ts into dist/browser/pi-web-plugin.js and the paired
 // server entry from src/server-plugin.ts into dist/server-plugin.js, then
 // copy non-TS assets (package.json manifest) verbatim.
 //
@@ -49,7 +49,7 @@ const outDir = resolve(rootDir, "dist");
 const watchMode = process.argv.includes("--watch");
 const cwd = process.cwd();
 
-const browserEntrySource = resolve(srcDir, "pi-web-plugin.ts");
+const browserEntrySource = resolve(srcDir, "browser", "pi-web-plugin.ts");
 const browserEntryOutput = resolve(outDir, "browser", "pi-web-plugin.js");
 const serverEntrySource = resolve(srcDir, "server-plugin.ts");
 const serverEntryOutput = resolve(outDir, "server-plugin.js");

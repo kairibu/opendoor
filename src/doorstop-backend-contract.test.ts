@@ -48,7 +48,7 @@ import {
   type DoorstopBaselineResponse,
   type DoorstopRunResponse,
 } from "./doorstop-backend-contract.js";
-import { isValidTargetUid } from "./doorstop-panel-elements.js";
+import { isValidTargetUid } from "./browser/doorstop-panel-elements.js";
 import { DEFAULT_OPENDOOR_SETTINGS, parseOpendoorSettings } from "./doorstop-settings.js";
 
 /** The server's exact output shape: `ServerPluginExecFileResult` fields

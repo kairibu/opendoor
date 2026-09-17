@@ -25,7 +25,7 @@
 //     without references gets no reference list to verify.
 // ---------------------------------------------------------------------------
 
-import type { ItemRecord } from "./doorstop-contract.js";
+import type { ItemRecord } from "../doorstop-contract.js";
 
 /** "A", "B", "C" → "A, B and C" (single element → that element; empty → ""). */
 function andJoin(values: readonly string[]): string {

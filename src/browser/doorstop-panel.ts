@@ -51,12 +51,12 @@ import type {
   DoorstopIndex,
   DoorstopTreeEntry,
   ItemRecord,
-} from "./doorstop-contract.js";
-import { formatUnknownError } from "./doorstop-contract.js";
-import { discoverDoorstopDocuments, MAX_CONCURRENT_READS } from "./doorstop-discovery.js";
-import { readOpendoorSettings, type OpendoorSettings } from "./doorstop-settings.js";
-import { buildDoorstopIndex, parseDoorstopItem } from "./doorstop-model.js";
-import { computeItemStates } from "./doorstop-state.js";
+} from "../doorstop-contract.js";
+import { formatUnknownError } from "../doorstop-contract.js";
+import { discoverDoorstopDocuments, MAX_CONCURRENT_READS } from "../doorstop-discovery.js";
+import { readOpendoorSettings, type OpendoorSettings } from "../doorstop-settings.js";
+import { buildDoorstopIndex, parseDoorstopItem } from "../doorstop-model.js";
+import { computeItemStates } from "../doorstop-state.js";
 import {
   DoorstopWorkspaceController,
   type DoorstopWorkspaceHost,

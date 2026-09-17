@@ -39,7 +39,7 @@ import type {
   WorkspacePanelContribution,
 } from "@jmfederico/pi-web/plugin-api";
 import { html, svg } from "lit";
-import type { DoorstopIndex } from "./doorstop-contract.js";
+import type { DoorstopIndex } from "../doorstop-contract.js";
 import type { DoorstopWorkspaceResult } from "./doorstop-panel.js";
 import { DoorstopWorkspaceRegistry, loadDoorstopWorkspace } from "./doorstop-panel.js";
 import { defineDoorstopPanelElements } from "./doorstop-panel-elements.js";

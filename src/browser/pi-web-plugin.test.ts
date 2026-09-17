@@ -15,7 +15,7 @@ import { html, svg } from "lit";
 import { describe, expect, it, vi } from "vitest";
 import type { PluginRuntimeContext, WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
 import plugin from "./pi-web-plugin.js";
-import { doorstopWorkspace, runtimeContext } from "./test-fixtures.js";
+import { doorstopWorkspace, runtimeContext } from "../test-fixtures.js";
 
 describe("bundled opendoor browser entry", () => {
   it("exports the host-expected plugin shape and contributes panel, actions, and label", () => {

@@ -31,15 +31,15 @@ import type {
   WorkspaceLabelItem,
   WorkspacePanelContext,
 } from "@jmfederico/pi-web/plugin-api";
-import type { DoorstopCounts } from "./doorstop-contract.js";
-import { buildDoorstopIndex } from "./doorstop-model.js";
+import type { DoorstopCounts } from "../doorstop-contract.js";
+import { buildDoorstopIndex } from "../doorstop-model.js";
 import type { DoorstopWorkspaceResult } from "./doorstop-panel.js";
-import { DEFAULT_OPENDOOR_SETTINGS } from "./doorstop-settings.js";
+import { DEFAULT_OPENDOOR_SETTINGS } from "../doorstop-settings.js";
 import { loadDoorstopWorkspace } from "./doorstop-panel.js";
 import type { DoorstopWorkspaceController } from "./doorstop-panel-controller.js";
 import { createOpendoorBrowserContributions } from "./doorstop-contributions.js";
-import { createFakeFiles, dirEntry, fileEntry, text, tree, type FakeWorkspaceFiles } from "./test-support.js";
-import { doorstopWorkspace, flushAll, makeDocument, makeWorkspace, panelContext } from "./test-fixtures.js";
+import { createFakeFiles, dirEntry, fileEntry, text, tree, type FakeWorkspaceFiles } from "../test-support.js";
+import { doorstopWorkspace, flushAll, makeDocument, makeWorkspace, panelContext } from "../test-fixtures.js";
 
 // The label cache's LRU bound (DOORSTOP_LABEL_STATE_LIMIT in
 // doorstop-contributions.ts, deliberately module-private); tests pin the

@@ -21,13 +21,13 @@ Full feature spec: [`docs/feature-doorstop-plugin.md`](docs/feature-doorstop-plu
 
 The plugin is fully wired and green, in two halves:
 
-- **Browser entry** (`src/pi-web-plugin.ts`, apiVersion 2, name `Opendoor`)
+- **Browser entry** (`src/browser/pi-web-plugin.ts`, apiVersion 2, name `Opendoor`)
   delegates to `createOpendoorBrowserContributions` in
-  `src/doorstop-contributions.ts`, which contributes:
+  `src/browser/doorstop-contributions.ts`, which contributes:
 
   - **panel** `workspace.doorstop` (title **Requirements**, order 60) — the Lit
     body element `<pi-web-opendoor-panel-body>`, driven by the per-workspace
-    controller registry (`src/doorstop-panel.ts`): five vertical sections —
+    controller registry (`src/browser/doorstop-panel.ts`): five vertical sections —
     `project-actions` (title, Items/Findings toggle, Refresh / Run validation
     / Publish HTML), `item-list` (filters row + item rows with state chips),
     `item-details` (links in/out, references, extended attributes,
@@ -59,7 +59,7 @@ The plugin is fully wired and green, in two halves:
   clamped to 8.5 s (the review+git pipeline shares one deadline budget under
   the host's 10 s callback bound), and per-workspace run serialization.
 
-Dispatch (per action, in `src/doorstop-panel-elements.ts`): when the workspace
+Dispatch (per action, in `src/browser/doorstop-panel-elements.ts`): when the workspace
 is opendoor-owned with an active backend, the action sends a structured
 request via `context.backend.request("doorstop.run", …)` (the review-commit
 flag rides along when the setting is enabled; the "Changes since review"
@@ -92,6 +92,7 @@ bundled workspace-tasks plugin. The *server* entry's host-scoped knobs
   "version": 1,
   "publish": { "target": "./public" },
   "discovery": { "excludedDirectories": ["published", "vendor"] },
+  "showAdditionalAttribute": ["text", "component"],
   "commitAfterReview": false
 }
 ```
@@ -104,6 +105,15 @@ bundled workspace-tasks plugin. The *server* entry's host-scoped knobs
 - `discovery.excludedDirectories` — additional directory names the
   `.doorstop.yml` walk never enters (merged with the built-in
   `.git`/`node_modules` skips, max 16 names).
+- `showAdditionalAttribute` — array of attribute NAMES rendered in every
+  item-list row as `key: value` (values jsonish-quoted, joined with ` · `, in
+  the configured order). Entries may be the modeled `text` (skipped when the
+  item body is empty) or any extended attribute key; an attribute an item
+  does not have is skipped for that row, and no unconfigured attribute ever
+  appears. Default `[]` leaves today's rows unchanged. Invalid entries are
+  dropped with a warning each, duplicates are deduplicated, the list is
+  capped at 16 names, and unknown keys are accepted (they simply match
+  nothing).
 - `commitAfterReview` — opt-in boolean (default `false`): when enabled on a
   paired workspace, the **Review** action's `doorstop review <uid>` is
   followed by a pathspec-limited git commit of the item file with the
@@ -150,12 +160,13 @@ bottom:
    all** button, and the **Git commit** control (message input + button); see
    **Git actions** below.
 2. **`item-list`** — a filters row (document chips, state filter, search)
-   above the item rows.
+   above the item rows; each row shows its level, UID, excerpt, any attributes
+   configured through `showAdditionalAttribute`, and its state chips.
 3. **`item-details`** — the selected item's full detail pane (unchanged).
 4. **`item-action-palette`** — the item actions (**Review**, **Clear suspect
-   links**, **Edit**, **Unlink**/**Link** + target UID inputs, **Ask agent**
-   menu), moved out of the detail pane so the row spans the panel at the same
-   height as the center-panel chat prompt footer. A muted "Select an item…"
+   links**, **Link** + target UID input, **Ask agent** menu), moved out of
+   the detail pane so the row spans the panel at the same height as the
+   center-panel chat prompt footer. A muted "Select an item…"
    placeholder keeps the palette at constant height while nothing is
    selected; the palette is hidden in the Findings view.
 5. **`status-bar`** — the run status row (badge, duration, **Dismiss**),

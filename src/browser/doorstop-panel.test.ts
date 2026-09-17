@@ -22,9 +22,9 @@ import {
   type DoorstopGitStatusFile,
   type DoorstopGitStatusResponse,
   type DoorstopGitUnstageResponse,
-} from "./doorstop-backend-contract.js";
-import { buildDoorstopIndex } from "./doorstop-model.js";
-import { computeItemStamp, computeItemStates } from "./doorstop-state.js";
+} from "../doorstop-backend-contract.js";
+import { buildDoorstopIndex } from "../doorstop-model.js";
+import { computeItemStamp, computeItemStates } from "../doorstop-state.js";
 import {
   DoorstopWorkspaceController,
   doorstopPaths,
@@ -39,7 +39,7 @@ import {
   loadDoorstopWorkspace,
   type DoorstopWorkspaceResult,
 } from "./doorstop-panel.js";
-import { DEFAULT_OPENDOOR_SETTINGS } from "./doorstop-settings.js";
+import { DEFAULT_OPENDOOR_SETTINGS } from "../doorstop-settings.js";
 import {
   commitOutcomeText,
   GIT_CHIP_LABELS,
@@ -51,8 +51,8 @@ import {
   itemStageable,
   itemUnstageable,
 } from "./doorstop-panel-view-model.js";
-import { createFakeFiles, dirEntry, fileEntry, text, tree } from "./test-support.js";
-import { makeDocument, makeItem, makeResult, makeWorkspace, panelContext, settle } from "./test-fixtures.js";
+import { createFakeFiles, dirEntry, fileEntry, text, tree } from "../test-support.js";
+import { makeDocument, makeItem, makeResult, makeWorkspace, panelContext, settle } from "../test-fixtures.js";
 
 // --- small real-shape fixtures ---------------------------------------------------------
 
@@ -1493,7 +1493,7 @@ describe("loadDoorstopWorkspace (end-to-end over the fake files adapter)", () =>
       },
       reads: {
         ".pi-web/opendoor.json": text(
-          ["{", "  \"version\": 1,", "  \"publishTarget\": \"./site\",", "  \"excludedDirectories\": [\"dist\"]", "}"].join("\n"),
+          ["{", "  \"version\": 1,", "  \"publishTarget\": \"./site\",", "  \"excludedDirectories\": [\"dist\"],", "  \"showAdditionalAttribute\": [\"component\"]", "}"].join("\n"),
         ),
         "reqs/.doorstop.yml": text("settings:\n  prefix: REQ\n  digits: 4"),
         "reqs/REQ0001.yml": text("text: The system shall do X."),
@@ -1504,7 +1504,8 @@ describe("loadDoorstopWorkspace (end-to-end over the fake files adapter)", () =>
 
     // Settings surfaced on the result (the elements chain wires the publish
     // command to settings.publishTarget from here).
-    expect(result.settings).toEqual({ publishTarget: "./site", excludedDirectories: ["dist"], commitAfterReview: false });
+    expect(result.settings).toEqual({ publishTarget: "./site", excludedDirectories: ["dist"], showAdditionalAttribute: ["component"], commitAfterReview: false });
+    expect(result.settings.showAdditionalAttribute).toEqual(["component"]);
     // The excluded document and its items were never discovered.
     expect(result.index.documents.map((d) => d.prefix)).toEqual(["REQ"]);
     expect(result.index.counts.documents).toBe(1);

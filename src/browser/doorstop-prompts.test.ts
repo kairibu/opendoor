@@ -8,7 +8,7 @@
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "vitest";
-import type { ItemRecord } from "./doorstop-contract.js";
+import type { ItemRecord } from "../doorstop-contract.js";
 import {
   draftChildRequirementPrompt,
   explainItemPrompt,
@@ -16,7 +16,7 @@ import {
   reviewReadinessPrompt,
   validatePrompt,
 } from "./doorstop-prompts.js";
-import { makeItem as makeFixtureItem } from "./test-fixtures.js";
+import { makeItem as makeFixtureItem } from "../test-fixtures.js";
 
 /** Prompt-shaped item: the shared factory with this suite's baked-in defaults
  *  (REQ002 at level 1.2 under reqs/srd) applied before the caller's overrides. */
