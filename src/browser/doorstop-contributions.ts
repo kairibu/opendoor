@@ -145,6 +145,15 @@ function createDoorstopPanel(registry: DoorstopWorkspaceRegistry): WorkspacePane
     // DoorstopWorkspaceRegistry.invalidate).
     invalidationResources: ["workspace.files"],
     onInvalidate: (context, invalidation) => registry.invalidate(context, invalidation),
+    // Plan Phase C step C3 — chat file links: when the host resolves a
+    // Markdown link to a workspace-relative path, this hook answers with the
+    // panel's navigation query IF the panel owns the path (its last landed
+    // discovery indexed it as an item file), so the chat opens the item IN
+    // the Requirements panel instead of the Files fallback. Synchronous and
+    // side-effect-free: it answers purely from the registry's recorded index
+    // (never loads, never renders); unknown paths and pre-first-load panels
+    // return undefined (the host asks the next panel / serves Files).
+    fileOpenQuery: (context, path) => registry.fileOpenQuery(context, path),
     render: (context) => renderDoorstopPanel(registry, context),
   };
 }
@@ -163,7 +172,8 @@ function createDoorstopPanel(registry: DoorstopWorkspaceRegistry): WorkspacePane
 function renderDoorstopPanel(registry: DoorstopWorkspaceRegistry, context: WorkspacePanelContext) {
   const controller = registry.for(context);
   // Plan Phase C step C2 — deep links: apply the contribution-scoped URL query
-  // (uid/doc/filter/search) to the controller BEFORE the property mirror below,
+  // (uid/doc/filter/search, plus the C3 chat-link `file` key) to the controller
+  // BEFORE the property mirror below,
   // so a back/forward navigation re-render restores the linked selection in
   // the same render. Idempotent (values compared first): a user interaction's
   // re-render — the query its own setter just wrote — applies nothing.
@@ -173,6 +183,13 @@ function renderDoorstopPanel(registry: DoorstopWorkspaceRegistry, context: Works
   // would clear live user selections on every render.
   if (context.navigation !== undefined) {
     controller.applyNavigationQuery(readPanelNavigationQuery(context.navigation));
+  }
+  // Plan Phase C step C3 — record the chat file-open index from every LANDED
+  // result (renders happen after the load lands too — the controller pushes
+  // requestRender on landing — so the index mirrors the last landed discovery
+  // without a dedicated load): fileOpenQuery answers from it synchronously.
+  if (controller.result !== undefined) {
+    registry.recordFileOpenIndex(context, controller.result);
   }
   return html`
     <pi-web-opendoor-panel-body

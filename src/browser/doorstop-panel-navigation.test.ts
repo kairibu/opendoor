@@ -9,6 +9,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DOORSTOP_NAV_DOC,
+  DOORSTOP_NAV_FILE,
   DOORSTOP_NAV_FILTER,
   DOORSTOP_NAV_SEARCH,
   DOORSTOP_NAV_UID,
@@ -22,6 +23,8 @@ describe("deep-link key constants", () => {
     expect(DOORSTOP_NAV_DOC).toBe("doc");
     expect(DOORSTOP_NAV_FILTER).toBe("filter");
     expect(DOORSTOP_NAV_SEARCH).toBe("search");
+    // C3: the chat file-link key (host-written, see DOORSTOP_NAV_FILE).
+    expect(DOORSTOP_NAV_FILE).toBe("file");
   });
 });
 

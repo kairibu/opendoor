@@ -333,13 +333,22 @@ describe("panel deep-link render wiring", () => {
     controller.selectDocument("REQ");
     expect(navigation.setCalls).toEqual([
       { key: "uid", value: "REQ0001", replace: undefined },
+      { key: "file", value: undefined, replace: true },
       { key: "doc", value: "REQ", replace: undefined },
+      { key: "file", value: undefined, replace: true },
     ]);
     panel.render(context);
     expect(controller.selectedUid).toBe("REQ0001");
     expect(controller.selectedDocumentPrefix).toBe("REQ");
-    // No navigation write came from the render/apply side.
-    expect(navigation.setCalls).toHaveLength(2);
+    // No navigation write came from the render/apply side — the 4 recorded
+    // writes are the two setters' own key writes plus their C3 file-key
+    // clears (a deliberate selection supersedes a chat link).
+    expect(navigation.setCalls).toEqual([
+      { key: "uid", value: "REQ0001", replace: undefined },
+      { key: "file", value: undefined, replace: true },
+      { key: "doc", value: "REQ", replace: undefined },
+      { key: "file", value: undefined, replace: true },
+    ]);
 
     // Back/forward simulation: mutate the harness query (an older URL) and
     // re-render — the query wins and restores the older selection, including
@@ -365,6 +374,46 @@ describe("panel deep-link render wiring", () => {
     controller.hostConnected();
     await flushAll();
     expect(controller.result?.index.byUid.has("REQ0001")).toBe(true);
+  });
+
+  it("fileOpenQuery answers from the landed discovery only (plan C3)", async () => {
+    const contributions = createContributions();
+    const panel = contributions.workspacePanels?.[0];
+    if (panel === undefined) throw new Error("Expected opendoor panel contribution");
+    if (panel.fileOpenQuery === undefined) throw new Error("Expected a fileOpenQuery hook on the panel contribution");
+    const fake = docFiles();
+    const { context, requestRender } = panelContext({ fake });
+
+    // BEFORE the first load lands there is no recorded index — the hook
+    // answers undefined (the host asks the next panel / serves the Files
+    // fallback; the hook must NOT trigger a load or a render to find out).
+    expect(panel.fileOpenQuery(context, "reqs/REQ0001.yml")).toBeUndefined();
+    expect(requestRender).not.toHaveBeenCalled();
+    expect(fake.listCalls).toEqual([]); // no discovery read was started either
+
+    // Render + connect + settle: the load lands, and the render the landing
+    // triggers records the file-open index from the landed result.
+    const controller = panel.render(context).values[0] as DoorstopWorkspaceController | undefined;
+    if (controller === undefined) throw new Error("Expected the render to bind the controller");
+    controller.hostConnected();
+    await flushAll();
+    panel.render(context); // the post-landing render records the index
+    requestRender.mockClear();
+
+    // A known item-file path yields the panel's navigation query — the chat
+    // link opens the item IN this panel (host dispatch sets `file`, which
+    // applyNavigationQuery resolves to the item's uid + document).
+    expect(panel.fileOpenQuery(context, "reqs/REQ0001.yml")).toEqual({ file: "reqs/REQ0001.yml" });
+    // Paths the panel does not own stay undefined: a vanished file, a
+    // directory, a non-item file.
+    expect(panel.fileOpenQuery(context, "reqs/GONE.yml")).toBeUndefined();
+    expect(panel.fileOpenQuery(context, "reqs")).toBeUndefined();
+    expect(panel.fileOpenQuery(context, "reqs/.doorstop.yml")).toBeUndefined();
+    // Answering stays side-effect-free: no render, no discovery read.
+    expect(requestRender).not.toHaveBeenCalled();
+    const readsAfter = fake.listCalls.length;
+    panel.fileOpenQuery(context, "reqs/REQ0001.yml");
+    expect(fake.listCalls.length).toBe(readsAfter);
   });
 });
 

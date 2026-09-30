@@ -56,6 +56,7 @@ import { computeItemStamp } from "../doorstop-state.js";
 import { diffItemFields, type ItemFieldDiff } from "../doorstop-diff.js";
 import {
   DOORSTOP_NAV_DOC,
+  DOORSTOP_NAV_FILE,
   DOORSTOP_NAV_FILTER,
   DOORSTOP_NAV_SEARCH,
   DOORSTOP_NAV_UID,
@@ -420,6 +421,10 @@ export class DoorstopWorkspaceController implements ReactiveController {
   selectUid(uid: string): void {
     this.selectedUid = uid;
     this.setNavigation(DOORSTOP_NAV_UID, uid);
+    // C3: a deliberate selection superseded any chat file link — clear its
+    // key, or the stale `file` entry would override this selection on every
+    // re-render (applyNavigationQuery lets `file` win over `uid`).
+    this.setNavigation(DOORSTOP_NAV_FILE, undefined, { replace: true });
     this.requestUpdate();
   }
 
@@ -428,6 +433,8 @@ export class DoorstopWorkspaceController implements ReactiveController {
   selectDocument(prefix: string): void {
     this.selectedDocumentPrefix = prefix;
     this.setNavigation(DOORSTOP_NAV_DOC, prefix);
+    // C3: same superseded-chat-link rule as selectUid.
+    this.setNavigation(DOORSTOP_NAV_FILE, undefined, { replace: true });
     this.requestUpdate();
   }
 
@@ -461,7 +468,8 @@ export class DoorstopWorkspaceController implements ReactiveController {
    *  stands — `?filter=bogus` must not crash the panel), and `uid`/`doc`
    *  values that no longer exist in a LOADED result are dropped by the
    *  same selectionIn reconciliation a landed load applies; before the first
-   *  load lands they apply blindly (the landing load reconciles). */
+   *  load lands they apply blindly (the landing load reconciles). The C3
+   *  `file` key (chat file link) resolves only against a loaded result. */
   applyNavigationQuery(query: PanelNavigationQuery): void {
     let changed = false;
 
@@ -481,13 +489,34 @@ export class DoorstopWorkspaceController implements ReactiveController {
       changed = true;
     }
 
-    const uid = query[DOORSTOP_NAV_UID];
+    // The chat file link (plan Phase C step C3): `file` names a
+    // workspace-relative item-file path (written by the HOST's chat link
+    // dispatch — fileOpenQuery returned `{ file: path }` for it — never by
+    // the panel's own setters). It resolves against a LOADED result only:
+    // before the first load lands it no-ops (the link stays inert until a
+    // render after the landing load re-applies it); an unknown path (item
+    // deleted) no-ops too — both stably.
+    //
+    // It is resolved BEFORE the uid/doc keys and, when it resolves, supplies
+    // their EFFECTIVE values — an explicit chat link WINS over a stale `uid`
+    // key. Computing effective values (instead of applying keys then
+    // overriding) is what keeps the apply stable: sequential application
+    // would clear `uid` to the absent key and refill it from the file on
+    // EVERY apply, flipping changed-state where the net selection is the
+    // same.
+    const filePath = query[DOORSTOP_NAV_FILE];
+    const fileItem =
+      filePath !== undefined && this.result !== undefined
+        ? this.result.index.items.find((candidate) => candidate.path === filePath)
+        : undefined;
+
+    const uid = fileItem !== undefined ? fileItem.uid : query[DOORSTOP_NAV_UID];
     if (this.selectedUid !== uid) {
       this.selectedUid = uid;
       changed = true;
     }
 
-    const documentPrefix = query[DOORSTOP_NAV_DOC];
+    const documentPrefix = fileItem !== undefined ? fileItem.documentPrefix : query[DOORSTOP_NAV_DOC];
     if (this.selectedDocumentPrefix !== documentPrefix) {
       this.selectedDocumentPrefix = documentPrefix;
       changed = true;

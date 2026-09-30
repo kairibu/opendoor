@@ -52,7 +52,7 @@ import {
   itemUnstageable,
 } from "./doorstop-panel-view-model.js";
 import { createFakeFiles, dirEntry, fileEntry, text, tree } from "../test-support.js";
-import { makeDocument, makeItem, makeResult, makeWorkspace, navigationHarness, panelContext, settle } from "../test-fixtures.js";
+import { makeDocument, makeItem, makeResult, makeTreeResult, makeWorkspace, navigationHarness, panelContext, settle } from "../test-fixtures.js";
 
 // --- small real-shape fixtures ---------------------------------------------------------
 
@@ -237,10 +237,15 @@ describe("DoorstopWorkspaceController (fake host, no DOM)", () => {
 
     // Plan Phase C step C2 — every deliberate selection change also writes
     // its deep-link key (search with REPLACE — one keystroke must not spam
-    // history entries; clearing a selection clears its key).
+    // history entries; clearing a selection clears its key). C3: selection
+    // setters also CLEAR the chat file-link key with REPLACE — a deliberate
+    // selection supersedes a chat link, and a stale `file` key must not
+    // override the user's later selection on every re-render.
     expect(navigation.setCalls).toEqual([
       { key: "uid", value: "REQ0001", replace: undefined },
+      { key: "file", value: undefined, replace: true },
       { key: "doc", value: "REQ", replace: undefined },
+      { key: "file", value: undefined, replace: true },
       { key: "filter", value: "unreviewed", replace: undefined },
       { key: "search", value: "allocated", replace: true },
     ]);
@@ -248,7 +253,9 @@ describe("DoorstopWorkspaceController (fake host, no DOM)", () => {
     controller.setSearch("");
     expect(navigation.setCalls).toEqual([
       { key: "uid", value: "REQ0001", replace: undefined },
+      { key: "file", value: undefined, replace: true },
       { key: "doc", value: "REQ", replace: undefined },
+      { key: "file", value: undefined, replace: true },
       { key: "filter", value: "unreviewed", replace: undefined },
       { key: "search", value: "allocated", replace: true },
       { key: "filter", value: undefined, replace: undefined },
@@ -320,6 +327,89 @@ describe("DoorstopWorkspaceController (fake host, no DOM)", () => {
     expect(controller.search).toBe("");
   });
 
+  it("applies the chat file-link key: resolves to the item's uid and document (plan C3)", async () => {
+    const navigation = navigationHarness();
+    const { context, requestRender } = panelContext({
+      fake: createFakeFiles(),
+      navigation,
+    });
+    const { host } = fakeHost();
+    // The canonical tree: REQ0001 (reviewed, reqs/REQ0001.yml) and TST001
+    // (unreviewed, tests/TST001.yml), with both document configs present so
+    // byPrefix reconciliation keeps document selections.
+    const controller = new DoorstopWorkspaceController(
+      host,
+      context,
+      () => Promise.resolve(makeTreeResult()),
+    );
+    controller.hostConnected();
+    await settle();
+    requestRender.mockClear();
+
+    // The host's chat link dispatch wrote `{ file: path }` (fileOpenQuery
+    // returned it for this path): the query resolves the path to its item
+    // and selects BOTH surfaces — detail pane (uid) and document tree
+    // (documentPrefix) — exactly like clicking the item in the list.
+    controller.applyNavigationQuery({ file: "reqs/REQ0001.yml" });
+    expect(controller.selectedUid).toBe("REQ0001");
+    expect(controller.selectedDocumentPrefix).toBe("REQ");
+    expect(requestRender).toHaveBeenCalledTimes(1);
+    expect(navigation.setCalls).toEqual([]); // read-only for the navigation
+
+    // Idempotent: re-applying the same link changes nothing.
+    controller.applyNavigationQuery({ file: "reqs/REQ0001.yml" });
+    expect(requestRender).toHaveBeenCalledTimes(1);
+
+    // An explicit chat link WINS over a stale uid key (computed as the
+    // effective uid/doc value — deterministic, no flip-flop).
+    controller.applyNavigationQuery({ uid: "TST001", file: "reqs/REQ0001.yml" });
+    expect(controller.selectedUid).toBe("REQ0001");
+    expect(controller.selectedDocumentPrefix).toBe("REQ");
+
+    // The loaded-result reconcile still drops a filtered-out target:
+    // `unreviewed` hides the reviewed REQ0001, so the file-linked selection
+    // drops (stably — every apply of this query ends in the same state).
+    controller.applyNavigationQuery({ file: "reqs/REQ0001.yml", filter: "unreviewed" });
+    expect(controller.selectedUid).toBeUndefined();
+    expect(controller.stateFilter).toBe("unreviewed");
+
+    // An unknown path (item deleted) is a stable no-op; a different file
+    // resolves to its own item (the absent filter key cleared the filter).
+    controller.applyNavigationQuery({ file: "reqs/GONE.yml" });
+    expect(controller.selectedUid).toBeUndefined();
+    expect(controller.stateFilter).toBeUndefined();
+    controller.applyNavigationQuery({ file: "tests/TST001.yml" });
+    expect(controller.selectedUid).toBe("TST001");
+    expect(controller.selectedDocumentPrefix).toBe("TST");
+  });
+
+  it("skips the chat file-link key before the first load lands (plan C3)", async () => {
+    const navigation = navigationHarness();
+    const { context, requestRender } = panelContext({
+      fake: createFakeFiles(),
+      navigation,
+    });
+    const { host } = fakeHost();
+    let resolveJob: ((result: DoorstopWorkspaceResult) => void) | undefined;
+    const controller = new DoorstopWorkspaceController(host, context, () =>
+      new Promise<DoorstopWorkspaceResult>((resolve) => {
+        resolveJob = resolve;
+      }),
+    );
+    controller.hostConnected();
+    // NOT settled: no result yet — a `file` query applies nothing (the link
+    // stays inert; the render after the landing load re-applies it). The
+    // load's own start (loading state) already requested an update.
+    requestRender.mockClear();
+    controller.applyNavigationQuery({ file: "reqs/REQ0001.yml" });
+    expect(controller.selectedUid).toBeUndefined();
+    expect(requestRender).not.toHaveBeenCalled();
+    resolveJob?.(makeResult([makeItem({ uid: "REQ0001", documentPrefix: "REQ", path: "reqs/REQ0001.yml" })]));
+    await settle();
+    controller.applyNavigationQuery({ file: "reqs/REQ0001.yml" });
+    expect(controller.selectedUid).toBe("REQ0001");
+  });
+
   it("drops a selection hidden by the state filter and on a vanished re-load", async () => {
     const req001 = makeItem({ uid: "REQ0001", documentPrefix: "REQ" });
     const { context } = panelContext({ fake: createFakeFiles() });
@@ -363,6 +453,15 @@ describe("DoorstopWorkspaceController (fake host, no DOM)", () => {
     // Touching workspace 0 bumps it to the LRU tail (same instance reused).
     expect(registry.for(contexts[0]!)).toBe(controllers[0]);
 
+    // Plan Phase C step C3 — each workspace also owns a chat file-open
+    // index; recording it for every workspace makes the eviction below
+    // observable on BOTH maps.
+    const results = contexts.map(() =>
+      makeResult([makeItem({ uid: "REQ0001", documentPrefix: "REQ", path: "reqs/REQ0001.yml" })]),
+    );
+    contexts.forEach((context, i) => registry.recordFileOpenIndex(context, results[i]!));
+    expect(registry.fileOpenQuery(contexts[1]!, "reqs/REQ0001.yml")).toEqual({ file: "reqs/REQ0001.yml" });
+
     // Adding one more past the limit evicts the least-recently-used — now
     // workspace 1 (workspace 0 was bumped to the tail).
     const { context: nextContext } = panelContext({ fake: createFakeFiles(), workspace: makeWorkspace("workspace-99") });
@@ -370,11 +469,47 @@ describe("DoorstopWorkspaceController (fake host, no DOM)", () => {
     next.hostConnected();
     expect(controllers[1]!.host.isConnected).toBe(false); // evicted
     expect(controllers[0]!.host.isConnected).toBe(true); // bumped tail survives
+    // C3: the evicted workspace's file-open entries die with its controller
+    // — a stale index must not answer fileOpenQuery for a workspace whose
+    // result is gone — while the bumped tail still answers.
+    expect(registry.fileOpenQuery(contexts[1]!, "reqs/REQ0001.yml")).toBeUndefined();
+    expect(registry.fileOpenQuery(contexts[0]!, "reqs/REQ0001.yml")).toEqual({ file: "reqs/REQ0001.yml" });
 
     // The evicted workspace's old controller is gone; a fresh get creates a new one.
     const { context: freshContext } = panelContext({ fake: createFakeFiles(), workspace: makeWorkspace("workspace-1") });
     const fresh = registry.for(freshContext);
     expect(fresh).not.toBe(controllers[1]);
+  });
+
+  it("indexes chat file-open entries per workspace (plan C3: isolation + index LRU bound)", () => {
+    const registry = new DoorstopWorkspaceRegistry();
+    const resultA = makeResult([makeItem({ uid: "REQ0001", documentPrefix: "REQ", path: "reqs/REQ0001.yml" })]);
+    const resultB = makeResult([makeItem({ uid: "TST0001", documentPrefix: "TST", path: "tests/TST0001.yml" })]);
+    const { context: contextA } = panelContext({ fake: createFakeFiles(), workspace: makeWorkspace("workspace-a") });
+    const { context: contextB } = panelContext({ fake: createFakeFiles(), workspace: makeWorkspace("workspace-b") });
+
+    // ISOLATION: a workspace's index answers only the paths its OWN landed
+    // discovery indexed — workspace A never claims B's item file (and vice
+    // versa), so the host's fileOpenQuery dispatch can't route a chat link
+    // into the wrong workspace's panel.
+    registry.recordFileOpenIndex(contextA, resultA);
+    registry.recordFileOpenIndex(contextB, resultB);
+    expect(registry.fileOpenQuery(contextA, "reqs/REQ0001.yml")).toEqual({ file: "reqs/REQ0001.yml" });
+    expect(registry.fileOpenQuery(contextA, "tests/TST0001.yml")).toBeUndefined();
+    expect(registry.fileOpenQuery(contextB, "tests/TST0001.yml")).toEqual({ file: "tests/TST0001.yml" });
+    expect(registry.fileOpenQuery(contextB, "reqs/REQ0001.yml")).toBeUndefined();
+
+    // INDEX LRU BOUND (boundFileOpenEntries): recording one workspace past
+    // DOORSTOP_WORKSPACE_STATE_LIMIT evicts the OLDEST index — workspace A
+    // (recorded first) stops answering, the newest still does.
+    for (let i = 0; i < DOORSTOP_WORKSPACE_STATE_LIMIT; i += 1) {
+      const { context } = panelContext({ fake: createFakeFiles(), workspace: makeWorkspace(`extra-${String(i)}`) });
+      registry.recordFileOpenIndex(context, resultA);
+    }
+    expect(registry.fileOpenQuery(contextA, "reqs/REQ0001.yml")).toBeUndefined();
+    const { context: newestContext } = panelContext({ fake: createFakeFiles(), workspace: makeWorkspace("extra-newest") });
+    registry.recordFileOpenIndex(newestContext, resultA);
+    expect(registry.fileOpenQuery(newestContext, "reqs/REQ0001.yml")).toEqual({ file: "reqs/REQ0001.yml" });
   });
 
   it("toggles runInProgress and commits/dismisses lastRun through the run mutators", async () => {

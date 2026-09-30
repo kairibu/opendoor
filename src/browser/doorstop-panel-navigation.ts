@@ -40,6 +40,15 @@ import type { WorkspacePanelNavigationV1 } from "@jmfederico/pi-web/plugin-api";
 /** Deep-link key: the selected item UID (`selectedUid`). */
 export const DOORSTOP_NAV_UID = "uid";
 
+/** Deep-link key (plan Phase C step C3): a workspace-relative item-file path
+ *  a chat Markdown link opened INTO this panel (`fileOpenQuery` returns
+ *  `{ file: path }`; `applyNavigationQuery` resolves the path to its item
+ *  and document selection). Unlike the four state keys this one is written
+ *  by the HOST's chat link dispatch, never by the panel's own setters — a
+ *  deliberate selection change CLEARS it (a stale `file` key must not
+ *  override later chip selections on every re-render). */
+export const DOORSTOP_NAV_FILE = "file";
+
 /** Deep-link key: the selected document prefix (`selectedDocumentPrefix`). */
 export const DOORSTOP_NAV_DOC = "doc";
 

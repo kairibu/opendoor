@@ -41,7 +41,11 @@
 // computeItemStates.
 // ---------------------------------------------------------------------------
 
-import type { WorkspaceInvalidation, WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
+import type {
+  ContributionQueryValue,
+  WorkspaceInvalidation,
+  WorkspacePanelContext,
+} from "@jmfederico/pi-web/plugin-api";
 import type {
   DiscoveryDiagnostic,
   DoorstopDocumentConfig,
@@ -62,6 +66,7 @@ import {
   type DoorstopWorkspaceHost,
   type DoorstopWorkspaceJob,
 } from "./doorstop-panel-controller.js";
+import { DOORSTOP_NAV_FILE } from "./doorstop-panel-navigation.js";
 
 /** Keep parse state for a few recent workspaces so results survive panel
  *  switches; evicted workspaces release their controllers (index freed). */
@@ -307,6 +312,24 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** One chat file-open index entry (plan Phase C step C3): the item a
+ *  workspace-relative item-file path resolves to. The index mirrors the
+ *  item's own two selection surfaces: the detail pane (`uid`) and the
+ *  document tree (`documentPrefix`) — resolving a chat link selects both,
+ *  exactly like clicking the item in the list. */
+interface DoorstopFileOpenEntry {
+  uid: string;
+  documentPrefix: string;
+}
+
+/** The per-workspace recorded index: the landed result the entries were
+ *  built from (kept by identity so re-renders of an unchanged result skip
+ *  the rebuild) plus the path→item entries. */
+interface DoorstopFileOpenIndex {
+  result: DoorstopWorkspaceResult;
+  entries: ReadonlyMap<string, DoorstopFileOpenEntry>;
+}
+
 /**
  * Per-workspace controller registry (plan §6.1 default: the panel module
  * keeps the per-workspace controller map and hands instances to consumers —
@@ -319,6 +342,16 @@ function escapeRegExp(value: string): string {
  * they survive panel switches without re-loading. */
 export class DoorstopWorkspaceRegistry {
   private readonly workspaces = new Map<string, DoorstopWorkspaceController>();
+
+  /** Plan Phase C step C3 — the chat file-open index: per-workspace
+   *  item-file path → { uid, documentPrefix } (plus the landed result it was
+   *  built from, kept by identity), recorded from every LANDED
+   *  load result (renderDoorstopPanel records it whenever the controller
+   *  has a result), so the SYNCHRONOUS `fileOpenQuery` hook can answer from
+   *  the last landed discovery without running one. Same LRU bound and the
+   *  same workspace keys as the controller map; an evicted workspace drops
+   *  its file-open entries with its controller. */
+  private readonly fileOpenEntries = new Map<string, DoorstopFileOpenIndex>();
 
   /** Get-or-create the controller for a workspace (the render entry point). */
   for(context: WorkspacePanelContext): DoorstopWorkspaceController {
@@ -363,6 +396,60 @@ export class DoorstopWorkspaceRegistry {
     return this.for(context).invalidate();
   }
 
+  /** Record the chat file-open index for one workspace from a LANDED result
+   *  (plan Phase C step C3). Called from renderDoorstopPanel on every render
+   *  that has a result, so the index always mirrors the last landed
+   *  discovery; never throws and triggers nothing (the hook must be free of
+   *  side effects — recording a plain index from a landed result is one). */
+  recordFileOpenIndex(context: WorkspacePanelContext, result: DoorstopWorkspaceResult): void {
+    const key = workspaceContextKey(context);
+    const existing = this.fileOpenEntries.get(key);
+    // The render path calls this on EVERY render with a result (keystrokes,
+    // selections re-render too) — skip the O(items) rebuild when the landed
+    // result is unchanged (result identity survives until the next load
+    // replaces it), keeping the render cost at one map bump.
+    if (existing !== undefined && existing.result === result) {
+      this.fileOpenEntries.delete(key);
+      this.fileOpenEntries.set(key, existing);
+      return;
+    }
+    const entries = new Map<string, DoorstopFileOpenEntry>();
+    for (const item of result.index.items) {
+      entries.set(item.path, { uid: item.uid, documentPrefix: item.documentPrefix });
+    }
+    this.fileOpenEntries.delete(key);
+    this.fileOpenEntries.set(key, { result, entries });
+    this.boundFileOpenEntries();
+  }
+
+  /** The panel's chat file-open hook (plan Phase C step C3): does the last
+   *  landed discovery of this workspace know `path` as an item file? Returns
+   *  the panel's navigation query (`{ file: path }` — the key
+   *  applyNavigationQuery resolves to the item's uid and document
+   *  selection), or undefined when the panel does not own the path (the
+   *  host then asks the next panel, or serves the Files fallback). Before
+   *  the first load lands there is no index yet → undefined (the chat link
+   *  falls back to Files; the panel still deep-links once opened and
+   *  re-rendered). */
+  fileOpenQuery(
+    context: WorkspacePanelContext,
+    path: string,
+  ): Readonly<Record<string, ContributionQueryValue>> | undefined {
+    const entries = this.fileOpenEntries.get(workspaceContextKey(context));
+    if (entries === undefined) return undefined;
+    return entries.entries.has(path) ? { [DOORSTOP_NAV_FILE]: path } : undefined;
+  }
+
+  /** Keep the file-open index at the same LRU bound as the controller map
+   *  (strictly oldest-first, mirroring evictOldest). */
+  private boundFileOpenEntries(): void {
+    while (this.fileOpenEntries.size > DOORSTOP_WORKSPACE_STATE_LIMIT) {
+      const key = this.fileOpenEntries.keys().next().value;
+      if (key === undefined) break;
+      this.fileOpenEntries.delete(key);
+    }
+  }
+
   private evictOldest(): void {
     if (this.workspaces.size < DOORSTOP_WORKSPACE_STATE_LIMIT) return;
     // Strictly oldest-first: the connected workspace is always the LRU tail —
@@ -373,6 +460,10 @@ export class DoorstopWorkspaceRegistry {
     const controller = this.workspaces.get(key);
     if (controller !== undefined) controller.release();
     this.workspaces.delete(key);
+    // The evicted workspace's chat file-open entries die with its controller
+    // (C3): a stale index must not answer fileOpenQuery for a workspace whose
+    // controller (and result) are gone.
+    this.fileOpenEntries.delete(key);
   }
 }
 
