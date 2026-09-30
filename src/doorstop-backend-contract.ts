@@ -68,11 +68,14 @@ import {
 
 /** The plugin id opendoor registers under in the pi-web manifest — the
  *  browser gate `context.workspace.provider?.pluginId === OPENDOOR_PLUGIN_ID`
- *  that decides between the backend path and the terminal fallback. */
+ *  that decides between the peer path and the terminal fallback. In browser
+ *  API v4 the paired-backend gate itself is `context.peer !== undefined`
+ *  (the provider `capabilities.request` field was removed); the ownership
+ *  check is kept for the opendoor-owned information display. */
 export const OPENDOOR_PLUGIN_ID = "opendoor";
 
 /** The primary backend operation — one doorstop CLI invocation:
- *  `backend.request(DOORSTOP_RUN_OPERATION, input)`. Matches the host's
+ *  `peer.request(DOORSTOP_RUN_OPERATION, input)`. Matches the host's
  *  `^[a-z][a-z0-9.-]*$` operation grammar. The server bundle maps the
  *  request to an argv array — the browser never sends shell strings or raw
  *  argv. (The sibling read-only baseline operation, `doorstop.item-baseline`,
@@ -81,7 +84,7 @@ export const DOORSTOP_RUN_OPERATION = "doorstop.run";
 
 /**
  * One doorstop CLI invocation request, dispatched through
- * `backend.request("doorstop.run", input)`. The discriminated `op` picks the
+ * `peer.request("doorstop.run", input)`. The discriminated `op` picks the
  * server-side argv builder (`doorstop-backend.ts`):
  *
  *   op        argv
@@ -183,7 +186,7 @@ export interface DoorstopCommitOutcome {
 }
 
 /** The second backend operation — the read-only "changes since review"
- *  baseline fetch: `backend.request(DOORSTOP_BASELINE_OPERATION, input)`.
+ *  baseline fetch: `peer.request(DOORSTOP_BASELINE_OPERATION, input)`.
  *  Matches the host's `^[a-z][a-z0-9.-]*$` operation grammar. The server
  *  (plan Phase B step 6) locates the reviewed version of an item in git
  *  history — the fast `doorstop: review <uid>` grep path with the generic
@@ -395,7 +398,7 @@ function requireItemPath(record: Record<string, unknown>, key: string): string {
 
 /**
  * Parse and validate an untrusted `doorstop.run` request (the `input` of a
- * `backend.request` call, which travels the host JSON bridge as unknown).
+ * `peer.request` call, which travels the host JSON bridge as unknown).
  * Throws on junk: non-object input, unknown/missing/non-string `op`,
  * variant fields missing or wrongly typed, publish targets outside the
  * safe-relative-path grammar ({@link isValidPublishTarget}), and UIDs
@@ -622,7 +625,7 @@ export function parseDoorstopBaselineResponse(value: unknown): DoorstopBaselineR
 // ---------------------------------------------------------------------------
 
 /** The third backend operation — the read-only git status readout:
- *  `backend.request(DOORSTOP_GIT_STATUS_OPERATION, {})`. The server runs
+ *  `peer.request(DOORSTOP_GIT_STATUS_OPERATION, {})`. The server runs
  *  `rev-parse --is-inside-work-tree --show-prefix` (repo check) and
  *  `status --porcelain=v1 -z -b` (branch line + ahead/behind + per-file XY
  *  states) and returns the {@link DoorstopGitStatusResponse} shape backing
@@ -819,7 +822,7 @@ export function parseDoorstopGitStatusResponse(value: unknown): DoorstopGitStatu
 }
 
 /** The fourth backend operation — the project-scoped stage-all action:
- *  `backend.request(DOORSTOP_GIT_STAGE_OPERATION, { paths })`. The server
+ *  `peer.request(DOORSTOP_GIT_STAGE_OPERATION, { paths })`. The server
  *  checks the repo, lists the given (literalized) pathspecs, and `git add`s
  *  whatever changed among them — modifications, additions, AND deletions
  *  (git ≥ 2.x `add` stages removals for named paths, so a deleted item file
@@ -938,7 +941,7 @@ export function parseDoorstopGitStageResponse(value: unknown): DoorstopGitStageR
 }
 
 /** The sixth backend operation — the per-path unstage action, the inverse of
- *  `doorstop.git-stage`: `backend.request(DOORSTOP_GIT_UNSTAGE_OPERATION, {
+ *  `doorstop.git-stage`: `peer.request(DOORSTOP_GIT_UNSTAGE_OPERATION, {
  *  paths })`. The server checks the repo, lists the given (literalized)
  *  pathspecs, and `git reset -q`s whatever among them has a staged INDEX (X)
  *  change — restoring the index entry from HEAD while leaving the worktree
@@ -1050,7 +1053,7 @@ export function parseDoorstopGitUnstageResponse(value: unknown): DoorstopGitUnst
 }
 
 /** The fifth backend operation — the project-scoped commit action:
- *  `backend.request(DOORSTOP_GIT_COMMIT_OPERATION, { message })`. The
+ *  `peer.request(DOORSTOP_GIT_COMMIT_OPERATION, { message })`. The
  *  server checks the repo, verifies the index holds changes
  *  (`git diff --cached --quiet`), and runs `git commit -m <message>` — NO
  *  pathspec, NO add: the commit records WHATEVER the staged index holds

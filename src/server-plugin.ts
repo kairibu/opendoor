@@ -2,9 +2,19 @@
 // Opendoor server plugin entry (plan Phase B step 3, chain E2 server half):
 // the paired `serverModule` (package.json `piWeb.plugins[].serverModule`)
 // loaded by the session daemon at startup. Activation exposes ONE workspace
-// provider; its `request` method is what enables the browser `backend`
-// (doorstop.run through `requestDoorstopBackend`, the item-baseline fetch,
-// and the four project-scoped git operations — status/stage/unstage/commit).
+// provider (probe/list only) plus an activation-level `peer` whose `request`
+// method is what serves the browser `context.peer` (doorstop.run through
+// `requestDoorstopBackend`, the item-baseline fetch, and the four
+// project-scoped git operations — status/stage/unstage/commit).
+//
+// Server plugin API v3 (pi-web 1.202609.1): `apiVersion: 3`; the old
+// provider-level `request` method was REMOVED from `WorkspaceProvider`, so
+// the six-operation dispatch was hoisted out of the provider into the
+// activation-level `ServerPluginPeer.request(context)`. The peer request
+// context (`ServerPluginPeerRequestContext`) carries the same
+// project/workspace/operation/input/signal fields the provider request did;
+// the peer workspace projection (`ServerPluginPeerWorkspace`) also carries
+// `path`, which is the only workspace field the handlers read.
 //
 // Ownership per plan §"Ownership trade-off": opendoor is a PRIMARY-tier
 // provider (no `fallback`) — `probe` claims ONLY when the project contains a
@@ -20,7 +30,7 @@
 //
 // Lifecycle surface is deliberately minimal: `prepareRemove` is omitted
 // (main-only workspaces are not removable linked workspaces), and `health`
-// is deferred (a bounded health probe shouldn't execute the CLI in v1).
+// is deferred (a bounded health probe shouldn't execute the CLI yet).
 // Runtime imports are limited to `node:path`/`node:fs/promises` (the plan's
 // constraint — the server bundle must stay self-contained); everything from
 // `@jmfederico/pi-web/server-plugin-api` is TYPE-ONLY so the host API never
@@ -31,12 +41,13 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { Dirent } from "node:fs";
 import type {
+  JsonValue,
   PiWebServerPlugin,
   ProjectInput,
   ProviderClaim,
-  ProviderRequestContext,
   ProviderWorkspace,
   ServerPluginActivationContext,
+  ServerPluginPeerRequestContext,
   WorkspaceProvider,
 } from "@jmfederico/pi-web/server-plugin-api";
 import {
@@ -102,23 +113,27 @@ async function probeContainsDoorstopMarker(root: string, signal: AbortSignal): P
 }
 
 const plugin: PiWebServerPlugin = {
-  apiVersion: 1,
+  apiVersion: 3,
   name: "Opendoor",
   activate(context) {
-    return { workspaceProvider: createDoorstopWorkspaceProvider(context) };
+    return {
+      workspaceProvider: createDoorstopWorkspaceProvider(context),
+      // v3: the six-operation dispatch lives at the activation level, not on
+      // the provider (`WorkspaceProvider.request` was removed).
+      peer: {
+        request: (request: ServerPluginPeerRequestContext) => dispatchDoorstopOperation(context, request),
+      },
+    };
   },
 };
 
 export default plugin;
 
 /** Create the opendoor workspace provider for one activation (testable —
- *  git's `createGitWorkspaceProvider` idiom). The provider is frozen and its
- *  `request` DISPATCHES on the operation name (plan step 8 + the git-actions
- *  plan's Phase B step 9): `doorstop.run` → the run backend,
- *  `doorstop.item-baseline` → the read-only baseline backend, and the
- *  `doorstop.git-status` / `doorstop.git-stage` / `doorstop.git-unstage` /
- *  `doorstop.git-commit` quartet → their project-scoped git handlers;
- *  anything else → the unsupported-operation error. */
+ *  git's `createGitWorkspaceProvider` idiom). The provider is frozen and
+ *  exposes only `probe`/`list`: server plugin API v3 removed the provider
+ *  `request` method, so the operation dispatch lives in
+ *  {@link dispatchDoorstopOperation} behind the activation-level peer. */
 export function createDoorstopWorkspaceProvider(context: ServerPluginActivationContext): WorkspaceProvider {
   return Object.freeze({
     async probe(project: ProjectInput, signal: AbortSignal): Promise<ProviderClaim> {
@@ -145,32 +160,38 @@ export function createDoorstopWorkspaceProvider(context: ServerPluginActivationC
         },
       ];
     },
-    request: (request: ProviderRequestContext) => {
-      // Operation dispatch (plan-add-git-actions.md Phase B step 9): the
-      // six contract operations route to their shared backend handlers
-      // (all six serialize per workspace path and share the deadline
-      // budget inside doorstop-backend.ts); every other operation gets the
-      // existing unsupported-operation error — the same message the run
-      // handler's own guard throws.
-      switch (request.operation) {
-        case DOORSTOP_RUN_OPERATION:
-          return requestDoorstopBackend(context, request);
-        case DOORSTOP_BASELINE_OPERATION:
-          return requestDoorstopBaseline(context, request);
-        case DOORSTOP_GIT_STATUS_OPERATION:
-          return requestDoorstopGitStatus(context, request);
-        case DOORSTOP_GIT_STAGE_OPERATION:
-          return requestDoorstopGitStage(context, request);
-        case DOORSTOP_GIT_UNSTAGE_OPERATION:
-          return requestDoorstopGitUnstage(context, request);
-        case DOORSTOP_GIT_COMMIT_OPERATION:
-          return requestDoorstopGitCommit(context, request);
-        default:
-          // Reject (never throw synchronously): the provider contract
-          // returns a promise, and the async handlers' own guard rejects
-          // with this same error — one message source, one failure mode.
-          return Promise.reject(unsupportedBackendOperationError(request.operation));
-      }
-    },
   });
+}
+
+/** The activation-level peer request dispatch (plan-add-git-actions.md Phase
+ *  B step 9): the six contract operations route to their shared backend
+ *  handlers (all six serialize per workspace path and share the deadline
+ *  budget inside doorstop-backend.ts); every other operation gets the
+ *  existing unsupported-operation error — the same message the run handler's
+ *  own guard throws. The peer request context is the v3 rename of the old
+ *  provider request context (same project/workspace/operation/input/signal
+ *  fields), so the handler bodies are unchanged. */
+export function dispatchDoorstopOperation(
+  context: ServerPluginActivationContext,
+  request: ServerPluginPeerRequestContext,
+): Promise<JsonValue> {
+  switch (request.operation) {
+    case DOORSTOP_RUN_OPERATION:
+      return requestDoorstopBackend(context, request);
+    case DOORSTOP_BASELINE_OPERATION:
+      return requestDoorstopBaseline(context, request);
+    case DOORSTOP_GIT_STATUS_OPERATION:
+      return requestDoorstopGitStatus(context, request);
+    case DOORSTOP_GIT_STAGE_OPERATION:
+      return requestDoorstopGitStage(context, request);
+    case DOORSTOP_GIT_UNSTAGE_OPERATION:
+      return requestDoorstopGitUnstage(context, request);
+    case DOORSTOP_GIT_COMMIT_OPERATION:
+      return requestDoorstopGitCommit(context, request);
+    default:
+      // Reject (never throw synchronously): the peer contract returns a
+      // promise, and the async handlers' own guard rejects with this same
+      // error — one message source, one failure mode.
+      return Promise.reject(unsupportedBackendOperationError(request.operation));
+  }
 }

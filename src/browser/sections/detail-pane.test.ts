@@ -309,10 +309,10 @@ describe("DoorstopPanelBodyElement (detail pane: links, references, attributes, 
 });
 
 describe("DoorstopPanelBodyElement (changes since review, Phase D)", () => {
-  it("is gated on unreviewed + stored reviewed fingerprint + active backend", async () => {
+  it("is gated on unreviewed + stored reviewed fingerprint + active peer", async () => {
     // A REVIEWED item (stamp matches): no section, even with a backend.
     const reviewedCase = await mountBody(() => Promise.resolve(makeTreeResult()), {
-      backend: withGitStatusBackend(() => undefined),
+      peer: withGitStatusBackend(() => undefined),
       provider: opendoorProvider,
     });
     reviewedCase.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0001"]')?.click();
@@ -320,7 +320,7 @@ describe("DoorstopPanelBodyElement (changes since review, Phase D)", () => {
     await flushMicro(reviewedCase.body);
     expect(reviewedCase.body.shadowRoot?.querySelector(".doorstop-changes")).toBeNull();
 
-    // Unreviewed WITH a stored fingerprint and an active backend: present.
+    // Unreviewed WITH a stored fingerprint and an active peer: present.
     const unpaired = await mountBody(() => Promise.resolve(makeEditedItemResult()));
     unpaired.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
     bindBody(unpaired.body, unpaired.controller, unpaired.context);
@@ -330,7 +330,7 @@ describe("DoorstopPanelBodyElement (changes since review, Phase D)", () => {
 
     // Same item with the backend active: the section renders (collapsed).
     const paired = await mountBody(() => Promise.resolve(makeEditedItemResult()), {
-      backend: withGitStatusBackend(() => undefined),
+      peer: withGitStatusBackend(() => undefined),
       provider: opendoorProvider,
     });
     paired.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
@@ -350,7 +350,7 @@ describe("DoorstopPanelBodyElement (changes since review, Phase D)", () => {
       return Promise.resolve(makeRunResponse());
     });
     const { body, controller, context } = await mountBody(() => Promise.resolve(makeEditedItemResult()), {
-      backend,
+      peer: backend,
       provider: opendoorProvider,
     });
     body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
@@ -405,7 +405,7 @@ describe("DoorstopPanelBodyElement (changes since review, Phase D)", () => {
       return Promise.resolve(makeRunResponse());
     });
     const { body, controller, context } = await mountBody(() => Promise.resolve(makeEditedItemResult()), {
-      backend,
+      peer: backend,
       provider: opendoorProvider,
     });
     body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
@@ -448,7 +448,7 @@ describe("DoorstopPanelBodyElement (changes since review, Phase D)", () => {
       return Promise.resolve(makeRunResponse());
     });
     const { body, controller, context } = await mountBody(() => Promise.resolve(makeEditedItemResult()), {
-      backend,
+      peer: backend,
       provider: opendoorProvider,
     });
     body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
@@ -474,7 +474,7 @@ describe("DoorstopPanelBodyElement (changes since review, Phase D)", () => {
       return Promise.resolve(makeRunResponse());
     });
     const { body, controller, context } = await mountBody(() => Promise.resolve(makeEditedItemResult()), {
-      backend,
+      peer: backend,
       provider: opendoorProvider,
     });
     body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
@@ -500,7 +500,7 @@ describe("DoorstopPanelBodyElement (changes since review, Phase D)", () => {
       return Promise.resolve(makeRunResponse());
     });
     const { body, controller, context } = await mountBody(() => Promise.resolve(makeEditedItemResult()), {
-      backend,
+      peer: backend,
       provider: opendoorProvider,
     });
     body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();

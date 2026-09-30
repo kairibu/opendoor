@@ -1,4 +1,4 @@
-import type { WorkspacePanelContext, WorkspaceBackend } from "@jmfederico/pi-web/plugin-api";
+import type { WorkspacePanelContext, PluginPeer } from "@jmfederico/pi-web/plugin-api";
 import { LitElement, html, nothing, type PropertyValues, type TemplateResult } from "lit";
 import { createRef, type Ref } from "lit/directives/ref.js";
 import { property, state } from "lit/decorators.js";
@@ -258,13 +258,19 @@ function defineDoorstopPanelBodyElement(): void {
       }
 
       /** section-API: the baseline fetch and the review→commit pipeline live
-       *  server-side, so this gates the sections that need them. */
+       *  server-side, so this gates the sections that need them. The v4 peer
+       *  is the exact revision-paired path to this package's own active server
+       *  entry; v4 also removed the provider `capabilities.request` field, so
+       *  `peer.request` presence is the paired-backend gate (a legal
+       *  openChannel-only peer is NOT paired for these request-shaped
+       *  sections). The opendoor provider ownership check is kept for the
+       *  ownership-based information display (behavior-preserving Phase A;
+       *  Phase C revisits it). */
       backendActive(): boolean {
         const context = this.context;
         return (
-          context?.backend !== undefined &&
-          context.workspace.provider?.pluginId === OPENDOOR_PLUGIN_ID &&
-          context.workspace.provider?.capabilities.request !== false
+          context?.peer?.request !== undefined &&
+          context.workspace.provider?.pluginId === OPENDOOR_PLUGIN_ID
         );
       }
 
@@ -347,9 +353,9 @@ function defineDoorstopPanelBodyElement(): void {
       /**
        * The single dispatch surface of every panel action, with TWO paths:
        *
-       *  - BACKEND path when the workspace is owned by the opendoor provider
-       *    with an active backend: the STRUCTURED `input` goes through
-       *    `context.backend.request("doorstop.run", …)` — argv is built
+       *  - PEER path when the workspace is owned by the opendoor provider
+       *    with an active peer: the STRUCTURED `input` goes through
+       *    `context.peer.request("doorstop.run", …)` — argv is built
        *    server-side, so the browser never shell-quotes on this path. A
        *    rejected request commits `status: "error"` and does NOT
        *    invalidate (the run wrote nothing to the workspace).
@@ -372,11 +378,10 @@ function defineDoorstopPanelBodyElement(): void {
         if (context === undefined || controller === undefined) return;
         if (controller.runInProgress !== undefined) return;
         if (
-          context.backend !== undefined &&
-          context.workspace.provider?.pluginId === OPENDOOR_PLUGIN_ID &&
-          context.workspace.provider?.capabilities.request !== false
+          context.peer?.request !== undefined &&
+          context.workspace.provider?.pluginId === OPENDOOR_PLUGIN_ID
         ) {
-          void this.runDoorstopBackend(op, title, input, context.backend);
+          void this.runDoorstopBackend(op, title, input, context.peer);
           return;
         }
         const terminal = context.terminal;
@@ -395,14 +400,19 @@ function defineDoorstopPanelBodyElement(): void {
         op: DoorstopRunRequest["op"],
         title: string,
         input: DoorstopRunRequest,
-        backend: WorkspaceBackend,
+        peer: PluginPeer,
       ): Promise<void> {
         const controller = this.controller;
         if (controller === undefined) return;
+        const request = peer.request;
+        // Unreachable through {@link runDoorstop}'s gate; kept so direct
+        // callers of this private method cannot dereference an
+        // openChannel-only peer.
+        if (request === undefined) return;
         controller.beginRun(title);
         const startedAt = Date.now();
         try {
-          const response = await backend.request(DOORSTOP_RUN_OPERATION, input);
+          const response = await request(DOORSTOP_RUN_OPERATION, input);
           const parsed = parseDoorstopRunResponse(response);
           const status =
             parsed.signal !== null ? "killed" : parsed.exitCode === 0 ? "ok" : "failed";

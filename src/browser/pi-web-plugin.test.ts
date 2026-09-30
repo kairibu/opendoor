@@ -18,12 +18,12 @@ import plugin from "./pi-web-plugin.js";
 import { doorstopWorkspace, runtimeContext } from "../test-fixtures.js";
 
 describe("bundled opendoor browser entry", () => {
-  it("exports the host-expected plugin shape and contributes panel, actions, and label", () => {
-    expect(plugin.apiVersion).toBe(2);
+  it("exports the host-expected plugin shape and contributes panel, actions, and label", async () => {
+    expect(plugin.apiVersion).toBe(4);
     expect(plugin.name).toBe("Opendoor");
     expect(typeof plugin.activate).toBe("function");
 
-    const contributions = activate("opendoor");
+    const contributions = await activate("opendoor");
     const panel = contributions.workspacePanels?.[0];
     if (panel === undefined) throw new Error("Expected opendoor workspace panel");
     const label = contributions.workspaceLabels?.[0];
@@ -49,7 +49,7 @@ describe("bundled opendoor browser entry", () => {
   });
 
   it("wires the two actions to host navigation/refresh with the runtime-qualified panel id", async () => {
-    const contributions = activate("opendoor");
+    const contributions = await activate("opendoor");
     const goToRequirements = contributions.actions?.find((action) => action.id === "view.doorstop");
     const refresh = contributions.actions?.find((action) => action.id === "workspace.refresh-doorstop");
     if (goToRequirements === undefined || refresh === undefined) {
@@ -64,20 +64,29 @@ describe("bundled opendoor browser entry", () => {
     expect(goToRequirements.enabled).toBeUndefined();
     expect(refresh.enabled).toBeUndefined();
 
-    const selectMainView = vi.fn<PluginRuntimeContext["selectMainView"]>();
+    const selectWorkspaceTool = vi.fn<PluginRuntimeContext["selectWorkspaceTool"]>();
     const refreshWorkspacePanels = vi.fn<PluginRuntimeContext["refreshWorkspacePanels"]>();
-    const runtime = runtimeContext({ selectMainView, refreshWorkspacePanels });
+    const runtime = runtimeContext({ selectWorkspaceTool, refreshWorkspacePanels });
 
     await goToRequirements.run(runtime);
-    expect(selectMainView).toHaveBeenCalledWith("opendoor:workspace.doorstop");
+    expect(selectWorkspaceTool).toHaveBeenCalledWith("opendoor:workspace.doorstop");
 
     await refresh.run(runtime);
     expect(refreshWorkspacePanels).toHaveBeenCalledWith("opendoor:workspace.doorstop");
   });
 });
 
-function activate(runtimePluginId: string) {
-  return plugin.activate({ apiVersion: 2, pluginId: "opendoor", runtimePluginId, html, svg }).contributions;
+async function activate(runtimePluginId: string) {
+  const activation = await plugin.activate({
+    apiVersion: 4,
+    pluginId: "opendoor",
+    runtimePluginId,
+    html,
+    svg,
+    signal: new AbortController().signal,
+    lifetimeSignal: new AbortController().signal,
+  });
+  return activation.contributions;
 }
 
 function panelContext(workspace = doorstopWorkspace, machineId = "local"): WorkspacePanelContext {
@@ -88,7 +97,7 @@ function panelContext(workspace = doorstopWorkspace, machineId = "local"): Works
     state: {
       selectedWorkspace: workspace,
       workspaceTool: "opendoor:workspace.doorstop",
-      mainView: "opendoor:workspace.doorstop",
+      mainView: "workspace",
     },
     files: {
       readFile: () => Promise.reject(new Error("not implemented")),

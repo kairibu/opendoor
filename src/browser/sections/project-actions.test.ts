@@ -25,6 +25,7 @@ import { createFakeFiles, dirEntry, fileEntry, text, tree } from "../../test-sup
 import { flushMicro, makeResult, makeTreeResult, settle } from "../../test-fixtures.js";
 import {
   stubConfirm,
+  opendoorProvider,
   makeGitStatusResponse,
   withGitStatusBackend,
   mountBody,
@@ -193,6 +194,17 @@ describe("DoorstopPanelBodyElement (git strip + stage + commit, plan-add-git-act
     expect(root?.querySelector(".doorstop-git-status")).toBeNull();
     expect(root?.querySelector(".doorstop-git-stage")).toBeNull();
     expect(root?.querySelector(".doorstop-git-commit")).toBeNull();
+
+    // A v4 openChannel-only peer (no `request`) is NOT a paired backend: the
+    // request-shaped git controls stay hidden instead of rendering dead.
+    const channelOnly = await mountBody(() => Promise.resolve(makeTreeResult()), {
+      peerChannelOnly: true,
+      provider: opendoorProvider,
+    });
+    const channelOnlyRoot = channelOnly.body.shadowRoot;
+    expect(channelOnlyRoot?.querySelector(".doorstop-git-status")).toBeNull();
+    expect(channelOnlyRoot?.querySelector(".doorstop-git-stage")).toBeNull();
+    expect(channelOnlyRoot?.querySelector(".doorstop-git-commit")).toBeNull();
   });
 
   it("renders the ready strip's counts from gitStatusText and re-fetches on click", async () => {

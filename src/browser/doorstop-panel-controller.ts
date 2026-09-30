@@ -548,15 +548,15 @@ export class DoorstopWorkspaceController implements ReactiveController {
     this.beginRun(title);
     const startedAt = Date.now();
     try {
-      const backend = this.context.backend;
-      if (backend === undefined) {
+      const peer = this.context.peer;
+      if (peer?.request === undefined) {
         // Defensive fallback only — the panel gates the buttons on
         // `backendActive()`, so this branch is reachable solely by direct
         // controller callers (tests, host wiring) on unpaired installs.
         this.commitGitError(op, title, startedAt, "Git actions need the paired opendoor backend");
         return;
       }
-      const response = await backend.request(backendOperation, input);
+      const response = await peer.request(backendOperation, input);
       const parsed = parseResponse(response);
       this.commitRun({
         op,
@@ -634,7 +634,7 @@ export class DoorstopWorkspaceController implements ReactiveController {
    * retries instead of showing a stale failure forever). A fetch already in
    * flight for the same UID is joined (never stacked). Otherwise the fetch
    * runs through
-   * `backend.request(DOORSTOP_BASELINE_OPERATION, { uid, path })`, parses the
+   * `peer.request(DOORSTOP_BASELINE_OPERATION, { uid, path })`, parses the
    * response with the contract validator, and stamp-walks the returned blobs
    * newest-first (`parseDoorstopItem` + the document's config via
    * `computeItemStamp(item, config, true)`) until one matches
@@ -691,15 +691,15 @@ export class DoorstopWorkspaceController implements ReactiveController {
     this.baselineVersion += 1;
     this.requestUpdate();
     try {
-      const backend = this.context.backend;
-      if (backend === undefined) {
+      const peer = this.context.peer;
+      if (peer?.request === undefined) {
         // Defensive fallback only — the panel gates the section on
         // `backendActive()`, so this branch is reachable solely by direct
         // controller callers (tests, host wiring) on unpaired installs.
         this.commitBaseline(uid, { key, view: { state: "no-git" } });
         return;
       }
-      const response = await backend.request(DOORSTOP_BASELINE_OPERATION, { uid, path: item.path });
+      const response = await peer.request(DOORSTOP_BASELINE_OPERATION, { uid, path: item.path });
       if (!this.host.isConnected) return;
       const parsed = parseDoorstopBaselineResponse(response);
       if (!parsed.git) {
@@ -777,8 +777,8 @@ export class DoorstopWorkspaceController implements ReactiveController {
     this.gitStatusInFlight = true;
     this.requestUpdate();
     try {
-      const backend = this.context.backend;
-      if (backend === undefined) {
+      const peer = this.context.peer;
+      if (peer?.request === undefined) {
         // Defensive fallback only — the panel gates the strip on
         // `backendActive()`, so this branch is reachable solely by direct
         // controller callers (tests, host wiring) on unpaired installs.
@@ -786,7 +786,7 @@ export class DoorstopWorkspaceController implements ReactiveController {
         this.gitStatusView = { state: "no-git" };
         return;
       }
-      const response = await backend.request(DOORSTOP_GIT_STATUS_OPERATION, {});
+      const response = await peer.request(DOORSTOP_GIT_STATUS_OPERATION, {});
       // The late-write guard, widened: drop the write not only when the
       // host disconnected but whenever the `loading` view THIS fetch
       // installed is gone — `invalidate()` (a rescan or any run, stage and

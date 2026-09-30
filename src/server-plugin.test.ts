@@ -4,8 +4,9 @@
 // Real fs via `fs.mkdtemp` — no mocking needed: probe claims a temp dir that
 // contains `.doorstop.yml` and passes everything else (never rejecting), list
 // returns exactly one main workspace with a stable key and the absolute
-// project path, the returned provider is frozen and exposes the `request`
-// seam, and the default export has the paired server-plugin shape.
+// project path, the returned provider is frozen and exposes only probe/list
+// (the six-operation request dispatch lives on the activation-level peer),
+// and the default export has the paired server-plugin shape.
 
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -14,10 +15,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import type {
   JsonValue,
   ProjectInput,
-  ProviderRequestContext,
   ServerPluginActivationContext,
   ServerPluginExecFileRequest,
   ServerPluginExecFileResult,
+  ServerPluginPeerRequestContext,
   WorkspaceProvider,
 } from "@jmfederico/pi-web/server-plugin-api";
 import plugin, { createDoorstopWorkspaceProvider } from "./server-plugin.js";
@@ -59,12 +60,14 @@ function projectFor(path: string): ProjectInput {
 /** Minimal activation context — probe/list/request never touch execFile here. */
 function contextFor(): ServerPluginActivationContext {
   return {
-    apiVersion: 1,
+    apiVersion: 3,
     pluginId: "opendoor",
     packageRoot: "/fake/package-root",
+    dataDirectory: "/fake/data-directory",
     logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
     settings: {},
     signal: new AbortController().signal,
+    lifetimeSignal: new AbortController().signal,
     execFile: async () => {
       throw new Error("server-plugin tests must never exec the CLI");
     },
@@ -147,13 +150,15 @@ describe("createDoorstopWorkspaceProvider", () => {
     expect(again[0]?.key).toBe(workspace.key);
   });
 
-  it("returns a frozen primary-tier provider exposing the request seam", () => {
+  it("returns a frozen primary-tier provider without a request method", () => {
     const provider: WorkspaceProvider = createDoorstopWorkspaceProvider(contextFor());
     expect(Object.isFrozen(provider)).toBe(true);
-    expect(typeof provider.request).toBe("function");
+    // v3 removed the provider-level request dispatch: the provider shrinks
+    // to probe/list (the request handler lives on the activation peer).
+    expect("request" in provider).toBe(false);
     // Primary tier: `fallback` unset (git is the fallback provider).
     expect(provider.fallback).toBeUndefined();
-    // Main-only workspaces are not removable: no prepareRemove in v1.
+    // Main-only workspaces are not removable: no prepareRemove.
     expect(provider.prepareRemove).toBeUndefined();
   });
 
@@ -189,18 +194,20 @@ describe("createDoorstopWorkspaceProvider", () => {
         return { ...RESULT, stdout: "sha1\n" };
       },
     };
-    const provider = createDoorstopWorkspaceProvider(context);
+    const activation = await plugin.activate(context);
+    const peerRequest = activation.peer?.request;
+    if (peerRequest === undefined) throw new Error("Expected the activation peer request handler");
     const signal = new AbortController().signal;
-    const requestFor = (operation: string, input: JsonValue): ProviderRequestContext => ({
+    const requestFor = (operation: string, input: JsonValue): ServerPluginPeerRequestContext => ({
       project: projectFor("/workspace/demo checkout"),
-      workspace: { key: "/workspace/demo checkout", path: "/workspace/demo checkout", label: "demo", isMain: true },
+      workspace: { id: "/workspace/demo checkout", projectId: "project-demo", path: "/workspace/demo checkout", label: "demo", isMain: true },
       operation,
       input,
       signal,
     });
 
     // `doorstop.item-baseline` routes to the baseline handler (read-only git fetch).
-    const baseline = await provider.request?.(requestFor(DOORSTOP_BASELINE_OPERATION, { uid: "REQ0001", path: "reqs/REQ0001.yml" }));
+    const baseline = await peerRequest(requestFor(DOORSTOP_BASELINE_OPERATION, { uid: "REQ0001", path: "reqs/REQ0001.yml" }));
     expect(parseDoorstopBaselineResponse(baseline)).toEqual({
       git: true,
       source: "review-commit",
@@ -208,14 +215,14 @@ describe("createDoorstopWorkspaceProvider", () => {
     });
 
     // `doorstop.git-status` routes to the read-only status handler.
-    const status = await provider.request?.(requestFor(DOORSTOP_GIT_STATUS_OPERATION, {}));
+    const status = await peerRequest(requestFor(DOORSTOP_GIT_STATUS_OPERATION, {}));
     expect(parseDoorstopGitStatusResponse(status).branch).toBe("main");
     expect(parseDoorstopGitStatusResponse(status).files).toEqual([
       { path: "reqs/REQ0001.yml", index: "unmodified", workingTree: "modified" },
     ]);
 
     // `doorstop.git-stage` routes to the Stage-all handler (rev-parse → status → add).
-    const stage = await provider.request?.(requestFor(DOORSTOP_GIT_STAGE_OPERATION, { paths: ["reqs/REQ0001.yml"] }));
+    const stage = await peerRequest(requestFor(DOORSTOP_GIT_STAGE_OPERATION, { paths: ["reqs/REQ0001.yml"] }));
     expect(parseDoorstopGitStageResponse(stage)).toEqual({ status: "staged", staged: 1 });
 
     // `doorstop.git-unstage` routes to the Unstage handler
@@ -223,7 +230,7 @@ describe("createDoorstopWorkspaceProvider", () => {
     // changed in BOTH columns (`MM`), so the unstage handler selects it by
     // its index (X) column, issues the reset, and narrates `unstaged` (a
     // misrouted stage response would fail the unstage parser's status enum).
-    const unstage = await provider.request?.(requestFor(DOORSTOP_GIT_UNSTAGE_OPERATION, { paths: ["reqs/REQ0001.yml"] }));
+    const unstage = await peerRequest(requestFor(DOORSTOP_GIT_UNSTAGE_OPERATION, { paths: ["reqs/REQ0001.yml"] }));
     expect(parseDoorstopGitUnstageResponse(unstage)).toEqual({ status: "unstaged", unstaged: 1 });
     // The reset really crossed the provider boundary (not just the narration).
     expect(requests.filter((request) => request.args?.[0] === "reset").map((request) => request.args)).toEqual([
@@ -231,30 +238,32 @@ describe("createDoorstopWorkspaceProvider", () => {
     ]);
 
     // `doorstop.git-commit` routes to the Commit handler (rev-parse → diff → commit → sha).
-    const commit = await provider.request?.(requestFor(DOORSTOP_GIT_COMMIT_OPERATION, { message: "docs" }));
+    const commit = await peerRequest(requestFor(DOORSTOP_GIT_COMMIT_OPERATION, { message: "docs" }));
     expect(parseDoorstopGitCommitResponse(commit)).toEqual({ status: "committed", sha: "sha1" });
 
     // `doorstop.run` still routes to the run handler (doorstop exec only).
-    const run = await provider.request?.(requestFor(DOORSTOP_RUN_OPERATION, { op: "validate" }));
+    const run = await peerRequest(requestFor(DOORSTOP_RUN_OPERATION, { op: "validate" }));
     expect(parseDoorstopRunResponse(run).op).toBe("validate");
 
     // Anything else → the existing unsupported-operation error.
-    await expect(provider.request?.(requestFor("doorstop.purge", null))).rejects.toThrow(
+    await expect(peerRequest(requestFor("doorstop.purge", null))).rejects.toThrow(
       "opendoor: unsupported workspace backend operation: doorstop.purge",
     );
   });
 });
 
 describe("default export", () => {
-  it("is the paired server plugin shape (apiVersion 1, name, activate)", async () => {
-    expect(plugin.apiVersion).toBe(1);
+  it("is the paired server plugin shape (apiVersion 3, provider + peer)", async () => {
+    expect(plugin.apiVersion).toBe(3);
     expect(plugin.name).toBe("Opendoor");
     const activation = await plugin.activate(contextFor());
     const provider = activation.workspaceProvider;
     expect(provider).toBeDefined();
     expect(typeof provider?.probe).toBe("function");
     expect(typeof provider?.list).toBe("function");
-    expect(typeof provider?.request).toBe("function");
     expect(Object.isFrozen(provider)).toBe(true);
+    // The provider no longer carries `request`; the peer does.
+    expect(provider !== undefined && "request" in provider).toBe(false);
+    expect(typeof activation.peer?.request).toBe("function");
   });
 });

@@ -229,9 +229,9 @@ describe("DoorstopPanelBodyElement (layout sections: actions / filters / palette
   });
 
   it("keeps the full section order (actions → viewer → palette → status bar) after a run", async () => {
-    const backend = vi.fn(() => Promise.resolve(makeRunResponse()));
+    const peer = vi.fn(() => Promise.resolve(makeRunResponse()));
     const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()), {
-      backend,
+      peer,
       provider: opendoorProvider,
     });
 
@@ -349,9 +349,9 @@ describe("DoorstopPanelBodyElement (layout sections: actions / filters / palette
   });
 
   it("keeps the status bar (with its auto-expanded output) in the findings view", async () => {
-    const backend = vi.fn(() => Promise.resolve(makeRunResponse()));
+    const peer = vi.fn(() => Promise.resolve(makeRunResponse()));
     const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()), {
-      backend,
+      peer,
       provider: opendoorProvider,
     });
     body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();

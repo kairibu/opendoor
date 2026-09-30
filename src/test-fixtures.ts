@@ -172,12 +172,16 @@ export interface PanelContextHook {
   /** Fake workspace-files adapter; defaults to an empty `createFakeFiles()`. */
   fake?: FakeWorkspaceFiles;
   workspace?: Workspace;
-  /** Provider metadata to attach to the workspace (backend-vs-terminal gating). */
+  /** Provider metadata to attach to the workspace (peer-vs-terminal gating). */
   provider?: Workspace["provider"];
   insertText?: Mock;
   focusPrompt?: Mock;
   runCommand?: Mock;
-  backend?: Mock;
+  peer?: Mock;
+  /** Build the v4 openChannel-only peer shape (a legal `PluginPeer` with
+   *  `request?: undefined`): the paired-backend gate must treat it as
+   *  unpaired and fall back to the terminal instead of silently no-oping. */
+  peerChannelOnly?: boolean;
 }
 
 export interface PanelContextResult {
@@ -186,21 +190,21 @@ export interface PanelContextResult {
   insertText: Mock;
   focusPrompt: Mock;
   runCommand: Mock;
-  backend: Mock | undefined;
+  peer: Mock | undefined;
 }
 
 /** One configurable panel context wrapping a fake files adapter plus spies for
  *  the surfaces the element/controller read at click time: `requestRender`,
  *  `prompt.insertText`, a `focusPrompt` widening, `terminal.runCommand`, and
- *  the optional `backend.request` surface plus the workspace `provider`
- *  metadata that gates the backend path. Without `hook.backend` the context
- *  carries no `backend` property (exactly the unpaired real shape). */
+ *  the optional `peer.request` surface plus the workspace `provider`
+ *  metadata that gates the peer path. Without `hook.peer` the context
+ *  carries no `peer` property (exactly the unpaired real shape). */
 export function panelContext(hook: PanelContextHook = {}): PanelContextResult {
   const requestRender = vi.fn();
   const insertText = hook.insertText ?? vi.fn();
   const focusPrompt = hook.focusPrompt ?? vi.fn();
   const runCommand = hook.runCommand ?? vi.fn(() => Promise.resolve(completedTerminalHandle()));
-  const backend = hook.backend;
+  const peerRequest = hook.peer;
   const baseWorkspace = hook.workspace ?? doorstopWorkspace;
   const workspace = hook.provider === undefined ? baseWorkspace : { ...baseWorkspace, provider: hook.provider };
   const files: FakeWorkspaceFiles = hook.fake ?? createFakeFiles();
@@ -210,18 +214,32 @@ export function panelContext(hook: PanelContextHook = {}): PanelContextResult {
     state: {
       selectedWorkspace: workspace,
       workspaceTool: "opendoor:workspace.doorstop",
-      mainView: "opendoor:workspace.doorstop",
+      mainView: "workspace",
     },
     files: files.files,
     host: { requestRender },
     prompt: { insertText, getText: () => "", getSelection: () => null },
     terminal: { open: () => undefined, runCommand },
-    // The optional `backend` field is only present when the hook supplied one
-    // (exactOptionalPropertyTypes forbids an explicit undefined write).
-    ...(backend === undefined ? {} : { backend: { request: backend } }),
+    // The optional `peer` field is only present when the hook supplied one
+    // (exactOptionalPropertyTypes forbids an explicit undefined write). The
+    // v4 peer is a request handler (the fake never needs openChannel), unless
+    // `peerChannelOnly` asks for the openChannel-only variant that must fall
+    // back to the terminal.
+    ...(hook.peerChannelOnly === true
+      ? { peer: { openChannel: openChannelOnlyStub } }
+      : peerRequest === undefined
+        ? {}
+        : { peer: { request: peerRequest } }),
     focusPrompt,
   };
-  return { context, requestRender, insertText, focusPrompt, runCommand, backend };
+  return { context, requestRender, insertText, focusPrompt, runCommand, peer: peerRequest };
+}
+
+/** The `openChannel` of the openChannel-only `PluginPeer` fixture: the tests
+ *  that use it only assert the terminal fallback, so the channel is never
+ *  opened (rejecting keeps the stub honest if that ever changes). */
+function openChannelOnlyStub(): Promise<never> {
+  return Promise.reject(new Error("openChannel-only peer fixture: openChannel is not exercised"));
 }
 
 /** A minimal resolved `TerminalCommandRunHandle` for the default runCommand
@@ -252,7 +270,7 @@ export function runtimeContext(patch: Partial<PluginRuntimeContext> = {}): Plugi
     state: {
       selectedWorkspace: doorstopWorkspace,
       workspaceTool: "opendoor:workspace.doorstop",
-      mainView: "opendoor:workspace.doorstop",
+      mainView: "workspace",
     },
     prompt: { insertText: noop, getText: () => "", getSelection: () => null },
     openActionPalette: noop,

@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 //
 // Element-level tests for the status-bar section (src/browser/sections/status-bar.ts):
-// the backend dispatch path and the last-run status bar. Describe blocks moved
+// the peer dispatch path and the last-run status bar. Describe blocks moved
 // verbatim from doorstop-panel-element.test.ts; shared scaffolding lives in
 // ../doorstop-panel-element-test-support.ts.
 
@@ -12,7 +12,6 @@ import { text } from "../../test-support.js";
 import { flushMicro, makeTreeResult, settle } from "../../test-fixtures.js";
 import {
   opendoorProvider,
-  opendoorNoRequestProvider,
   gitProvider,
   makeEditedItemResult,
   withGitStatusBackend,
@@ -25,11 +24,11 @@ import {
 // Shared DOM/confirm reset between tests.
 afterEach(resetElementTestEnvironment);
 
-describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
-  it("dispatches through the backend and commits lastRun when the opendoor provider owns the workspace", async () => {
-    const backend = withGitStatusBackend(() => Promise.resolve(makeRunResponse()));
+describe("DoorstopPanelBodyElement (peer path + last run, Phase D)", () => {
+  it("dispatches through the peer and commits lastRun when the opendoor provider owns the workspace", async () => {
+    const peer = withGitStatusBackend(() => Promise.resolve(makeRunResponse()));
     const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()), {
-      backend,
+      peer,
       provider: opendoorProvider,
     });
     const invalidate = vi.spyOn(controller, "invalidate").mockImplementation(() => Promise.resolve());
@@ -37,15 +36,15 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
     await flushMicro(body);
 
-    // The structured request went to the backend; the terminal was NOT used;
-    // one rescan followed; the in-flight marker cleared. The first backend
+    // The structured request went to the peer; the terminal was NOT used;
+    // one rescan followed; the in-flight marker cleared. The first peer
     // call is the ONE mount-time `doorstop.git-status` auto-fetch (the
     // strip's first-render fetch, Phase D step 14 — answered with a valid
     // status response via `withGitStatusBackend` so the strip's cached view
     // stays honest); the second is the validate run.
-    expect(backend).toHaveBeenCalledTimes(2);
-    expect(backend).toHaveBeenCalledWith("doorstop.git-status", {});
-    expect(backend).toHaveBeenCalledWith("doorstop.run", { op: "validate" });
+    expect(peer).toHaveBeenCalledTimes(2);
+    expect(peer).toHaveBeenCalledWith("doorstop.git-status", {});
+    expect(peer).toHaveBeenCalledWith("doorstop.run", { op: "validate" });
     expect(context.terminal.runCommand).not.toHaveBeenCalled();
     expect(invalidate).toHaveBeenCalledTimes(1);
     expect(controller.runInProgress).toBeUndefined();
@@ -76,9 +75,9 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
 
   it("maps exit codes and killing signals onto the run status", async () => {
     // exit ≠ 0 → failed (findings are output, not infrastructure errors).
-    const backendFailed = withGitStatusBackend(() => Promise.resolve(makeRunResponse({ exitCode: 3 })));
+    const peerFailed = withGitStatusBackend(() => Promise.resolve(makeRunResponse({ exitCode: 3 })));
     const failed = await mountBody(() => Promise.resolve(makeTreeResult()), {
-      backend: backendFailed,
+      peer: peerFailed,
       provider: opendoorProvider,
     });
     failed.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
@@ -87,11 +86,11 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     expect(failed.controller.lastRun?.exitCode).toBe(3);
 
     // signal !== null → killed (partial output preserved, surfaced not thrown).
-    const backendKilled = withGitStatusBackend(() =>
+    const peerKilled = withGitStatusBackend(() =>
       Promise.resolve(makeRunResponse({ exitCode: null, signal: "SIGTERM", stdout: "partial…" })),
     );
     const killed = await mountBody(() => Promise.resolve(makeTreeResult()), {
-      backend: backendKilled,
+      peer: peerKilled,
       provider: opendoorProvider,
     });
     killed.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
@@ -106,8 +105,8 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     );
   });
 
-  it("commits status error (without invalidate) when the backend request rejects", async () => {
-    const backend = vi.fn(() =>
+  it("commits status error (without invalidate) when the peer request rejects", async () => {
+    const peer = vi.fn(() =>
       Promise.reject(
         new Error(
           "opendoor: doorstop CLI not found on the sessiond host PATH — configure plugins.opendoor.settings.doorstopPath",
@@ -115,7 +114,7 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
       ),
     );
     const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()), {
-      backend,
+      peer,
       provider: opendoorProvider,
     });
     const invalidate = vi.spyOn(controller, "invalidate").mockImplementation(() => Promise.resolve());
@@ -144,12 +143,12 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     );
   });
 
-  it("falls back to the terminal when the provider is git, the backend is absent, or request is disabled", async () => {
-    // A git-owned workspace with a backend present: the pluginId gate fails →
+  it("falls back to the terminal when the provider is git or the peer cannot serve requests", async () => {
+    // A git-owned workspace with a peer present: the pluginId gate fails →
     // exactly today's terminal behavior.
-    const backendGit = vi.fn(() => Promise.resolve(makeRunResponse()));
+    const peerGit = vi.fn(() => Promise.resolve(makeRunResponse()));
     const git = await mountBody(() => Promise.resolve(makeTreeResult()), {
-      backend: backendGit,
+      peer: peerGit,
       provider: gitProvider,
     });
     git.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
@@ -160,21 +159,40 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
       metadata: { "opendoor.op": "validate" },
       open: true,
     });
-    expect(backendGit).not.toHaveBeenCalled();
+    expect(peerGit).not.toHaveBeenCalled();
     expect(git.controller.lastRun).toBeUndefined();
 
-    // An opendoor provider whose capabilities disable request: terminal path.
-    const backendNoRequest = vi.fn(() => Promise.resolve(makeRunResponse()));
-    const noRequest = await mountBody(() => Promise.resolve(makeTreeResult()), {
-      backend: backendNoRequest,
-      provider: opendoorNoRequestProvider,
+    // v4 removed the provider `capabilities.request` field, so `peer.request`
+    // presence is the paired-backend gate: an opendoor provider with NO peer
+    // falls back to the terminal.
+    const noPeer = await mountBody(() => Promise.resolve(makeTreeResult()), {
+      provider: opendoorProvider,
     });
-    noRequest.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
-    await flushMicro(noRequest.body);
-    expect(noRequest.context.terminal.runCommand).toHaveBeenCalled();
-    expect(backendNoRequest).not.toHaveBeenCalled();
+    noPeer.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
+    await flushMicro(noPeer.body);
+    expect(noPeer.context.terminal.runCommand).toHaveBeenCalled();
+    expect(noPeer.controller.lastRun).toBeUndefined();
 
-    // No backend at all (the default context): terminal path, nothing new.
+    // A v4 peer may legally be openChannel-only (`request?: undefined`): the
+    // gate must treat it as unpaired (never silently no-op the run) and fall
+    // back to the terminal.
+    const channelOnly = await mountBody(() => Promise.resolve(makeTreeResult()), {
+      peerChannelOnly: true,
+      provider: opendoorProvider,
+    });
+    channelOnly.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
+    await flushMicro(channelOnly.body);
+    expect(channelOnly.context.terminal.runCommand).toHaveBeenCalledWith({
+      title: "Doorstop: validate",
+      command: "doorstop",
+      metadata: { "opendoor.op": "validate" },
+      open: true,
+    });
+    expect(channelOnly.controller.lastRun).toBeUndefined();
+    expect(channelOnly.controller.runInProgress).toBeUndefined();
+
+    // No provider and no peer at all (the default context): terminal path,
+    // nothing new.
     const unpaired = await mountBody(() => Promise.resolve(makeTreeResult()));
     unpaired.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
     await flushMicro(unpaired.body);
@@ -183,10 +201,10 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     expect(unpaired.controller.runInProgress).toBeUndefined();
   });
 
-  it("passes the structured request (array parents) to the backend, never a shell string", async () => {
-    const backend = vi.fn(() => Promise.resolve(makeRunResponse()));
+  it("passes the structured request (array parents) to the peer, never a shell string", async () => {
+    const peer = vi.fn(() => Promise.resolve(makeRunResponse()));
     const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()), {
-      backend,
+      peer,
       provider: opendoorProvider,
     });
 
@@ -197,29 +215,29 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     await flushMicro(body);
     body.shadowRoot?.querySelector<HTMLElement>(".doorstop-clear")?.click();
     await flushMicro(body);
-    expect(backend).toHaveBeenCalledWith("doorstop.run", {
+    expect(peer).toHaveBeenCalledWith("doorstop.run", {
       op: "clear",
       uid: "REQ0002",
       parents: ["REQ0001"],
     });
 
     // Validate carries no arguments.
-    backend.mockClear();
+    peer.mockClear();
     body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
     await flushMicro(body);
-    expect(backend).toHaveBeenCalledWith("doorstop.run", { op: "validate" });
+    expect(peer).toHaveBeenCalledWith("doorstop.run", { op: "validate" });
   });
 
   it("disables the action buttons while a run is in flight and clears the marker afterwards", async () => {
-    let resolveBackend!: (value: DoorstopRunResponse) => void;
-    const backend = vi.fn(
+    let resolvePeer!: (value: DoorstopRunResponse) => void;
+    const peer = vi.fn(
       () =>
         new Promise<DoorstopRunResponse>((resolve) => {
-          resolveBackend = resolve;
+          resolvePeer = resolve;
         }),
     );
     const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()), {
-      backend,
+      peer,
       provider: opendoorProvider,
     });
     const root = body.shadowRoot;
@@ -247,7 +265,7 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     for (const button of buttons) expect(button?.disabled).toBe(true);
 
     // Landing the run re-enables them and clears the marker.
-    resolveBackend(makeRunResponse());
+    resolvePeer(makeRunResponse());
     await flushMicro(body);
     expect(controller.runInProgress).toBeUndefined();
     bindBody(body, controller, context);
@@ -256,9 +274,9 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
   });
 
   it("keeps the status bar across an invalidate and clears it only on dismiss", async () => {
-    const backend = vi.fn(() => Promise.resolve(makeRunResponse()));
+    const peer = vi.fn(() => Promise.resolve(makeRunResponse()));
     const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()), {
-      backend,
+      peer,
       provider: opendoorProvider,
     });
 
@@ -291,9 +309,9 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
   });
 
   it("re-expands the status bar when a NEW run after a Dismiss produces a message", async () => {
-    const backend = vi.fn(() => Promise.resolve(makeRunResponse()));
+    const peer = vi.fn(() => Promise.resolve(makeRunResponse()));
     const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()), {
-      backend,
+      peer,
       provider: opendoorProvider,
     });
 
@@ -323,11 +341,11 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
   });
 
   it("stays collapsed to its status row when a run has nothing to display", async () => {
-    const backend = vi.fn(() =>
+    const peer = vi.fn(() =>
       Promise.resolve(makeRunResponse({ stdout: "", stderr: "" })),
     );
     const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()), {
-      backend,
+      peer,
       provider: opendoorProvider,
     });
 
@@ -344,7 +362,7 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
   });
 
   it("renders truncation notices and the killed badge", async () => {
-    const backend = vi.fn(() =>
+    const peer = vi.fn(() =>
       Promise.resolve(
         makeRunResponse({
           exitCode: null,
@@ -357,7 +375,7 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
       ),
     );
     const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()), {
-      backend,
+      peer,
       provider: opendoorProvider,
     });
     body.shadowRoot?.querySelector<HTMLElement>(".doorstop-validate")?.click();
@@ -380,25 +398,25 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
 
   it("passes commit: true on Review only when the workspace setting is on (omitted under the default)", async () => {
     // Default setting (off): the review request carries NO commit field.
-    const backendOff = withGitStatusBackend((operation: string, input: unknown) => Promise.resolve(makeRunResponse()));
-    const off = await mountBody(() => Promise.resolve(makeEditedItemResult()), { backend: backendOff, provider: opendoorProvider });
+    const peerOff = withGitStatusBackend((operation: string, input: unknown) => Promise.resolve(makeRunResponse()));
+    const off = await mountBody(() => Promise.resolve(makeEditedItemResult()), { peer: peerOff, provider: opendoorProvider });
     off.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
     bindBody(off.body, off.controller, off.context);
     await flushMicro(off.body);
     off.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-review")?.click();
     await flushMicro(off.body);
-    expect(backendOff).toHaveBeenCalledWith("doorstop.run", { op: "review", uid: "REQ0003" });
+    expect(peerOff).toHaveBeenCalledWith("doorstop.run", { op: "review", uid: "REQ0003" });
     // The no-`commit` guard is filtered to the `doorstop.run` calls: the
     // mount-time `doorstop.git-status` auto-fetch (Phase D step 14) is call
     // 0, so a bare `calls[0]` would read the git-status `{}` payload and
     // pass trivially. The exact-shape toEqual below carries the real intent.
-    const reviewCall = backendOff.mock.calls.find(([operation]) => operation === "doorstop.run");
+    const reviewCall = peerOff.mock.calls.find(([operation]) => operation === "doorstop.run");
     expect(reviewCall?.[1]).toEqual({ op: "review", uid: "REQ0003" });
     expect(reviewCall?.[1]).not.toHaveProperty("commit");
 
     // Setting on: the request carries commit: true.
-    const backendOn = withGitStatusBackend((operation: string, input: unknown) => Promise.resolve(makeRunResponse()));
-    const on = await mountBody(() => Promise.resolve(makeEditedItemResult()), { backend: backendOn, provider: opendoorProvider });
+    const peerOn = withGitStatusBackend((operation: string, input: unknown) => Promise.resolve(makeRunResponse()));
+    const on = await mountBody(() => Promise.resolve(makeEditedItemResult()), { peer: peerOn, provider: opendoorProvider });
     on.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
     bindBody(on.body, on.controller, on.context);
     await flushMicro(on.body);
@@ -412,9 +430,9 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
     }
     on.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-review")?.click();
     await flushMicro(on.body);
-    expect(backendOn).toHaveBeenCalledWith("doorstop.run", { op: "review", uid: "REQ0003", commit: true });
+    expect(peerOn).toHaveBeenCalledWith("doorstop.run", { op: "review", uid: "REQ0003", commit: true });
 
-    // Backend is the only commit path: with the setting on but NO backend,
+    // The peer is the only commit path: with the setting on but NO peer,
     // the terminal command stays the plain `doorstop review <uid>`.
     const terminal = await mountBody(() => Promise.resolve(makeEditedItemResult()));
     terminal.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
@@ -439,7 +457,7 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
   });
 
   it("renders the commit outcome line in Last run; a failed commit does not flip the ok badge", async () => {
-    const backend = withGitStatusBackend(() =>
+    const peer = withGitStatusBackend(() =>
       Promise.resolve(
         makeRunResponse({
           op: "review",
@@ -449,7 +467,7 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
         }),
       ),
     );
-    const good = await mountBody(() => Promise.resolve(makeEditedItemResult()), { backend, provider: opendoorProvider });
+    const good = await mountBody(() => Promise.resolve(makeEditedItemResult()), { peer, provider: opendoorProvider });
     good.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
     bindBody(good.body, good.controller, good.context);
     await flushMicro(good.body);
@@ -465,7 +483,7 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
 
     // A failed COMMIT is narration: the review succeeded, so the badge stays
     // ok while the line surfaces the bounded git stderr.
-    const backendFailed = withGitStatusBackend(() =>
+    const peerFailed = withGitStatusBackend(() =>
       Promise.resolve(
         makeRunResponse({
           op: "review",
@@ -475,7 +493,7 @@ describe("DoorstopPanelBodyElement (backend path + last run, Phase D)", () => {
         }),
       ),
     );
-    const failed = await mountBody(() => Promise.resolve(makeEditedItemResult()), { backend: backendFailed, provider: opendoorProvider });
+    const failed = await mountBody(() => Promise.resolve(makeEditedItemResult()), { peer: peerFailed, provider: opendoorProvider });
     failed.body.shadowRoot?.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
     bindBody(failed.body, failed.controller, failed.context);
     await flushMicro(failed.body);

@@ -9,14 +9,14 @@
 // the registry and controller so that chain can use them.
 //
 // Browser-side adaptation of the git panel's controller/activity idiom
-// (mirrors opense-panel.ts): what git does as a `context.backend`
+// (mirrors opense-panel.ts): what git does as a `context.peer`
 // round-trip becomes one in-browser job here — workspace settings
 // (doorstop-settings, `.pi-web/opendoor.json`; its exclusions shape the
 // walk and its diagnostics join the result) → discovery walk
 // (doorstop-discovery) → per-document item-file reads (bounded concurrent) →
 // parse (doorstop-model) → index assembly (buildDoorstopIndex) → state
 // computation (computeItemStates). `context.files` is the only boundary
-// used in THIS module; the plugin's CLI actions do reach `context.backend`,
+// used in THIS module; the plugin's CLI actions do reach `context.peer`,
 // but only from the panel elements' `runDoorstop` (Phase D), never here.
 //
 // Load pipeline: discoverDoorstopDocuments returns the workspace's document
@@ -96,7 +96,7 @@ export interface DoorstopWorkspaceResult {
  * concurrent) → parse → index assembly → state computation. The injected
  * `files` adapter (structurally satisfied by `context.files`) is the only
  * boundary, so tests drive the whole job through a fake and the panel never
- * touches `context.backend`. Never throws: discovery/parse convert every
+ * touches `context.peer`. Never throws: discovery/parse convert every
  * problem into diagnostics on the index.
  */
 export async function loadDoorstopWorkspace(files: DoorstopFiles): Promise<DoorstopWorkspaceResult> {

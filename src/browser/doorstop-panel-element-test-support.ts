@@ -37,20 +37,18 @@ import {
   settle,
 } from "../test-fixtures.js";
 
-/** Provider metadata variants for the Phase D dispatch tests: the opendoor
- *  provider enables the backend path, the git provider (the usual fallback
- *  owner) and a request-disabled opendoor provider force the terminal path. */
+/** Provider metadata variants for the dispatch tests: the opendoor provider
+ *  enables the peer path, the git provider (the usual fallback owner) forces
+ *  the terminal path via the ownership gate. v4 removed the provider
+ *  `capabilities.request` field, so capabilities carry only `remove`; the
+ *  paired-backend gate is `peer.request` presence on the context. */
 export const opendoorProvider: Workspace["provider"] = {
   pluginId: "opendoor",
-  capabilities: { request: true, remove: false },
-};
-export const opendoorNoRequestProvider: Workspace["provider"] = {
-  pluginId: "opendoor",
-  capabilities: { request: false, remove: false },
+  capabilities: { remove: false },
 };
 export const gitProvider: Workspace["provider"] = {
   pluginId: "git",
-  capabilities: { request: true, remove: false },
+  capabilities: { remove: false },
 };
 
 /** Access to `window.confirm` for stubbing — happy-dom's Window does not
@@ -233,7 +231,8 @@ export async function mountBody(
     insertText?: Mock;
     focusPrompt?: Mock;
     runCommand?: Mock;
-    backend?: Mock;
+    peer?: Mock;
+    peerChannelOnly?: boolean;
     provider?: Workspace["provider"];
   } = {},
 ): Promise<{ body: DoorstopPanelBodyElement; controller: DoorstopWorkspaceController; context: ReturnType<typeof panelContext>["context"] }> {
@@ -260,27 +259,27 @@ export async function mountBody(
  *  it, and this time the landing sticks. Callers then see the strip's
  *  honest state on every assertion. */
 export async function mountGitBody(
-  backend: Mock,
+  peer: Mock,
   job: () => Promise<DoorstopWorkspaceResult> = () => Promise.resolve(makeTreeResult()),
 ): Promise<{
   body: DoorstopPanelBodyElement;
   controller: DoorstopWorkspaceController;
   context: ReturnType<typeof panelContext>["context"];
-  backend: Mock;
+  peer: Mock;
 }> {
-  const mounted = await mountBody(job, { backend, provider: opendoorProvider });
+  const mounted = await mountBody(job, { peer, provider: opendoorProvider });
   mounted.controller.hostConnected();
   bindBody(mounted.body, mounted.controller, mounted.context);
   await flushMicro(mounted.body);
   mounted.body.requestUpdate();
   bindBody(mounted.body, mounted.controller, mounted.context);
   await flushMicro(mounted.body);
-  return { ...mounted, backend };
+  return { ...mounted, peer };
 }
 
-/** The `doorstop.git-status` calls a backend spy has seen so far. */
-export function gitStatusCalls(backend: Mock): number {
-  return backend.mock.calls.filter(([operation]) => operation === DOORSTOP_GIT_STATUS_OPERATION).length;
+/** The `doorstop.git-status` calls a peer spy has seen so far. */
+export function gitStatusCalls(peer: Mock): number {
+  return peer.mock.calls.filter(([operation]) => operation === DOORSTOP_GIT_STATUS_OPERATION).length;
 }
 
 // --- per-item git staging (per-item Stage + row chips + row "git add") -----------------

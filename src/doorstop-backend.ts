@@ -4,7 +4,7 @@ import type { Dirent } from "node:fs";
 import type {
   JsonObject,
   JsonValue,
-  ProviderRequestContext,
+  ServerPluginPeerRequestContext,
   ServerPluginActivationContext,
   ServerPluginExecFileResult,
 } from "@jmfederico/pi-web/server-plugin-api";
@@ -122,7 +122,7 @@ interface DoorstopBackendSettings {
  *  calls pinned to the run contract. */
 export async function requestDoorstopBackend(
   context: ServerPluginActivationContext,
-  request: ProviderRequestContext,
+  request: ServerPluginPeerRequestContext,
 ): Promise<JsonValue> {
   if (request.operation !== DOORSTOP_RUN_OPERATION) {
     throw unsupportedBackendOperationError(request.operation);
@@ -530,7 +530,7 @@ async function reviewCommitPipeline(
  */
 export async function requestDoorstopBaseline(
   context: ServerPluginActivationContext,
-  request: ProviderRequestContext,
+  request: ServerPluginPeerRequestContext,
 ): Promise<JsonValue> {
   if (request.operation !== DOORSTOP_BASELINE_OPERATION) {
     throw unsupportedBackendOperationError(request.operation);
@@ -791,7 +791,7 @@ function itemFileBase(name: string): string | undefined {
  */
 export async function requestDoorstopGitStatus(
   context: ServerPluginActivationContext,
-  request: ProviderRequestContext,
+  request: ServerPluginPeerRequestContext,
 ): Promise<JsonValue> {
   if (request.operation !== DOORSTOP_GIT_STATUS_OPERATION) {
     throw unsupportedBackendOperationError(request.operation);
@@ -1118,7 +1118,7 @@ function unstageResetTargets(stdout: string, paths: readonly string[]): string[]
  */
 export async function requestDoorstopGitStage(
   context: ServerPluginActivationContext,
-  request: ProviderRequestContext,
+  request: ServerPluginPeerRequestContext,
 ): Promise<JsonValue> {
   if (request.operation !== DOORSTOP_GIT_STAGE_OPERATION) {
     throw unsupportedBackendOperationError(request.operation);
@@ -1219,7 +1219,7 @@ function stageResponse(status: DoorstopGitStageResponse["status"], staged?: numb
  */
 export async function requestDoorstopGitUnstage(
   context: ServerPluginActivationContext,
-  request: ProviderRequestContext,
+  request: ServerPluginPeerRequestContext,
 ): Promise<JsonValue> {
   if (request.operation !== DOORSTOP_GIT_UNSTAGE_OPERATION) {
     throw unsupportedBackendOperationError(request.operation);
@@ -1320,7 +1320,7 @@ function unstagedResponse(
  */
 export async function requestDoorstopGitCommit(
   context: ServerPluginActivationContext,
-  request: ProviderRequestContext,
+  request: ServerPluginPeerRequestContext,
 ): Promise<JsonValue> {
   if (request.operation !== DOORSTOP_GIT_COMMIT_OPERATION) {
     throw unsupportedBackendOperationError(request.operation);

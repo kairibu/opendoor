@@ -439,7 +439,7 @@ describe("DoorstopWorkspaceController (baseline cache, Phase D step 13)", () => 
   }
 
   function baselineController(backend: Mock) {
-    const { context, requestRender } = panelContext({ fake: createFakeFiles(), backend });
+    const { context, requestRender } = panelContext({ fake: createFakeFiles(), peer: backend });
     const { host } = fakeHost();
     const controller = new DoorstopWorkspaceController(host, context, () =>
       Promise.resolve(baselineResult()),
@@ -557,7 +557,7 @@ describe("DoorstopWorkspaceController (git status, plan-add-git-actions Phase C 
   /** A controller with a counting load job (detects invalidate-driven
    *  reloads) and a mock backend. */
   function statusController(backend: Mock, loadCount: { calls: number }) {
-    const { context, requestRender } = panelContext({ fake: createFakeFiles(), backend });
+    const { context, requestRender } = panelContext({ fake: createFakeFiles(), peer: backend });
     const { host } = fakeHost();
     const controller = new DoorstopWorkspaceController(host, context, () => {
       loadCount.calls += 1;
@@ -944,7 +944,7 @@ describe("DoorstopWorkspaceController (git stage/unstage/commit dispatch, plan-a
   /** A controller with a counting load job whose backend answers the given
    *  operation (mirrors the baseline describe's `baselineController`). */
   function gitRunController(backend: Mock, loadCount: { calls: number }) {
-    const { context } = panelContext({ fake: createFakeFiles(), backend });
+    const { context } = panelContext({ fake: createFakeFiles(), peer: backend });
     const { host } = fakeHost();
     const controller = new DoorstopWorkspaceController(
       host,

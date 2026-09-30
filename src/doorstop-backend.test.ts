@@ -19,7 +19,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   JsonObject,
   JsonValue,
-  ProviderRequestContext,
+  ServerPluginPeerRequestContext,
   ServerPluginActivationContext,
   ServerPluginExecFileRequest,
   ServerPluginExecFileResult,
@@ -80,12 +80,14 @@ interface FakeContext {
 function createFakeContext(options: FakeContextOptions = {}): FakeContext {
   const requests: ServerPluginExecFileRequest[] = [];
   const context: ServerPluginActivationContext = {
-    apiVersion: 1,
+    apiVersion: 3,
     pluginId: "opendoor",
     packageRoot: "/fake/package-root",
+    dataDirectory: "/fake/data-directory",
     logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
     settings: options.settings ?? {},
     signal: new AbortController().signal,
+    lifetimeSignal: new AbortController().signal,
     async execFile(request: ServerPluginExecFileRequest): Promise<ServerPluginExecFileResult> {
       requests.push(request);
       if (options.execFile !== undefined) return options.execFile(request);
@@ -104,12 +106,12 @@ function createFakeContext(options: FakeContextOptions = {}): FakeContext {
 function runRequest(
   run: JsonValue,
   options: { workspacePath?: string; projectPath?: string; signal?: AbortSignal; operation?: string } = {},
-): ProviderRequestContext {
+): ServerPluginPeerRequestContext {
   const workspacePath = options.workspacePath ?? "/workspace/demo checkout";
   const projectPath = options.projectPath ?? workspacePath;
   return {
     project: { id: "project-demo", name: "demo", path: projectPath },
-    workspace: { key: workspacePath, path: workspacePath, label: "demo", isMain: true },
+    workspace: { id: workspacePath, projectId: "project-demo", path: workspacePath, label: "demo", isMain: true },
     operation: options.operation ?? DOORSTOP_RUN_OPERATION,
     input: run,
     signal: options.signal ?? new AbortController().signal,
@@ -349,11 +351,11 @@ async function fixtureWorkspace(): Promise<string> {
 function baselineRequest(
   baseline: JsonValue,
   options: { workspacePath?: string; signal?: AbortSignal; operation?: string } = {},
-): ProviderRequestContext {
+): ServerPluginPeerRequestContext {
   const workspacePath = options.workspacePath ?? "/workspace/demo checkout";
   return {
     project: { id: "project-demo", name: "demo", path: workspacePath },
-    workspace: { key: workspacePath, path: workspacePath, label: "demo", isMain: true },
+    workspace: { id: workspacePath, projectId: "project-demo", path: workspacePath, label: "demo", isMain: true },
     operation: options.operation ?? DOORSTOP_BASELINE_OPERATION,
     input: baseline,
     signal: options.signal ?? new AbortController().signal,
@@ -992,11 +994,11 @@ describe("cross-operation serialization", () => {
 /** One `doorstop.git-status` provider request (the contract's `{}`). */
 function gitStatusRequest(
   options: { workspacePath?: string; signal?: AbortSignal; operation?: string } = {},
-): ProviderRequestContext {
+): ServerPluginPeerRequestContext {
   const workspacePath = options.workspacePath ?? "/workspace/demo checkout";
   return {
     project: { id: "project-demo", name: "demo", path: workspacePath },
-    workspace: { key: workspacePath, path: workspacePath, label: "demo", isMain: true },
+    workspace: { id: workspacePath, projectId: "project-demo", path: workspacePath, label: "demo", isMain: true },
     operation: options.operation ?? DOORSTOP_GIT_STATUS_OPERATION,
     input: {},
     signal: options.signal ?? new AbortController().signal,
@@ -1008,11 +1010,11 @@ function gitStatusRequest(
 function gitStageRequest(
   stage: JsonValue,
   options: { workspacePath?: string; signal?: AbortSignal; operation?: string } = {},
-): ProviderRequestContext {
+): ServerPluginPeerRequestContext {
   const workspacePath = options.workspacePath ?? "/workspace/demo checkout";
   return {
     project: { id: "project-demo", name: "demo", path: workspacePath },
-    workspace: { key: workspacePath, path: workspacePath, label: "demo", isMain: true },
+    workspace: { id: workspacePath, projectId: "project-demo", path: workspacePath, label: "demo", isMain: true },
     operation: options.operation ?? DOORSTOP_GIT_STAGE_OPERATION,
     input: stage,
     signal: options.signal ?? new AbortController().signal,
@@ -1024,11 +1026,11 @@ function gitStageRequest(
 function gitUnstageRequest(
   unstage: JsonValue,
   options: { workspacePath?: string; signal?: AbortSignal; operation?: string } = {},
-): ProviderRequestContext {
+): ServerPluginPeerRequestContext {
   const workspacePath = options.workspacePath ?? "/workspace/demo checkout";
   return {
     project: { id: "project-demo", name: "demo", path: workspacePath },
-    workspace: { key: workspacePath, path: workspacePath, label: "demo", isMain: true },
+    workspace: { id: workspacePath, projectId: "project-demo", path: workspacePath, label: "demo", isMain: true },
     operation: options.operation ?? DOORSTOP_GIT_UNSTAGE_OPERATION,
     input: unstage,
     signal: options.signal ?? new AbortController().signal,
@@ -1040,11 +1042,11 @@ function gitUnstageRequest(
 function gitCommitRequest(
   commit: JsonValue,
   options: { workspacePath?: string; signal?: AbortSignal; operation?: string } = {},
-): ProviderRequestContext {
+): ServerPluginPeerRequestContext {
   const workspacePath = options.workspacePath ?? "/workspace/demo checkout";
   return {
     project: { id: "project-demo", name: "demo", path: workspacePath },
-    workspace: { key: workspacePath, path: workspacePath, label: "demo", isMain: true },
+    workspace: { id: workspacePath, projectId: "project-demo", path: workspacePath, label: "demo", isMain: true },
     operation: options.operation ?? DOORSTOP_GIT_COMMIT_OPERATION,
     input: commit,
     signal: options.signal ?? new AbortController().signal,
@@ -1060,10 +1062,10 @@ function gitCommitRequest(
 interface GitHandlerSpec {
   /** Verb name, used only in assertion failure context. */
   verb: string;
-  run: (context: ServerPluginActivationContext, request: ProviderRequestContext) => Promise<JsonValue>;
+  run: (context: ServerPluginActivationContext, request: ServerPluginPeerRequestContext) => Promise<JsonValue>;
   parse: (response: JsonValue) => { status: string; stderr?: string };
   /** Build a valid request from an input, with an optional operation override. */
-  build: (input: JsonValue, operation?: string) => ProviderRequestContext;
+  build: (input: JsonValue, operation?: string) => ServerPluginPeerRequestContext;
   /** A valid in-grammar input for this verb (paths / message). */
   validInput: JsonValue;
 }

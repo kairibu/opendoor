@@ -18,12 +18,12 @@
 //
 // The validate / publish / review / clear / edit / link / unlink Doorstop
 // operations are deliberately NOT palette actions: they need the rendered
-// panel — either the workspace's backend surface (`context.backend.request`)
-// or, unpaired, the panel terminal (`context.terminal`), which only exists on
-// the `WorkspacePanelContext` of a rendered panel (the palette action
-// callback context has neither). So they stay as panel-toolbar/action-row
-// buttons, dispatched by doorstop-panel-element via the Phase D step 9
-// runDoorstop dispatcher.
+// panel — either the workspace's paired server surface
+// (`context.peer.request`) or, unpaired, the panel terminal
+// (`context.terminal`), which only exists on the `WorkspacePanelContext` of a
+// rendered panel (the palette action callback context has neither). So they
+// stay as panel-toolbar/action-row buttons, dispatched by
+// doorstop-panel-element via the Phase D step 9 runDoorstop dispatcher.
 // ---------------------------------------------------------------------------
 
 import type {
@@ -94,7 +94,7 @@ function createDoorstopActions(panelId: string): PluginAction[] {
       group: "Navigation",
       // Enabled unconditionally: the Requirements panel is useful for every
       // workspace (paired or unpaired — it needs no owned provider).
-      run: (context: PluginRuntimeContext) => { context.selectMainView(panelId); },
+      run: (context: PluginRuntimeContext) => { context.selectWorkspaceTool(panelId); },
     },
     {
       id: "workspace.refresh-doorstop",
