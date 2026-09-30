@@ -19,9 +19,11 @@ Full feature spec: [`docs/feature-doorstop-plugin.md`](docs/feature-doorstop-plu
 
 ## Status
 
-The plugin is fully wired and green, in two halves:
+Requires **pi-web 1.202609.1 or newer** (browser plugin API v4 / server
+plugin API v3; see **Rollout** below for the upgrade order). The plugin is
+fully wired and green, in two halves:
 
-- **Browser entry** (`src/browser/pi-web-plugin.ts`, apiVersion 2, name `Opendoor`)
+- **Browser entry** (`src/browser/pi-web-plugin.ts`, apiVersion 4, name `Opendoor`)
   delegates to `createOpendoorBrowserContributions` in
   `src/browser/doorstop-contributions.ts`, which contributes:
 
@@ -42,7 +44,7 @@ The plugin is fully wired and green, in two halves:
   - **label** `doorstop-status` — the informational requirement-health counts
     (async-cache idiom, feature spec §7.4).
 
-- **Server entry** (`src/server-plugin.ts`, default export `PiWebServerPlugin`)
+- **Server entry** (`src/server-plugin.ts`, apiVersion 3, default export `PiWebServerPlugin`)
   contributes a workspace provider that claims only projects whose root
   contains a `.doorstop.yml` (cheap `fs.access` probe — everything else stays
   with the bundled Git provider) and serves a six-operation backend:
@@ -61,9 +63,9 @@ The plugin is fully wired and green, in two halves:
 
 Dispatch (per action, in `src/browser/doorstop-panel-elements.ts`): when the workspace
 is opendoor-owned with an active backend, the action sends a structured
-request via `context.backend.request("doorstop.run", …)` (the review-commit
+request via `context.peer.request("doorstop.run", …)` (the review-commit
 flag rides along when the setting is enabled; the "Changes since review"
-section fetches via `context.backend.request("doorstop.item-baseline", …)`)
+section fetches via `context.peer.request("doorstop.item-baseline", …)`)
 and the captured output appears in the panel's status bar (auto-expanded);
 the panel auto-rescans on completion. When the backend is absent (unpaired
 install, or a workspace the provider does not own), the action falls back to
@@ -309,3 +311,13 @@ The manifest should list an `opendoor` plugin entry **with a
 `backendRevision`** (signing the paired server module). If `backendRevision`
 is missing, the server module failed to load — check the sessiond log; the
 plugin still works fully via the terminal fallback.
+
+## Rollout (pi-web 1.202609.1)
+
+pi-web 1.202609.1 is a **hard break** for plugins — there is no
+compatibility shim in either direction: a v4/v3 host rejects v2/v1 plugin
+modules, and a v2/v1 host rejects the migrated v4/v3 modules. Upgrade the
+opendoor package and pi-web **together**, then restart
+`pi-web-sessiond.service` and reload the PI WEB page. During the transition
+the opendoor panel is **entirely absent** (both plugin entries rejected), not
+degraded. Federated gateways/targets must be upgraded in lockstep.
