@@ -231,6 +231,31 @@ export type ItemStateKey =
   | "unknown-link"
   | "missing-reference";
 
+/** Every {@link ItemStateKey} value, in the shared contract module so the
+ *  browser bundle (panel navigation deep-link validation — a `filter` URL
+ *  value must be one of these) and the tests share one exhaustive list
+ *  (doorstop-state's chip order is display-only; it deliberately stays
+ *  module-private). */
+export const ITEM_STATE_KEYS: readonly ItemStateKey[] = [
+  "normative",
+  "non-normative",
+  "inactive",
+  "reviewed",
+  "unreviewed",
+  "suspect-link",
+  "no-child-links",
+  "no-links",
+  "unknown-link",
+  "missing-reference",
+];
+
+/** Type guard: is `value` one of the {@link ItemStateKey} chips? (The
+ *  deep-link `filter` URL value is an untyped string and must be narrowed
+ *  before it can enter `stateFilter`.) */
+export function isItemStateKey(value: string): value is ItemStateKey {
+  return (ITEM_STATE_KEYS as readonly string[]).includes(value);
+}
+
 /**
  * A plugin-local finding — the display-relevant subset of Doorstop's
  * INFO/WARNING/ERROR validation model. `info` severities are attribute

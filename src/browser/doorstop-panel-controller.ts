@@ -31,7 +31,7 @@
 import type { ReactiveController } from "lit";
 import type { JsonValue, WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
 import type { DoorstopDocumentConfig, DoorstopFiles, ItemRecord, ItemStateKey } from "../doorstop-contract.js";
-import { formatUnknownError } from "../doorstop-contract.js";
+import { formatUnknownError, isItemStateKey } from "../doorstop-contract.js";
 import {
   DOORSTOP_BASELINE_OPERATION,
   DOORSTOP_GIT_COMMIT_OPERATION,
@@ -54,6 +54,13 @@ import {
 import { parseDoorstopItem } from "../doorstop-model.js";
 import { computeItemStamp } from "../doorstop-state.js";
 import { diffItemFields, type ItemFieldDiff } from "../doorstop-diff.js";
+import {
+  DOORSTOP_NAV_DOC,
+  DOORSTOP_NAV_FILTER,
+  DOORSTOP_NAV_SEARCH,
+  DOORSTOP_NAV_UID,
+  type PanelNavigationQuery,
+} from "./doorstop-panel-navigation.js";
 import type { DoorstopWorkspaceResult } from "./doorstop-panel.js";
 
 /**
@@ -407,15 +414,20 @@ export class DoorstopWorkspaceController implements ReactiveController {
     return request;
   }
 
-  /** Select an item UID for the detail pane. */
+  /** Select an item UID for the detail pane. Plan Phase C step C2 — a
+   *  deliberate selection change also writes the `uid` deep-link key, so
+   *  the selection is bookmarkable/back-navigable. */
   selectUid(uid: string): void {
     this.selectedUid = uid;
+    this.setNavigation(DOORSTOP_NAV_UID, uid);
     this.requestUpdate();
   }
 
-  /** Select a document by prefix for the document-detail pane. */
+  /** Select a document by prefix for the document-detail pane. C2 — writes
+   *  the `doc` deep-link key. */
   selectDocument(prefix: string): void {
     this.selectedDocumentPrefix = prefix;
+    this.setNavigation(DOORSTOP_NAV_DOC, prefix);
     this.requestUpdate();
   }
 
@@ -423,12 +435,97 @@ export class DoorstopWorkspaceController implements ReactiveController {
     this.stateFilter = filter;
     // A filtered-out selection would leave a dangling detail pane; drop it.
     if (this.result !== undefined) this.selectedUid = selectionIn(this.result, filter, this.selectedUid);
+    this.setNavigation(DOORSTOP_NAV_FILTER, filter);
     this.requestUpdate();
   }
 
   setSearch(search: string): void {
     this.search = search;
+    // REPLACE, not push: the search box fires per keystroke, and one history
+    // entry per character would drown the selection history.
+    this.setNavigation(DOORSTOP_NAV_SEARCH, search === "" ? undefined : search, { replace: true });
     this.requestUpdate();
+  }
+
+  /** Apply the panel's deep-link query (URL → state). Plan Phase C step C2:
+   *  `renderDoorstopPanel` calls this on EVERY render, idempotently — values
+   *  are compared first, so re-applying the same query is a no-op, and the
+   *  query wins exactly when it differs from the controller state (back/
+   *  forward navigation re-rendering the panel with an older URL; a user
+   *  interaction re-rendering with the query its own setter just wrote).
+   *
+   *  READ-ONLY for the navigation: this method never writes keys back (the
+   *  setters own writes — writing here would loop render → set → render).
+   *
+   *  Validation: an unknown `filter` value is ignored (the current filter
+   *  stands — `?filter=bogus` must not crash the panel), and `uid`/`doc`
+   *  values that no longer exist in a LOADED result are dropped by the
+   *  same selectionIn reconciliation a landed load applies; before the first
+   *  load lands they apply blindly (the landing load reconciles). */
+  applyNavigationQuery(query: PanelNavigationQuery): void {
+    let changed = false;
+
+    // The filter key: an ABSENT key means no filter (the query is the
+    // complete panel state, like uid/doc/search); a PRESENT but unknown
+    // value (hand-edited `?filter=bogus`) is IGNORED — the current filter
+    // stands, and the ignore is stable (the next render re-reads the same
+    // unknown value and skips again).
+    const filterValue = query[DOORSTOP_NAV_FILTER];
+    if (filterValue === undefined) {
+      if (this.stateFilter !== undefined) {
+        this.stateFilter = undefined;
+        changed = true;
+      }
+    } else if (isItemStateKey(filterValue) && this.stateFilter !== filterValue) {
+      this.stateFilter = filterValue;
+      changed = true;
+    }
+
+    const uid = query[DOORSTOP_NAV_UID];
+    if (this.selectedUid !== uid) {
+      this.selectedUid = uid;
+      changed = true;
+    }
+
+    const documentPrefix = query[DOORSTOP_NAV_DOC];
+    if (this.selectedDocumentPrefix !== documentPrefix) {
+      this.selectedDocumentPrefix = documentPrefix;
+      changed = true;
+    }
+
+    const search = query[DOORSTOP_NAV_SEARCH] ?? "";
+    if (this.search !== search) {
+      this.search = search;
+      changed = true;
+    }
+
+    // A loaded result reconciles dangling deep-link selections exactly like
+    // a landed load: vanished/filtered-out uid and vanished doc drop.
+    if (this.result !== undefined) {
+      const keptUid = selectionIn(this.result, this.stateFilter, this.selectedUid);
+      if (keptUid !== this.selectedUid) {
+        this.selectedUid = keptUid;
+        changed = true;
+      }
+      const keptDocument = documentSelectionIn(this.result, this.selectedDocumentPrefix);
+      if (keptDocument !== this.selectedDocumentPrefix) {
+        this.selectedDocumentPrefix = keptDocument;
+        changed = true;
+      }
+    }
+
+    if (changed) this.requestUpdate();
+  }
+
+  /** Write one deep-link key on the CURRENT context's navigation, when the
+   *  host supplies one. `undefined` clears the key (the selection is gone);
+   *  absent navigation (older hosts, tests without one) is a silent no-op. */
+  private setNavigation(
+    key: string,
+    value: string | undefined,
+    options?: { replace?: boolean | undefined },
+  ): void {
+    this.context.navigation?.set(key, value, options);
   }
 
   /** Begin a doorstop run: record the op title (element disables action

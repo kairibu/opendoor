@@ -39,7 +39,7 @@ import { loadDoorstopWorkspace } from "./doorstop-panel.js";
 import type { DoorstopWorkspaceController } from "./doorstop-panel-controller.js";
 import { createOpendoorBrowserContributions } from "./doorstop-contributions.js";
 import { createFakeFiles, dirEntry, fileEntry, text, tree, type FakeWorkspaceFiles } from "../test-support.js";
-import { doorstopWorkspace, flushAll, makeDocument, makeWorkspace, panelContext } from "../test-fixtures.js";
+import { doorstopWorkspace, flushAll, makeDocument, makeWorkspace, navigationHarness, panelContext } from "../test-fixtures.js";
 
 // The label cache's LRU bound (DOORSTOP_LABEL_STATE_LIMIT in
 // doorstop-contributions.ts, deliberately module-private); tests pin the
@@ -295,6 +295,76 @@ describe("panel render wiring", () => {
     expect(updated.values[14]).toBeUndefined();
     expect(updated.values[15]).toBe(controller.gitStatusInFlight);
     expect(updated.values[15]).toBe(false);
+  });
+});
+
+// --- panel deep-link render wiring (Plan Phase C step C2) ----------------------------
+
+describe("panel deep-link render wiring", () => {
+  it("applies the URL query on render, so back/forward restores a linked selection", async () => {
+    const contributions = createContributions();
+    const panel = contributions.workspacePanels?.[0];
+    if (panel === undefined) throw new Error("Expected opendoor panel contribution");
+
+    // A deep-linked URL (bookmark / pasted review link / back button).
+    const navigation = navigationHarness({ uid: "REQ0001", filter: "unreviewed", search: "shall" });
+    const { context, requestRender } = panelContext({ fake: docFiles(), navigation });
+
+    // First render: the query applies BEFORE the property mirror, so the
+    // same render already binds the linked selection.
+    const rendered = panel.render(context);
+    const controller = rendered.values[0] as DoorstopWorkspaceController | undefined;
+    if (controller === undefined) throw new Error("Expected the render to bind the controller");
+    expect(controller.selectedUid).toBe("REQ0001");
+    expect(controller.stateFilter).toBe("unreviewed");
+    expect(controller.search).toBe("shall");
+
+    // The load lands and the deep-linked item exists → the selection stays.
+    controller.hostConnected();
+    await flushAll();
+    expect(controller.result?.index.byUid.has("REQ0001")).toBe(true);
+    expect(controller.selectedUid).toBe("REQ0001");
+
+    // The user's own click writes the deep-link keys (one history entry per
+    // deliberate selection), and the next render — the query the setter just
+    // wrote — applies NOTHING (idempotent).
+    requestRender.mockClear();
+    controller.selectUid("REQ0001");
+    controller.selectDocument("REQ");
+    expect(navigation.setCalls).toEqual([
+      { key: "uid", value: "REQ0001", replace: undefined },
+      { key: "doc", value: "REQ", replace: undefined },
+    ]);
+    panel.render(context);
+    expect(controller.selectedUid).toBe("REQ0001");
+    expect(controller.selectedDocumentPrefix).toBe("REQ");
+    // No navigation write came from the render/apply side.
+    expect(navigation.setCalls).toHaveLength(2);
+
+    // Back/forward simulation: mutate the harness query (an older URL) and
+    // re-render — the query wins and restores the older selection, including
+    // a CLEARED uid (back to the no-selection URL).
+    navigation.backingQuery["uid"] = "REQ0002";
+    panel.render(context);
+    // No result for REQ0002 in the fake — the loaded result reconciles the
+    // dangling deep-link target away (same selectionIn semantics as a load).
+    expect(controller.selectedUid).toBeUndefined();
+    delete navigation.backingQuery["filter"];
+    panel.render(context);
+    expect(controller.stateFilter).toBeUndefined();
+  });
+
+  it("renders and applies nothing without a navigation (older hosts)", async () => {
+    const contributions = createContributions();
+    const panel = contributions.workspacePanels?.[0];
+    if (panel === undefined) throw new Error("Expected opendoor panel contribution");
+    const { context } = panelContext({ fake: docFiles() });
+    const controller = panel.render(context).values[0] as DoorstopWorkspaceController | undefined;
+    if (controller === undefined) throw new Error("Expected the render to bind the controller");
+    expect(controller.selectedUid).toBeUndefined();
+    controller.hostConnected();
+    await flushAll();
+    expect(controller.result?.index.byUid.has("REQ0001")).toBe(true);
   });
 });
 

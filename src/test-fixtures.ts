@@ -21,6 +21,7 @@ import type {
   TerminalCommandRunHandle,
   Workspace,
   WorkspacePanelContext,
+  WorkspacePanelNavigationV1,
 } from "@jmfederico/pi-web/plugin-api";
 import type { DoorstopDocumentConfig, DoorstopIndex, ItemRecord } from "./doorstop-contract.js";
 import { buildDoorstopIndex } from "./doorstop-model.js";
@@ -182,6 +183,13 @@ export interface PanelContextHook {
    *  `request?: undefined`): the paired-backend gate must treat it as
    *  unpaired and fall back to the terminal instead of silently no-oping. */
   peerChannelOnly?: boolean;
+  /** Deep-link navigation harness (plan Phase C step C2): when supplied, the
+   *  context carries this `navigation` — a real-shaped
+   *  `WorkspacePanelNavigationV1` whose backing `query` record is MUTABLE (a
+   *  test simulates a URL change by mutating it and re-rendering) and whose
+   *  `set` records every call for write assertions. See
+   *  {@link navigationHarness}. */
+  navigation?: PanelNavigationHarness;
 }
 
 export interface PanelContextResult {
@@ -191,6 +199,44 @@ export interface PanelContextResult {
   focusPrompt: Mock;
   runCommand: Mock;
   peer: Mock | undefined;
+  navigation: PanelNavigationHarness | undefined;
+}
+
+/** Test harness for the v4 panel deep-link navigation (plan Phase C step
+ *  C2): a real `WorkspacePanelNavigationV1` shape over a mutable backing
+ *  query record (tests simulate URL changes — back/forward — by mutating
+ *  `query` and re-rendering) plus a `setCalls` log of every controller write
+ *  (`{ key, value, replace }` — the controller's `undefined` value writes
+ *  are recorded as `undefined`, matching the clearing semantics). */
+export interface PanelNavigationHarness extends WorkspacePanelNavigationV1 {
+  /** The mutable backing record `query` reads. Mutate + re-render to
+   *  simulate navigation. */
+  backingQuery: Record<string, string | readonly string[]>;
+  /** Every `navigation.set` call, in call order. */
+  setCalls: Array<{ key: string; value: string | number | boolean | readonly (string | number | boolean)[] | undefined | null; replace: boolean | undefined }>;
+}
+
+/** Build one deep-link navigation harness with the given initial query. */
+export function navigationHarness(initial: Record<string, string> = {}): PanelNavigationHarness {
+  const backingQuery: Record<string, string | readonly string[]> = { ...initial };
+  const setCalls: PanelNavigationHarness["setCalls"] = [];
+  const navigation: PanelNavigationHarness = {
+    version: 1,
+    contributionId: "opendoor:workspace.doorstop",
+    get query(): Readonly<Record<string, string | readonly string[]>> {
+      return backingQuery;
+    },
+    set: (key, value, options) => {
+      setCalls.push({ key, value, replace: options?.replace });
+      // Mirror the host's namespaced-record semantics closely enough for
+      // round-trip tests: a real value writes the key, undefined/null clears it.
+      if (value === undefined || value === null) delete backingQuery[key];
+      else backingQuery[key] = String(value);
+    },
+    backingQuery,
+    setCalls,
+  };
+  return navigation;
 }
 
 /** One configurable panel context wrapping a fake files adapter plus spies for
@@ -208,6 +254,7 @@ export function panelContext(hook: PanelContextHook = {}): PanelContextResult {
   const baseWorkspace = hook.workspace ?? doorstopWorkspace;
   const workspace = hook.provider === undefined ? baseWorkspace : { ...baseWorkspace, provider: hook.provider };
   const files: FakeWorkspaceFiles = hook.fake ?? createFakeFiles();
+  const navigation = hook.navigation;
   const context: WorkspacePanelContext & { focusPrompt: Mock } = {
     machine: { id: "local", name: "local", kind: "local" },
     workspace,
@@ -230,9 +277,13 @@ export function panelContext(hook: PanelContextHook = {}): PanelContextResult {
       : peerRequest === undefined
         ? {}
         : { peer: { request: peerRequest } }),
+    // The optional v4 `navigation` (deep links) is only present when the hook
+    // supplied one (exactOptionalPropertyTypes forbids an explicit undefined
+    // write) — exactly the absent-navigation shape of older hosts.
+    ...(navigation === undefined ? {} : { navigation }),
     focusPrompt,
   };
-  return { context, requestRender, insertText, focusPrompt, runCommand, peer: peerRequest };
+  return { context, requestRender, insertText, focusPrompt, runCommand, peer: peerRequest, navigation };
 }
 
 /** The `openChannel` of the openChannel-only `PluginPeer` fixture: the tests

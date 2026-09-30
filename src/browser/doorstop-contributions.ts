@@ -42,6 +42,7 @@ import { html, svg } from "lit";
 import type { DoorstopIndex } from "../doorstop-contract.js";
 import type { DoorstopWorkspaceResult } from "./doorstop-panel.js";
 import { DoorstopWorkspaceRegistry, loadDoorstopWorkspace } from "./doorstop-panel.js";
+import { readPanelNavigationQuery } from "./doorstop-panel-navigation.js";
 import { defineDoorstopPanelElements } from "./doorstop-panel-elements.js";
 
 const DOORSTOP_PANEL_LOCAL_ID = "workspace.doorstop";
@@ -161,6 +162,18 @@ function createDoorstopPanel(registry: DoorstopWorkspaceRegistry): WorkspacePane
  */
 function renderDoorstopPanel(registry: DoorstopWorkspaceRegistry, context: WorkspacePanelContext) {
   const controller = registry.for(context);
+  // Plan Phase C step C2 — deep links: apply the contribution-scoped URL query
+  // (uid/doc/filter/search) to the controller BEFORE the property mirror below,
+  // so a back/forward navigation re-render restores the linked selection in
+  // the same render. Idempotent (values compared first): a user interaction's
+  // re-render — the query its own setter just wrote — applies nothing.
+  //
+  // ABSENT navigation (older hosts, harnesses without one) applies NOTHING:
+  // the controller is then the only state owner, and applying an empty query
+  // would clear live user selections on every render.
+  if (context.navigation !== undefined) {
+    controller.applyNavigationQuery(readPanelNavigationQuery(context.navigation));
+  }
   return html`
     <pi-web-opendoor-panel-body
       .controller=${controller}

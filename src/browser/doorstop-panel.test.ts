@@ -52,7 +52,7 @@ import {
   itemUnstageable,
 } from "./doorstop-panel-view-model.js";
 import { createFakeFiles, dirEntry, fileEntry, text, tree } from "../test-support.js";
-import { makeDocument, makeItem, makeResult, makeWorkspace, panelContext, settle } from "../test-fixtures.js";
+import { makeDocument, makeItem, makeResult, makeWorkspace, navigationHarness, panelContext, settle } from "../test-fixtures.js";
 
 // --- small real-shape fixtures ---------------------------------------------------------
 
@@ -213,7 +213,8 @@ describe("DoorstopWorkspaceController (fake host, no DOM)", () => {
   });
 
   it("selection/navigation setters write their fields and notify the host", async () => {
-    const { context, requestRender } = panelContext({ fake: createFakeFiles() });
+    const navigation = navigationHarness();
+    const { context, requestRender } = panelContext({ fake: createFakeFiles(), navigation });
     const { host } = fakeHost();
     const controller = new DoorstopWorkspaceController(
       host,
@@ -233,6 +234,90 @@ describe("DoorstopWorkspaceController (fake host, no DOM)", () => {
     controller.setSearch("allocated");
     expect(controller.search).toBe("allocated");
     expect(requestRender).toHaveBeenCalledTimes(4);
+
+    // Plan Phase C step C2 — every deliberate selection change also writes
+    // its deep-link key (search with REPLACE — one keystroke must not spam
+    // history entries; clearing a selection clears its key).
+    expect(navigation.setCalls).toEqual([
+      { key: "uid", value: "REQ0001", replace: undefined },
+      { key: "doc", value: "REQ", replace: undefined },
+      { key: "filter", value: "unreviewed", replace: undefined },
+      { key: "search", value: "allocated", replace: true },
+    ]);
+    controller.setStateFilter(undefined);
+    controller.setSearch("");
+    expect(navigation.setCalls).toEqual([
+      { key: "uid", value: "REQ0001", replace: undefined },
+      { key: "doc", value: "REQ", replace: undefined },
+      { key: "filter", value: "unreviewed", replace: undefined },
+      { key: "search", value: "allocated", replace: true },
+      { key: "filter", value: undefined, replace: undefined },
+      { key: "search", value: undefined, replace: true },
+    ]);
+    // The setters keep working without navigation (older hosts, tests):
+    // state changes, no navigation write to crash on.
+    const bare = new DoorstopWorkspaceController(
+      host,
+      panelContext({ fake: createFakeFiles() }).context,
+      () => Promise.resolve(makeResult([])),
+    );
+    bare.hostConnected();
+    await settle();
+    bare.selectUid("REQ0001");
+    bare.setSearch("x");
+    expect(bare.selectedUid).toBe("REQ0001");
+    expect(bare.search).toBe("x");
+  });
+
+  it("applies the deep-link query (URL → state) without writing back (plan C2)", async () => {
+    const navigation = navigationHarness();
+    const { context, requestRender } = panelContext({ fake: createFakeFiles(), navigation });
+    const { host } = fakeHost();
+    const controller = new DoorstopWorkspaceController(
+      host,
+      context,
+      () => Promise.resolve(makeResult([makeItem({ uid: "REQ0001", documentPrefix: "REQ" })])),
+    );
+    controller.hostConnected();
+    await settle();
+    requestRender.mockClear();
+
+    // A back/forward URL with a full selection restores it in one apply.
+    controller.applyNavigationQuery({ uid: "REQ0001", doc: "REQ", filter: "unreviewed", search: "allocated" });
+    expect(controller.selectedUid).toBe("REQ0001");
+    expect(controller.selectedDocumentPrefix).toBe("REQ");
+    expect(controller.stateFilter).toBe("unreviewed");
+    expect(controller.search).toBe("allocated");
+    expect(requestRender).toHaveBeenCalledTimes(1);
+
+    // READ-ONLY for the navigation: applying never writes keys back (the
+    // setters own writes; a write here would loop render → set → render).
+    expect(navigation.setCalls).toEqual([]);
+
+    // Idempotent: re-applying the same query changes nothing and notifies
+    // nobody.
+    controller.applyNavigationQuery({ uid: "REQ0001", doc: "REQ", filter: "unreviewed", search: "allocated" });
+    expect(requestRender).toHaveBeenCalledTimes(1);
+    expect(navigation.setCalls).toEqual([]);
+
+    // An unknown filter value is ignored (the current filter stands — a
+    // `?filter=bogus` must not crash or blank the panel).
+    controller.applyNavigationQuery({ uid: "REQ0001", filter: "bogus" });
+    expect(controller.stateFilter).toBe("unreviewed");
+
+    // A loaded result drops dangling deep-link targets exactly like a landed
+    // load: a vanished uid (filtered out by "reviewed") and a vanished doc.
+    controller.applyNavigationQuery({ uid: "REQ0001", doc: "GONE", filter: "reviewed" });
+    expect(controller.selectedUid).toBeUndefined();
+    expect(controller.selectedDocumentPrefix).toBeUndefined();
+    expect(controller.stateFilter).toBe("reviewed");
+
+    // Absent keys mean no selection/search: a bare {} query clears them.
+    controller.applyNavigationQuery({});
+    expect(controller.selectedUid).toBeUndefined();
+    expect(controller.selectedDocumentPrefix).toBeUndefined();
+    expect(controller.stateFilter).toBeUndefined();
+    expect(controller.search).toBe("");
   });
 
   it("drops a selection hidden by the state filter and on a vanished re-load", async () => {
