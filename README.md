@@ -61,7 +61,7 @@ fully wired and green, in two halves:
   clamped to 8.5 s (the review+git pipeline shares one deadline budget under
   the host's 10 s callback bound), and per-workspace run serialization.
 
-Dispatch (per action, in `src/browser/doorstop-panel-elements.ts`): when the workspace
+Dispatch (per action, in `src/browser/doorstop-panel-element.ts`): when the workspace
 is opendoor-owned with an active backend, the action sends a structured
 request via `context.peer.request("doorstop.run", …)` (the review-commit
 flag rides along when the setting is enabled; the "Changes since review"
@@ -72,11 +72,13 @@ install, or a workspace the provider does not own), the action falls back to
 `terminal.runCommand()` with the same shell command, so output stays visible
 and auditable in the terminal.
 
-  `doorstop.run` and `doorstop.item-baseline`) shared by both halves, plus the
-  four git-action contracts (`doorstop.git-status`, `doorstop.git-stage`,
-  `doorstop.git-unstage`, `doorstop.git-commit`), live in
-  `src/doorstop-backend-contract.ts`. Later modules import these and must not
-  redefine them.
+The shared types + function-signature contracts live in
+`src/doorstop-contract.ts`; the two backend operation contracts
+(`doorstop.run` and `doorstop.item-baseline`) shared by both halves, plus
+the four git-action contracts (`doorstop.git-status`, `doorstop.git-stage`,
+`doorstop.git-unstage`, `doorstop.git-commit`), live in
+`src/doorstop-backend-contract.ts`. Later modules import these and must not
+redefine them.
 
 ## Workspace settings (`.pi-web/opendoor.json`)
 
