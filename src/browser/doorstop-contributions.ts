@@ -131,7 +131,19 @@ function createDoorstopPanel(registry: DoorstopWorkspaceRegistry): WorkspacePane
     // terminal fallback keeps every action working; the discovery-based
     // empty state carries the "no documents" story (feature spec §7.1).
     visible: () => true,
-    onInvalidate: (context) => registry.invalidate(context),
+    // Plan Phase C step C1 — typed invalidation (browser API v4): declare the
+    // fixed workspace resources whose automatic invalidations this panel
+    // receives. With `workspace.files` declared, the host calls onInvalidate
+    // not only for the manual Refresh action (refreshWorkspacePanels) but
+    // also when workspace files change (`reason: "mutation"` — e.g. the
+    // review-commit pipeline's commits landing, or any other plugin's file
+    // writes) and when agent work finishes in the workspace (`reason:
+    // "agent-activity"` — an agent editing doorstop documents refreshes the
+    // panel without a manual Refresh). The reason is forwarded to the
+    // registry, which rescans unconditionally (see
+    // DoorstopWorkspaceRegistry.invalidate).
+    invalidationResources: ["workspace.files"],
+    onInvalidate: (context, invalidation) => registry.invalidate(context, invalidation),
     render: (context) => renderDoorstopPanel(registry, context),
   };
 }

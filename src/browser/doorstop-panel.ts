@@ -41,7 +41,7 @@
 // computeItemStates.
 // ---------------------------------------------------------------------------
 
-import type { WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
+import type { WorkspaceInvalidation, WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
 import type {
   DiscoveryDiagnostic,
   DoorstopDocumentConfig,
@@ -345,8 +345,21 @@ export class DoorstopWorkspaceRegistry {
   }
 
   /** Panel invalidation: re-run discovery + load unconditionally for the
-   *  connected workspace (paired or unpaired: the load job is browser-side, so there is no owned-workspace gate). */
-  invalidate(context: WorkspacePanelContext): Promise<void> {
+   *  connected workspace (paired or unpaired: the load job is browser-side, so there is no owned-workspace gate).
+   *
+   *  Plan Phase C step C1 — the v4 typed invalidation: `invalidation` carries
+   *  the reason (`"manual"` Refresh action / `"mutation"` a workspace file
+   *  changed / `"agent-activity"` agent work finished) and the affected
+   *  resources. The rescan stays REASON-AGNOSTIC deliberately: every reason
+   *  may have changed item files, the load job re-reads everything anyway
+   *  (no partial invalidation is possible — the index is one unit), and the
+   *  controller's re-entrant guard coalesces storms (an invalidate while a
+   *  load is running JOINS that load; only an invalidate after it lands
+   *  starts a fresh one), so `"agent-activity"` bursts cannot stack loads.
+   *  The payload is accepted (so the contribution can forward it) but not
+   *  consulted. */
+  invalidate(context: WorkspacePanelContext, invalidation?: WorkspaceInvalidation): Promise<void> {
+    void invalidation;
     return this.for(context).invalidate();
   }
 

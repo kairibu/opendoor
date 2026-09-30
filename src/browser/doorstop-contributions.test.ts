@@ -184,6 +184,10 @@ describe("createOpendoorBrowserContributions (contribution shape)", () => {
     expect(panel.order).toBe(60);
     expect(panel.icon).toBeDefined();
     expect(panel.visible?.({} as WorkspacePanelContext)).toBe(true);
+    // Plan Phase C step C1 — typed invalidation: the panel subscribes to the
+    // `workspace.files` resource so the host invalidates it on file
+    // mutations and finished agent activity, not only on manual refresh.
+    expect(panel.invalidationResources).toEqual(["workspace.files"]);
     expect(typeof panel.onInvalidate).toBe("function");
     expect(typeof panel.render).toBe("function");
 
@@ -291,6 +295,51 @@ describe("panel render wiring", () => {
     expect(updated.values[14]).toBeUndefined();
     expect(updated.values[15]).toBe(controller.gitStatusInFlight);
     expect(updated.values[15]).toBe(false);
+  });
+});
+
+// --- panel invalidation (Plan Phase C step C1) --------------------------------------
+
+describe("panel invalidation", () => {
+  it("rescans for an agent-activity invalidation of workspace.files, coalescing while a load runs", async () => {
+    const contributions = createContributions();
+    const panel = contributions.workspacePanels?.[0];
+    if (panel === undefined || panel.onInvalidate === undefined) {
+      throw new Error("Expected opendoor panel contribution with onInvalidate");
+    }
+
+    const fake = docFiles();
+    const { context } = panelContext({ fake });
+    const controller = panel.render(context).values[0] as DoorstopWorkspaceController | undefined;
+    if (controller === undefined) throw new Error("Expected the render to bind the controller");
+    controller.hostConnected();
+    await flushAll();
+    if (controller.result === undefined) throw new Error("Expected the first load to land");
+    const firstWalk = fake.listCalls.length;
+    expect(firstWalk).toBeGreaterThan(0);
+
+    // The host's automatic invalidation (plan C1: agent work finished in the
+    // workspace) routes through the SAME unconditional rescan as the manual
+    // Refresh action — observable as a fresh discovery walk over the fake.
+    await panel.onInvalidate(context, { reason: "agent-activity", resources: ["workspace.files"] });
+    await flushAll();
+    const walkSize = fake.listCalls.length - firstWalk;
+    expect(walkSize).toBeGreaterThan(0);
+    expect(controller.stale).toBe(false);
+    expect(controller.loading).toBe(false);
+    if (controller.result === undefined) throw new Error("Expected the rescan load to land");
+    expect(controller.result.index.byUid.has("REQ0001")).toBe(true);
+
+    // An invalidation storm (two mutations landing in the same tick, before
+    // the first rescan's load can land) coalesces into ONE walk: the second
+    // invalidation JOINS the running load (the controller's re-entrant
+    // guard), so exactly one walk's worth of list calls is added.
+    const beforeStorm = fake.listCalls.length;
+    const stormA = panel.onInvalidate(context, { reason: "mutation", resources: ["workspace.files"] });
+    const stormB = panel.onInvalidate(context, { reason: "mutation", resources: ["workspace.files"] });
+    await Promise.all([stormA, stormB]);
+    await flushAll();
+    expect(fake.listCalls.length).toBe(beforeStorm + walkSize);
   });
 });
 
