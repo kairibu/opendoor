@@ -31,9 +31,15 @@ describe("bundled opendoor browser entry", () => {
     const context = panelContext();
 
     // Browser-only plugin: panel is always visible, never ownership-gated.
+    // Plan Phase C step C3 follow-up — order 5, below the bundled Files
+    // panel's order 10 (which answers every chat file link unconditionally
+    // in the host's first-accepting-panel dispatch): a higher order would
+    // silently disable the C3 fileOpenQuery claim. See the guard comment in
+    // doorstop-contributions.test.ts.
     expect(panel.id).toBe("workspace.doorstop");
     expect(panel.title).toBe("Requirements");
-    expect(panel.order).toBe(60);
+    expect(panel.order).toBe(5);
+    expect(panel.order).toBeLessThan(10);
     expect(panel.icon).toBeDefined();
     expect(panel.visible?.(context)).toBe(true);
     expect(typeof panel.onInvalidate).toBe("function");

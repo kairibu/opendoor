@@ -181,7 +181,13 @@ describe("createOpendoorBrowserContributions (contribution shape)", () => {
 
     expect(panel.id).toBe("workspace.doorstop");
     expect(panel.title).toBe("Requirements");
-    expect(panel.order).toBe(60);
+    // Plan Phase C step C3 follow-up — the order must stay BELOW the bundled
+    // Files panel's order 10: the host's first-accepting-panel dispatch would
+    // otherwise let Files (which answers every path unconditionally) claim
+    // doorstop item files first, silently disabling the C3 fileOpenQuery
+    // claim. No host-side test catches this regression — the guard is here.
+    expect(panel.order).toBe(5);
+    expect(panel.order).toBeLessThan(10);
     expect(panel.icon).toBeDefined();
     expect(panel.visible?.({} as WorkspacePanelContext)).toBe(true);
     // Plan Phase C step C1 — typed invalidation: the panel subscribes to the

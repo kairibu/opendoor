@@ -27,7 +27,12 @@ fully wired and green, in two halves:
   delegates to `createOpendoorBrowserContributions` in
   `src/browser/doorstop-contributions.ts`, which contributes:
 
-  - **panel** `workspace.doorstop` (title **Requirements**, order 60) — the Lit
+  - **panel** `workspace.doorstop` (title **Requirements**, order 5 — deliberately
+    below the bundled Files panel's order 10, which answers every chat file link
+    unconditionally in the host's first-accepting-panel dispatch; this is what
+    makes the `fileOpenQuery` claim — chat links to doorstop item files open the
+    item's detail view in this panel instead of Files — reachable, at the cost
+    of the Requirements tab preceding Files) — the Lit
     body element `<pi-web-opendoor-panel-body>`, driven by the per-workspace
     controller registry (`src/browser/doorstop-panel.ts`): five vertical sections —
     `project-actions` (title, Items/Findings toggle, Refresh / Run validation

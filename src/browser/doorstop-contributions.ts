@@ -126,7 +126,15 @@ function createDoorstopPanel(registry: DoorstopWorkspaceRegistry): WorkspacePane
         <path d="m9 12 2 2 4-4"></path>
       </svg>
     `,
-    order: 60,
+    // Plan Phase C step C3 follow-up — order 5: the host's chat-file-link
+    // dispatch (resolveWorkspaceFileOpen) opens the FIRST ACCEPTING panel,
+    // iterating panels by `order` ascending, and the bundled Files panel is
+    // order 10 and answers `{ file: path }` for EVERY path unconditionally —
+    // at order 60 this panel's `fileOpenQuery` was never consulted at all.
+    // Sitting below 10 is the only host-supported way to claim doorstop item
+    // files for the Requirements panel; the accepted consequence is that the
+    // Requirements tab precedes Files in the workspace tab bar.
+    order: 5,
     // The panel is always visible (paired or unpaired): when the workspace
     // is opendoor-owned the run actions use the backend, otherwise the
     // terminal fallback keeps every action working; the discovery-based
