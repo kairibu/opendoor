@@ -18,6 +18,9 @@ import type { DoorstopWorkspaceResult } from "../doorstop-panel.js";
 import { ALL_DOCUMENTS_LABEL, documentStateDots, dotTitle, doorstopShowAdditionalAttribute, EMPTY_WORKSPACE_MESSAGE, filteredItems, FINDINGS_EMPTY_HINT, FINDINGS_EMPTY_MESSAGE, FINDINGS_PLUGIN_LOCAL_NOTE, findingsCountText, findingsViewCounts, findingsViewRows, GIT_CHIP_LABELS, gitChipKind, itemExcerpt, itemGitState, itemStageable, itemUnstageable, shownAttributeRows, STATE_CHIP_LABELS, stateChipKind, type FindingsViewRow } from "../doorstop-panel-view-model.js";
 import { renderDetail } from "./detail-pane.js";
 
+/** The implicit default state key; only surface "non-normative" in list rows. */
+const DEFAULT_STATE_KEY: ItemStateKey = "normative";
+
 export function renderListFilters(host: DoorstopPanelSectionsApi, result: DoorstopWorkspaceResult): TemplateResult {
   return html`
     <section class="doorstop-list-filters">
@@ -172,7 +175,10 @@ export function renderItemRow(
         ? nothing
         : html`<span class="doorstop-item-attrs">${shownAttributes.map((row) => `${row.key}: ${row.text}`).join(" · ")}</span>`}
       <span class="doorstop-item-chips">
-        ${item.stateKeys.map((key) => renderStateChip(key))}
+        ${item.stateKeys
+          // DEFAULT_STATE_KEY is the default; only surface "non-normative" in the list.
+          .filter((key) => key !== DEFAULT_STATE_KEY)
+          .map((key) => renderStateChip(key))}
         ${gitState === "clean" ? nothing : html`<span class=${`doorstop-chip doorstop-chip-${gitChipKind(gitState)}`}>${GIT_CHIP_LABELS[gitState]}</span>`}
         ${unstageable && host.runInProgress === undefined
           ? html`<span

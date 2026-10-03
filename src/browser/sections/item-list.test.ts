@@ -46,8 +46,8 @@ describe("DoorstopPanelBodyElement (item list + selection)", () => {
     expect(rows).toHaveLength(4);
 
     // REQ0002 row: level, uid, header excerpt, and its chip set with the
-    // distinct color classes (muted normative, warning unreviewed, danger
-    // suspect link).
+    // distinct color classes (warning unreviewed, danger suspect link). The
+    // normative chip is hidden as the default state.
     const req0002Row = root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0002"]');
     if (req0002Row === null) throw new Error("row");
     expect(req0002Row.querySelector(".doorstop-item-level")?.textContent).toBe("1.1");
@@ -55,27 +55,24 @@ describe("DoorstopPanelBodyElement (item list + selection)", () => {
     expect(req0002Row.querySelector(".doorstop-item-summary")?.textContent).toBe("Capacity allocation");
     const chips = [...req0002Row.querySelectorAll(".doorstop-chip")];
     // unreviewed/suspect/no-child-links/missing-reference all apply here: the
-    // full chip set exercises every color kind (muted/warning/danger).
+    // full chip set exercises both color kinds (warning/danger).
     expect(chips.map((chip) => chip.textContent)).toEqual([
-      "normative",
       "unreviewed",
       "suspect link",
       "no child links",
       "missing reference",
     ]);
-    expect(chips[0]?.className).toBe("doorstop-chip doorstop-chip-muted");
-    expect(chips[1]?.className).toBe("doorstop-chip doorstop-chip-warning");
-    expect(chips[2]?.className).toBe("doorstop-chip doorstop-chip-danger");
-    expect(chips[3]?.className).toBe("doorstop-chip doorstop-chip-warning");
-    expect(chips[4]?.className).toBe("doorstop-chip doorstop-chip-danger");
+    expect(chips[0]?.className).toBe("doorstop-chip doorstop-chip-warning");
+    expect(chips[1]?.className).toBe("doorstop-chip doorstop-chip-danger");
+    expect(chips[2]?.className).toBe("doorstop-chip doorstop-chip-warning");
+    expect(chips[3]?.className).toBe("doorstop-chip doorstop-chip-danger");
 
-    // TST001: normative + unreviewed + no-links (warning).
+    // TST001: unreviewed + no-links (both warning); normative is hidden.
     const tst001Row = root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="TST001"]');
     const tstChips = [...(tst001Row?.querySelectorAll(".doorstop-chip") ?? [])].map(
       (chip) => `${chip.textContent}:${chip.className}`,
     );
     expect(tstChips).toEqual([
-      "normative:doorstop-chip doorstop-chip-muted",
       "unreviewed:doorstop-chip doorstop-chip-warning",
       "no links:doorstop-chip doorstop-chip-warning",
     ]);
