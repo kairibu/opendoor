@@ -121,7 +121,7 @@ export const itemListStyles = css`
         .doorstop-item-row {
           display: grid;
           grid-template-columns: max-content max-content minmax(0, 1fr) max-content;
-          gap: 8px;
+          gap: 2px 8px;
           align-items: baseline;
           width: 100%;
           border: 0;
@@ -169,6 +169,26 @@ export const itemListStyles = css`
           white-space: nowrap;
           color: var(--pi-muted);
           font-size: 11px;
+        }
+
+        /* The item body ("text" configured in showAdditionalAttribute) on its own
+           indented second line below level/uid/summary/chips. Full-width implicit
+           grid row; 5ch inline indent; clamped to 2 lines with ellipsis — the full
+           body lives in the detail pane. The span only exists when rendered, so no
+           container modifier class is needed. */
+        .doorstop-item-text {
+          grid-column: 1 / -1;
+          align-self: start;
+          padding-inline-start: 5ch;
+          min-width: 0;
+          color: var(--pi-muted);
+          font-size: 11px;
+          white-space: pre-wrap;
+          overflow-wrap: anywhere;
+          display: -webkit-box;
+          -webkit-box-orient: vertical;
+          -webkit-line-clamp: 2;
+          overflow: hidden;
         }
 
         .doorstop-item-chips {

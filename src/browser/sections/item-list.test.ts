@@ -204,6 +204,7 @@ describe("DoorstopPanelBodyElement (showAdditionalAttribute rows)", () => {
     // and the container keeps the original 4-column (no attrs track) grid.
     expect(root.querySelectorAll(".doorstop-item-row")).toHaveLength(4);
     expect(root.querySelectorAll(".doorstop-item-attrs")).toHaveLength(0);
+    expect(root.querySelectorAll(".doorstop-item-text")).toHaveLength(0);
     expect(root.querySelector(".doorstop-items")?.classList.contains("has-item-attrs")).toBe(false);
   });
 
@@ -228,8 +229,75 @@ describe("DoorstopPanelBodyElement (showAdditionalAttribute rows)", () => {
     // a real column to live in.
     expect(root.querySelector(".doorstop-items")?.classList.contains("has-item-attrs")).toBe(true);
     const attrs = row.querySelector(".doorstop-item-attrs");
-    expect(attrs?.textContent).toBe('component: "auth" · priority: 2 · text: "The system shall do X."');
+    // The modeled `text` is not a pair here: it renders on its own second row,
+    // raw and unquoted.
+    expect(attrs?.textContent).toBe('component: "auth" · priority: 2');
     expect(attrs?.textContent).not.toContain("other");
+    expect(row.querySelector(".doorstop-item-text")?.textContent).toBe("The system shall do X.");
+  });
+
+  it("renders no text row when `text` is configured but the item body is empty", async () => {
+    const item = makeItem({ uid: "REQ0001", text: "", attributes: { component: "auth" } });
+    const base = makeResult([item], [makeDocument()]);
+    const { body } = await mountBody(() =>
+      Promise.resolve({
+        index: base.index,
+        settings: { ...base.settings, showAdditionalAttribute: ["text", "component"] },
+      }),
+    );
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+    const row = root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0001"]');
+    if (row === null) throw new Error("row");
+    expect(row.querySelector(".doorstop-item-text")).toBeNull();
+  });
+
+  it("renders no text row when `text` is not configured even though the item has a body", async () => {
+    const item = makeItem({ uid: "REQ0001", text: "The system shall do X.", attributes: { component: "auth" } });
+    const base = makeResult([item], [makeDocument()]);
+    const { body } = await mountBody(() =>
+      Promise.resolve({
+        index: base.index,
+        settings: { ...base.settings, showAdditionalAttribute: ["component"] },
+      }),
+    );
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+    const row = root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0001"]');
+    if (row === null) throw new Error("row");
+    expect(row.querySelector(".doorstop-item-text")).toBeNull();
+  });
+
+  it("preserves the body's newlines in the text row (pre-wrap prose, not a collapsed excerpt)", async () => {
+    const item = makeItem({ uid: "REQ0001", text: "first line\nsecond line" });
+    const base = makeResult([item], [makeDocument()]);
+    const { body } = await mountBody(() =>
+      Promise.resolve({
+        index: base.index,
+        settings: { ...base.settings, showAdditionalAttribute: ["text"] },
+      }),
+    );
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+    const text = root.querySelector('.doorstop-item-row[data-uid="REQ0001"] .doorstop-item-text');
+    expect(text?.textContent).toContain("\n");
+    expect(text?.textContent).toBe("first line\nsecond line");
+  });
+
+  it("escapes a hostile item body: the literal text renders and no element is parsed", async () => {
+    const item = makeItem({ uid: "REQ0001", text: "<img src=x onerror=alert(1)>" });
+    const base = makeResult([item], [makeDocument()]);
+    const { body } = await mountBody(() =>
+      Promise.resolve({
+        index: base.index,
+        settings: { ...base.settings, showAdditionalAttribute: ["text"] },
+      }),
+    );
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+    const text = root.querySelector('.doorstop-item-row[data-uid="REQ0001"] .doorstop-item-text');
+    expect(text?.textContent).toBe("<img src=x onerror=alert(1)>");
+    expect(text?.querySelectorAll("img, svg")).toHaveLength(0);
   });
 
   it("omits the attribute span on a row that has none of the configured keys", async () => {

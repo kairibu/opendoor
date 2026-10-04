@@ -116,12 +116,15 @@ bundled workspace-tasks plugin. The *server* entry's host-scoped knobs
   `.git`/`node_modules` skips, max 16 names).
 - `showAdditionalAttribute` — array of attribute NAMES rendered in every
   item-list row as `key: value` (values jsonish-quoted, joined with ` · `, in
-  the configured order). Entries may be the modeled `text` (skipped when the
-  item body is empty) or any extended attribute key; an attribute an item
-  does not have is skipped for that row, and no unconfigured attribute ever
-  appears. Default `[]` leaves today's rows unchanged. Invalid entries are
-  dropped with a warning each, duplicates are deduplicated, the list is
-  capped at 16 names, and unknown keys are accepted (they simply match
+  the configured order). Entries may be any extended attribute key; an
+  attribute an item does not have is skipped for that row, and no unconfigured
+  attribute ever appears. The modeled `text` is special-cased: instead of a
+  `text: "…"` pair in the attribute column, the item body renders raw and
+  unquoted on its own indented second line below the row, clamped to two lines
+  with an ellipsis (the full body lives in the detail pane); it is skipped when
+  the item body is empty. Default `[]` leaves today's rows unchanged. Invalid
+  entries are dropped with a warning each, duplicates are deduplicated, the
+  list is capped at 16 names, and unknown keys are accepted (they simply match
   nothing).
 - `commitAfterReview` — opt-in boolean (default `false`): when enabled on a
   paired workspace, the **Review** action's `doorstop review <uid>` is

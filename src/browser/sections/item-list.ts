@@ -15,7 +15,7 @@ import type { DoorstopPanelSectionsApi } from "../doorstop-panel-section-host.js
 import { type DoorstopDocumentConfig, type DoorstopIndex, type ItemRecord, type ItemStateKey } from "../../doorstop-contract.js";
 import type { DoorstopGitStatusFile } from "../../doorstop-backend-contract.js";
 import type { DoorstopWorkspaceResult } from "../doorstop-panel.js";
-import { ALL_DOCUMENTS_LABEL, documentStateDots, dotTitle, doorstopShowAdditionalAttribute, EMPTY_WORKSPACE_MESSAGE, filteredItems, FINDINGS_EMPTY_HINT, FINDINGS_EMPTY_MESSAGE, FINDINGS_PLUGIN_LOCAL_NOTE, findingsCountText, findingsViewCounts, findingsViewRows, GIT_CHIP_LABELS, gitChipKind, itemExcerpt, itemGitState, itemStageable, itemUnstageable, shownAttributeRows, STATE_CHIP_LABELS, stateChipKind, type FindingsViewRow } from "../doorstop-panel-view-model.js";
+import { ALL_DOCUMENTS_LABEL, documentStateDots, dotTitle, doorstopShowAdditionalAttribute, EMPTY_WORKSPACE_MESSAGE, filteredItems, FINDINGS_EMPTY_HINT, FINDINGS_EMPTY_MESSAGE, FINDINGS_PLUGIN_LOCAL_NOTE, findingsCountText, findingsViewCounts, findingsViewRows, GIT_CHIP_LABELS, gitChipKind, itemExcerpt, itemGitState, itemStageable, itemTextRow, itemUnstageable, shownAttributeRows, STATE_CHIP_LABELS, stateChipKind, type FindingsViewRow } from "../doorstop-panel-view-model.js";
 import { renderDetail } from "./detail-pane.js";
 
 /** The implicit default state key; only surface "non-normative" in list rows. */
@@ -141,6 +141,10 @@ export function renderItemRow(
   const selected = host.selectedUid === item.uid;
   const gitState = itemGitState(gitFiles?.get(item.path));
   const shownAttributes = shownAttributeRows(item, attributeKeys);
+  // The item body renders as its own indented second row when `text` is one
+  // of the configured names; raw (unquoted) prose, unlike the key: value
+  // attribute pairs above.
+  const textBody = attributeKeys.includes("text") ? itemTextRow(item) : undefined;
   // The per-row add/remove is pointer-only by design: the row IS a
   // <button>, so a nested <button> would be hoisted out by the HTML
   // parser. A <span> parses fine, but a role="button" that is not
@@ -204,6 +208,7 @@ export function renderItemRow(
               @click=${(event: Event) => { event.stopPropagation(); host.insertPrompt(item.uid); }}
             >${insertPromptIconSvg}</span>`}
       </span>
+      ${textBody === undefined ? nothing : html`<span class="doorstop-item-text">${textBody}</span>`}
     </button>
   `;
 }

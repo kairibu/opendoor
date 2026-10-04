@@ -12,6 +12,7 @@ import {
   documentStateDots,
   doorstopShowAdditionalAttribute,
   filteredItems,
+  itemTextRow,
   shownAttributeRows,
   STATE_CHIP_LABELS,
   stateChipKind,
@@ -159,21 +160,27 @@ describe("shownAttributeRows (per-item configured attributes)", () => {
     expect(shownAttributeRows(item, ["component"])).toEqual([]);
   });
 
-  it("renders the modeled text jsonish-quoted, and skips it when the item body is empty", () => {
-    expect(shownAttributeRows(makeItem({ text: "The system shall do X." }), ["text"])).toEqual([
-      { key: "text", text: '"The system shall do X."' },
-    ]);
-    expect(shownAttributeRows(makeItem({ text: "" }), ["text"])).toEqual([]);
-  });
-
   it("preserves the configured order and returns exactly one row per configured-and-present key", () => {
     const item = makeItem({ text: "body", attributes: { component: "auth", priority: 2, other: "ignored" } });
+    // The modeled `text` is NOT a key: value pair any more — it is rendered by
+    // itemTextRow on its own row — so only the extended keys remain here.
     expect(shownAttributeRows(item, ["text", "priority", "component"]).map((row) => row.key)).toEqual([
-      "text",
       "priority",
       "component",
     ]);
     // A configured key the item lacks is simply absent from the result.
     expect(shownAttributeRows(item, ["component"])).toHaveLength(1);
+  });
+});
+
+describe("itemTextRow (the dedicated second text row)", () => {
+  it("returns the raw item body, unquoted", () => {
+    expect(itemTextRow(makeItem({ text: "The system shall do X." }))).toBe("The system shall do X.");
+  });
+
+  it("returns undefined for an empty or whitespace-only body", () => {
+    expect(itemTextRow(makeItem({ text: "" }))).toBeUndefined();
+    expect(itemTextRow(makeItem({ text: " " }))).toBeUndefined();
+    expect(itemTextRow(makeItem({ text: "\n\t" }))).toBeUndefined();
   });
 });

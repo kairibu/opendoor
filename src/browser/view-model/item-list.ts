@@ -120,8 +120,16 @@ export function itemExcerpt(item: ItemRecord): string {
   return firstLine.length > 80 ? `${firstLine.slice(0, 80)}…` : firstLine;
 }
 
+/** The raw item body for the dedicated second text row, or undefined when
+ *  the body is empty (or whitespace-only, which would render a visually blank
+ *  row). Unquoted on purpose: this is prose, not a key:value attribute
+ *  (matches the detail pane's rendering of item.text). */
+export function itemTextRow(item: ItemRecord): string | undefined {
+  return item.text.trim() === "" ? undefined : item.text;
+}
+
 /** One configured attribute resolved for one row: the configured key and the
- *  jsonish-rendered value (`text: "…"` keeps its quotes). */
+ *  jsonish-rendered value (quoted when the value is a string). */
 export interface ShownAttribute {
   key: string;
   text: string;
@@ -130,18 +138,13 @@ export interface ShownAttribute {
 /** Resolve the configured attribute NAMES against ONE item, in the configured
  *  order. The loop iterates `keys` — the CONFIGURED array — and never
  *  `item.attributes`, so an unknown key is inert and no unconfigured attribute
- *  can ever leak into a row. `text` is the one modeled key (jsonish-quoted
- *  like any other value) and is skipped when the item body is empty; every
- *  other name is present only when the item has that own extended attribute.
- *  `keys` is read-only and never mutated. */
+ *  can ever leak into a row. Every name is present only when the item has that
+ *  own extended attribute; the modeled `text` body is NOT one of these pairs —
+ *  it is rendered by `itemTextRow` on its own second row. `keys` is read-only
+ *  and never mutated. */
 export function shownAttributeRows(item: ItemRecord, keys: readonly string[]): ShownAttribute[] {
   const rows: ShownAttribute[] = [];
   for (const key of keys) {
-    if (key === "text") {
-      if (item.text === "") continue;
-      rows.push({ key, text: jsonishText(item.text) });
-      continue;
-    }
     if (!Object.prototype.hasOwnProperty.call(item.attributes, key)) continue;
     rows.push({ key, text: jsonishText(item.attributes[key]) });
   }
