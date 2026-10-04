@@ -11,6 +11,7 @@ import { html, nothing, type TemplateResult } from "lit";
 import { classMap } from "lit/directives/class-map.js";
 import { repeat } from "lit/directives/repeat.js";
 import { gitStageIconSvg, gitUnstageIconSvg, insertPromptIconSvg } from "../doorstop-panel-icons.js";
+import { setupProjectPrompt } from "../doorstop-prompts.js";
 import type { DoorstopPanelSectionsApi } from "../doorstop-panel-section-host.js";
 import { type DoorstopDocumentConfig, type DoorstopIndex, type ItemRecord, type ItemStateKey } from "../../doorstop-contract.js";
 import type { DoorstopGitStatusFile } from "../../doorstop-backend-contract.js";
@@ -94,7 +95,18 @@ export function renderViewer(host: DoorstopPanelSectionsApi): TemplateResult {
     ${result.index.documents.length === 0
       ? html`
           ${renderDiagnostics(host, result)}
-          <section class="doorstop-empty"><p>${EMPTY_WORKSPACE_MESSAGE}</p></section>
+          <section class="doorstop-empty">
+            <p>${EMPTY_WORKSPACE_MESSAGE}</p>
+            ${host.context === undefined
+              ? nothing
+              : html`
+                  <button
+                    type="button"
+                    class="doorstop-setup"
+                    @click=${() => { host.insertPrompt(setupProjectPrompt()); }}
+                  >Ask agent to set up the project</button>
+                `}
+          </section>
         `
       : html`
           <section class="doorstop-split">

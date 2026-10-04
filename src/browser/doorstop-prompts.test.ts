@@ -14,6 +14,7 @@ import {
   explainItemPrompt,
   fixSuspectLinksPrompt,
   reviewReadinessPrompt,
+  setupProjectPrompt,
   validatePrompt,
 } from "./doorstop-prompts.js";
 import { makeItem as makeFixtureItem } from "../test-fixtures.js";
@@ -294,6 +295,33 @@ describe("validatePrompt", () => {
   });
 });
 
+describe("setupProjectPrompt", () => {
+  it("pins the exact wording", () => {
+    expect(setupProjectPrompt()).toBe(
+      "Set up a Doorstop requirements project in this workspace. Use the `ask_user` tool to ask the user " +
+        "two questions before creating anything: what the first requirements document should be called " +
+        "(default: REQ) and whether item text should be shown in the opendoor panel (default: no). Run `git init` if the workspace is not a git repository. Then run `doorstop create <chosen UID prefix> " +
+        "./<prefix-derived folder: REQ to reqs, URD to urds>` in the workspace root and `doorstop` to confirm " +
+        "it validates. If `.pi-web/opendoor.json` does not exist, create it with " +
+        '{"version": 1} plus "showAdditionalAttribute": ["text"] when the user opted into showing text; leave ' +
+        "publish.target, discovery.excludedDirectories, and commitAfterReview at their defaults. Commit the " +
+        "created `.doorstop.yml`, requirements tree, and settings file.",
+    );
+  });
+
+  it("names the ask_user tool, the create command, the settings file, and both stated defaults", () => {
+    const prompt = setupProjectPrompt();
+    expect(prompt).toContain("ask_user");
+    expect(prompt).toContain("`doorstop create <chosen UID prefix> ./<prefix-derived folder: REQ to reqs, URD to urds>`");
+    expect(prompt).toContain("`git init`");
+    expect(prompt).toContain("not a git repository");
+    expect(prompt).toContain("`.pi-web/opendoor.json`");
+    expect(prompt).toContain("(default: REQ)");
+    expect(prompt).toContain('"showAdditionalAttribute": ["text"]');
+    expect(prompt).toContain("workspace root");
+  });
+});
+
 describe("prompt word budget", () => {
   const wordCount = (text: string): number => text.trim().split(/\s+/).length;
 
@@ -325,6 +353,7 @@ describe("prompt word budget", () => {
       ]),
       reviewReadinessPrompt(makeItem({ uid: "REQ006", text: "" })),
       validatePrompt(),
+      setupProjectPrompt(),
     ];
     for (const prompt of prompts) {
       expect(wordCount(prompt), prompt).toBeLessThanOrEqual(120);

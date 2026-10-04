@@ -13,6 +13,7 @@ import {
   EMPTY_WORKSPACE_MESSAGE,
   type DoorstopPanelBodyElement,
 } from "./doorstop-panel-elements.js";
+import { setupProjectPrompt } from "./doorstop-prompts.js";
 import { text, tree } from "../test-support.js";
 import {
   flushMicro,
@@ -43,9 +44,28 @@ describe("DoorstopPanelBodyElement (toolbar + empty/loading/error/stale states)"
     const empty = root.querySelector(".doorstop-empty");
     expect(empty?.textContent).toContain("doorstop create REQ ./reqs");
     expect(empty?.textContent).toContain(EMPTY_WORKSPACE_MESSAGE);
+    // The empty state offers the agent-driven setup affordance when a panel
+    // context is bound.
+    expect(root.querySelector(".doorstop-setup")).not.toBeNull();
     // The toolbar still offers a lone "All" chip.
     expect(root.querySelectorAll(".doorstop-doc-chip")).toHaveLength(1);
     expect(root.querySelector(".doorstop-doc-prefix")?.textContent).toBe("All");
+  });
+
+  it("inserts the setup prompt and focuses the editor when the empty state's button is clicked", async () => {
+    const insertText = vi.fn();
+    const focusPrompt = vi.fn();
+    const { body } = await mountBody(() => Promise.resolve(makeResult([], [])), { insertText, focusPrompt });
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+
+    const button = root.querySelector<HTMLButtonElement>(".doorstop-setup");
+    expect(button?.type).toBe("button");
+    button?.click();
+    await flushMicro(body);
+
+    expect(insertText).toHaveBeenLastCalledWith(setupProjectPrompt());
+    expect(focusPrompt).toHaveBeenCalled();
   });
 
   it("renders loading copy before a result lands and an error alert afterwards", async () => {

@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { computeItemStamp } from "../../doorstop-state.js";
 import { loadDoorstopWorkspace } from "../doorstop-panel.js";
 import {
+  EMPTY_WORKSPACE_MESSAGE,
   FINDINGS_EMPTY_HINT,
   FINDINGS_EMPTY_MESSAGE,
   FINDINGS_PLUGIN_LOCAL_NOTE,
@@ -132,6 +133,31 @@ describe("DoorstopPanelBodyElement (item list + selection)", () => {
   it("shows the no-item copy when a document has items but none parse", async () => {
     const { body } = await mountBody(() => Promise.resolve(makeResult([], [makeDocument()])));
     expect(body.shadowRoot?.textContent).toContain("No Doorstop items found");
+  });
+});
+
+describe("DoorstopPanelBodyElement (empty-state project setup button)", () => {
+  it("renders the button when a panel context is bound", async () => {
+    const { body } = await mountBody(() => Promise.resolve(makeResult([], [])));
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+
+    const section = root.querySelector(".doorstop-empty");
+    expect(section?.textContent).toContain(EMPTY_WORKSPACE_MESSAGE);
+    expect(section?.querySelector(".doorstop-setup")).not.toBeNull();
+  });
+
+  it("omits the button when there is no panel context (insertPrompt would be a silent no-op)", async () => {
+    const { body } = await mountBody(() => Promise.resolve(makeResult([], [])));
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+
+    body.context = undefined;
+    await body.updateComplete;
+
+    const section = root.querySelector(".doorstop-empty");
+    expect(section?.textContent).toContain(EMPTY_WORKSPACE_MESSAGE);
+    expect(root.querySelector(".doorstop-setup")).toBeNull();
   });
 });
 

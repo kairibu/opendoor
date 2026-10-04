@@ -5,7 +5,7 @@
 // document prefix) and returns a self-contained instruction string an agent
 // can act on with its own tools — exact relative file paths and backticked
 // `doorstop` commands included, no panel context assumed. Mirrors the
-// opense-prompts.ts idiom (pure string-in/string-out functions).
+// opendoor-prompts.ts idiom (pure string-in/string-out functions).
 //
 // Degradation & enforcement policy:
 //   - fixSuspectLinksPrompt THROWS a TypeError when no changed parents are
@@ -201,5 +201,30 @@ export function validatePrompt(): string {
     `ERROR it reports: what the message means, which item or document it concerns, and how to fix it ` +
     `(with \`doorstop link\`, \`doorstop clear\`, \`doorstop unlink\`, \`doorstop edit\`, or a direct ` +
     `edit of the item's file). Confirm the tree validates cleanly afterwards.`
+  );
+}
+
+/**
+ * Set up the project — "Set up a Doorstop requirements project in this
+ * workspace". Takes no data: it is the first-run counterpart of
+ * {@link validatePrompt}, and a document-less workspace has no records to
+ * pass. The instruction names pi-web's `ask_user` tool and states a default
+ * for each question (document name `REQ`, text shown `no`), so the agent can
+ * fall back to those defaults and never dead-ends when the tool is disabled.
+ * The requirements folder is derived from the chosen prefix (REQ becomes
+ * reqs, URD urds).
+ * A Doorstop setup also needs git: the prompt says to init a repo if none exists.
+ */
+export function setupProjectPrompt(): string {
+  return (
+    `Set up a Doorstop requirements project in this workspace. Use the \`ask_user\` tool to ask the user ` +
+    `two questions before creating anything: what the first requirements document should be called ` +
+    `(default: REQ) and whether item text should be shown in the opendoor panel (default: no). Run \`git init\` ` +
+    `if the workspace is not a git repository. Then run \`doorstop create <chosen UID prefix> ` +
+    `./<prefix-derived folder: REQ to reqs, URD to urds>\` in the workspace root and \`doorstop\` to confirm ` +
+    `it validates. If \`.pi-web/opendoor.json\` does not exist, create it with ` +
+    `{"version": 1} plus "showAdditionalAttribute": ["text"] when the user opted into showing text; leave ` +
+    `publish.target, discovery.excludedDirectories, and commitAfterReview at their defaults. Commit the ` +
+    `created \`.doorstop.yml\`, requirements tree, and settings file.`
   );
 }

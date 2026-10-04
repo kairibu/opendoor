@@ -365,6 +365,10 @@ export const findingsStyles = css`
           margin: 0;
         }
 
+        .doorstop-empty button {
+          margin-top: 10px;
+        }
+
         .doorstop-empty .doorstop-muted {
           margin-top: 6px;
         }
