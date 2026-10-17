@@ -266,6 +266,10 @@ export function panelContext(hook: PanelContextHook = {}): PanelContextResult {
     files: files.files,
     host: { requestRender },
     prompt: { insertText, getText: () => "", getSelection: () => null },
+    // pi-web 1.202610.3 made `navigate` a required member of
+    // `WorkspacePanelContext` (absent in 1.202609.1). The plugin never calls
+    // it, so the fixture stubs a no-op destination navigation.
+    navigate: async () => undefined,
     terminal: { open: () => undefined, runCommand },
     // The optional `peer` field is only present when the hook supplied one
     // (exactOptionalPropertyTypes forbids an explicit undefined write). The
@@ -324,6 +328,9 @@ export function runtimeContext(patch: Partial<PluginRuntimeContext> = {}): Plugi
       mainView: "workspace",
     },
     prompt: { insertText: noop, getText: () => "", getSelection: () => null },
+    // pi-web 1.202610.3 requires `navigate` on `PluginRuntimeContext` (it was
+    // absent in 1.202609.1); the runtime fixture navigates nowhere.
+    navigate: async () => undefined,
     openActionPalette: noop,
     focusPrompt: noop,
     addProject: noop,

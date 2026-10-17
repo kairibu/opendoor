@@ -105,6 +105,9 @@ function panelContext(workspace = doorstopWorkspace, machineId = "local"): Works
       workspaceTool: "opendoor:workspace.doorstop",
       mainView: "workspace",
     },
+    // pi-web 1.202610.3 made `navigate` required on `WorkspacePanelContext`;
+    // the plugin never calls it, so a no-op stub satisfies the contract.
+    navigate: async () => undefined,
     files: {
       readFile: () => Promise.reject(new Error("not implemented")),
       listFiles: () => Promise.reject(new Error("not implemented")),

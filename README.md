@@ -20,7 +20,10 @@ Full feature spec: [`docs/feature-doorstop-plugin.md`](docs/feature-doorstop-plu
 ## Status
 
 Requires **pi-web 1.202609.1 or newer** (browser plugin API v4 / server
-plugin API v3; see **Rollout** below for the upgrade order). The plugin is
+plugin API v3). Tested through **pi-web 1.202610.3**, which is **additive**
+for this plugin — no source changes were needed, and once-per-plugin
+v4/v3 deprecation diagnostics are expected (see **Rollout** below for the
+upgrade order and the 1.202610.x sessiond-restart note). The plugin is
 fully wired and green, in two halves:
 
 - **Browser entry** (`src/browser/pi-web-plugin.ts`, apiVersion 4, name `Opendoor`)
@@ -331,3 +334,20 @@ opendoor package and pi-web **together**, then restart
 `pi-web-sessiond.service` and reload the PI WEB page. During the transition
 the opendoor panel is **entirely absent** (both plugin entries rejected), not
 degraded. Federated gateways/targets must be upgraded in lockstep.
+
+### pi-web 1.202610.3 (and later 1.202610.x)
+
+Unlike 1.202609.1, release **1.202610.3** is **additive** for opendoor: the
+untouched v4/v3 plugin keeps loading on a v1.202610.3 host, with a
+once-per-plugin deprecation diagnostic (no removal date). No source changes
+were needed — the only mindful adaptation was a no-op `navigate` stub in the
+test fixtures (`src/test-fixtures.ts`, `src/browser/pi-web-plugin.test.ts`),
+because 1.202610.x made `navigate` a required member of
+`PluginRuntimeContext` / `WorkspacePanelContext`.
+
+Host upgrade order for 1.202610.x: refresh the pi-web checkout, then
+**manually restart `pi-web-sessiond.service`** — a UI/API autoreload alone
+is **not sufficient** (the release touched the session-serving paths
+heavily). The restart interrupts active sessions and terminals; reload the
+PI WEB page afterwards and confirm the manifest shows the opendoor entry
+with a `backendRevision`.
