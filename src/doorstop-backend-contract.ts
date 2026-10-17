@@ -612,6 +612,128 @@ export function parseDoorstopBaselineResponse(value: unknown): DoorstopBaselineR
 }
 
 // ---------------------------------------------------------------------------
+// Ask-agent dispatch — `doorstop.ask-agent` (relay
+// `opendoor-session-metadata-labels` design §4): the ONE new peer operation
+// this slice adds. It is NOT one of the six paired backend operations above
+// and never touches their handlers or the peer/terminal gate: it asks the
+// paired server to start (or attach to) a review conversation whose public
+// metadata links the row back into the Requirements panel.
+//
+// The request is `{ uid, prompt }` plus the OPTIONAL `sessionId` (F1): when
+// the browser panel has a live selected conversation in the target
+// workspace it supplies that exact id so the server can attach the dispatch
+// to the user's own conversation; absent, the server publishes a promptless
+// seed conversation. `sessionId` is validated against the host's own hosted
+// session-id bound (non-empty, ≤ 512 chars) before it ever reaches the
+// capability. The prompt bound (64 KiB UTF-8) mirrors the host dispatch
+// bridge's own bound, so an oversized prompt is rejected at the contract
+// boundary instead of surfacing a confusing bridge error.
+//
+// The response is `{ dispatched: true }` plus the spawned session id when
+// the bridge answered inside the bounded admission window.
+// ---------------------------------------------------------------------------
+
+/** The ask-agent dispatch operation — matches the host's `^[a-z][a-z0-9.-]*$`
+ *  operation grammar and is routed by `dispatchDoorstopOperation` to
+ *  `requestDoorstopAskAgent` (server-plugin.ts). */
+export const DOORSTOP_ASK_AGENT_OPERATION = "doorstop.ask-agent";
+
+/** The host dispatch bridge's prompt bound (bytes of UTF-8), mirrored so the
+ *  server contract rejects an oversized prompt before the bridge does. */
+export const DOORSTOP_ASK_AGENT_PROMPT_MAX_BYTES = 64 * 1024;
+
+/** The host's hosted-session-id bound (see the events capability snapshot). */
+export const DOORSTOP_ASK_AGENT_SESSION_ID_MAX_LENGTH = 512;
+
+/** One `doorstop.ask-agent` request (design §4/F1): the item UID the review
+ *  session is about, the fully composed review prompt, and — when the panel
+ *  can offer one — the exact live conversation in the target workspace to
+ *  attach the dispatch to. Declared as a type alias (not an interface) so it
+ *  carries the implicit index signature the host `JsonValue` bridge needs,
+ *  exactly like {@link DoorstopRunRequest}. */
+export type DoorstopAskAgentRequest = {
+  uid: string;
+  prompt: string;
+  sessionId?: string;
+};
+
+/** The `doorstop.ask-agent` result: the frame was accepted by a live dispatch
+ *  bridge. `sessionId` is present only when spawn admission resolved inside
+ *  the bounded window; absent, the spawned row still announces itself via the
+ *  host's global `session.created` event and the label appears without the
+ *  panel waiting. */
+export interface DoorstopAskAgentResponse {
+  dispatched: true;
+  sessionId?: string;
+}
+
+/** UTF-8 byte length without depending on `TextEncoder`/`Buffer` (this module
+ *  bundles into both the browser and server entries — the same byte-counting
+ *  loop the host capability snapshots use). */
+function utf8ByteLength(value: string): number {
+  let bytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const codePoint = value.codePointAt(index);
+    if (codePoint === undefined) break;
+    if (codePoint > 0xffff) index += 1;
+    bytes += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+  }
+  return bytes;
+}
+
+/** Guard: optional `record[key]` must satisfy the host's hosted-session-id
+ *  bound when present; `undefined` passes (exactOptionalPropertyTypes idiom). */
+function optionalSessionId(record: Record<string, unknown>, key: string): string | undefined {
+  const value = optionalString(record, key);
+  if (value === undefined) return undefined;
+  if (value === "" || value.length > DOORSTOP_ASK_AGENT_SESSION_ID_MAX_LENGTH) {
+    throw new Error(
+      `Invalid doorstop.ask-agent ${key}: expected a non-empty hosted session id of at most ` +
+        `${String(DOORSTOP_ASK_AGENT_SESSION_ID_MAX_LENGTH)} characters`,
+    );
+  }
+  return value;
+}
+
+/**
+ * Parse and validate an untrusted `doorstop.ask-agent` request. Throws on
+ * junk: non-object input, a missing/invalid `uid` (the shared item-UID
+ * grammar), a missing/empty/oversized `prompt`, or a present `sessionId`
+ * outside the host's bound. Extra keys are tolerated (forward compatibility).
+ * The strictest optional-field idiom is kept: an absent `sessionId` is
+ * OMITTED, never set to `undefined`.
+ */
+export function parseDoorstopAskAgentRequest(value: unknown): DoorstopAskAgentRequest {
+  const record = requireRecord(value, "Doorstop ask-agent request");
+  const uid = requireUid(record, "uid");
+  const prompt = requireString(record, "prompt");
+  if (prompt.trim() === "") throw new Error("Expected non-empty field: prompt");
+  if (utf8ByteLength(prompt) > DOORSTOP_ASK_AGENT_PROMPT_MAX_BYTES) {
+    throw new Error(
+      `Doorstop ask-agent prompt exceeds ${String(DOORSTOP_ASK_AGENT_PROMPT_MAX_BYTES)} UTF-8 bytes`,
+    );
+  }
+  const sessionId = optionalSessionId(record, "sessionId");
+  return sessionId === undefined ? { uid, prompt } : { uid, prompt, sessionId };
+}
+
+/**
+ * Parse and validate a `doorstop.ask-agent` response (the server's exact
+ * output shape: a literal `dispatched: true` and an optional non-empty
+ * `sessionId`). Throws on junk: non-object input, a `dispatched` that is not
+ * exactly `true`, or a present-but-empty/non-string `sessionId`.
+ */
+export function parseDoorstopAskAgentResponse(value: unknown): DoorstopAskAgentResponse {
+  const record = requireRecord(value, "Doorstop ask-agent response");
+  if (record["dispatched"] !== true) {
+    throw new Error("Expected true field: dispatched");
+  }
+  const sessionId = optionalString(record, "sessionId");
+  if (sessionId === "") throw new Error("Expected non-empty string field: sessionId");
+  return sessionId === undefined ? { dispatched: true } : { dispatched: true, sessionId };
+}
+
+// ---------------------------------------------------------------------------
 // Git operations — `doorstop.git-status`, `doorstop.git-stage`,
 // `doorstop.git-unstage`, `doorstop.git-commit` (plan-add-git-actions.md
 // Phase A steps 1–5; unstage is the per-item follow-up): the project-scoped

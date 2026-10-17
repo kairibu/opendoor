@@ -114,6 +114,9 @@ export function renderAskMenu(
 ): TemplateResult {
   const children = index.childrenByUid.get(item.uid) ?? [];
   const childPrefix = firstChildDocumentPrefix(index, item);
+  // Read the optional member ONCE: absent means "no paired backend" (the
+  // entry is hidden), and the captured callable is what the click invokes.
+  const startReviewSession = host.startReviewSession;
   return html`
     <div class="doorstop-menu">
       <button
@@ -145,6 +148,16 @@ export function renderAskMenu(
                 }}
               >Draft child requirement</button>
               <button type="button" role="menuitem" class="doorstop-menu-item doorstop-review-readiness" @click=${() => { host.insertPrompt(reviewReadinessPrompt(item, children)); }}>Review readiness</button>
+              ${startReviewSession === undefined
+                ? nothing
+                : html`<button
+                    type="button"
+                    role="menuitem"
+                    class="doorstop-menu-item doorstop-start-review-session"
+                    ?disabled=${host.runInProgress !== undefined}
+                    title=${`Start a review conversation for ${item.uid}`}
+                    @click=${() => { startReviewSession(item.uid, reviewReadinessPrompt(item, children)); }}
+                  >Start review session</button>`}
             </div>
           `
         : nothing}

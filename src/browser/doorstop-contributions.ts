@@ -1,6 +1,7 @@
 // ---------------------------------------------------------------------------
 // Opendoor browser contributions (integration chain F): the actions,
-// workspace panel, and workspace label that `pi-web-plugin.ts` exposes via
+// workspace panel, workspace label, and session-list row label that
+// `pi-web-plugin.ts` exposes via
 // `createOpendoorBrowserContributions(runtimePluginId, html, svg)` — the
 // thin entry calls this factory, exactly like OpenSE's
 // createOpenseBrowserContributions. All logic lives in the reviewed modules:
@@ -12,9 +13,12 @@
 //   2. wires the panel contribution (render mirrors the controller's render
 //      inputs into the body element's properties — state flow documented in
 //      doorstop-panel-element.ts),
-//   3. wires the palette actions (view + refresh), and
+//   3. wires the palette actions (view + refresh),
 //   4. wires the informational workspace label (§7.4) with the documented
-//      async-cache idiom.
+//      async-cache idiom, and
+//   5. wires the session-list row label (relay
+//      `opendoor-session-metadata-labels`) that reopens the Requirements tab
+//      from a session row carrying public opendoor metadata.
 //
 // The validate / publish / review / clear / edit / link / unlink Doorstop
 // operations are deliberately NOT palette actions: they need the rendered
@@ -43,6 +47,7 @@ import type { DoorstopIndex } from "../doorstop-contract.js";
 import type { DoorstopWorkspaceResult } from "./doorstop-panel.js";
 import { DoorstopWorkspaceRegistry, loadDoorstopWorkspace } from "./doorstop-panel.js";
 import { readPanelNavigationQuery } from "./doorstop-panel-navigation.js";
+import { createDoorstopSessionLabel } from "./doorstop-session-labels.js";
 import { defineDoorstopPanelElements } from "./doorstop-panel-elements.js";
 
 const DOORSTOP_PANEL_LOCAL_ID = "workspace.doorstop";
@@ -77,6 +82,7 @@ export function createOpendoorBrowserContributions(
     actions: createDoorstopActions(panelId),
     workspacePanels: [createDoorstopPanel(registry)],
     workspaceLabels: [createDoorstopLabel(labelCache)],
+    sessionLabels: [createDoorstopSessionLabel(runtimePluginId)],
   };
 }
 

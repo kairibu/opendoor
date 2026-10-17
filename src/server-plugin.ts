@@ -31,10 +31,20 @@
 // Lifecycle surface is deliberately minimal: `prepareRemove` is omitted
 // (main-only workspaces are not removable linked workspaces), and `health`
 // is deferred (a bounded health probe shouldn't execute the CLI yet).
-// Runtime imports are limited to `node:path`/`node:fs/promises` (the plan's
-// constraint — the server bundle must stay self-contained); everything from
-// `@jmfederico/pi-web/server-plugin-api` is TYPE-ONLY so the host API never
-// becomes a runtime import of the plugin.
+// Runtime imports are `node:path`/`node:fs/promises` (the plan's constraint — the
+// server bundle must stay self-contained); every host TYPE remains type-only so
+// the host API never becomes a runtime import of the plugin.
+//
+// INTERIM (human-approved, relay `opendoor-session-metadata-labels` signal):
+// this entry declares NO `requires`/`start()`. The host's server registration
+// rejects any workspace-provider-contributing entry that (transitively)
+// requires a late host capability (`serverPluginRuntime.ts` provider-cycle
+// check), so the session-dispatch capabilities cannot be resolved here on the
+// released host. The dispatch scaffolding stays in place (module header of
+// doorstop-dispatch.ts) but the holder stays empty and `doorstop.ask-agent`
+// rejects with a clear "capabilities are not active" message; the panel keeps
+// the composer-insert Ask-agent entries working. The redesigned dispatch
+// pathway (Pi package extension) replaces this in a follow-up relay.
 // ---------------------------------------------------------------------------
 
 import { readdir } from "node:fs/promises";
@@ -60,13 +70,21 @@ import {
   unsupportedBackendOperationError,
 } from "./doorstop-backend.js";
 import {
+  DOORSTOP_ASK_AGENT_OPERATION,
   DOORSTOP_BASELINE_OPERATION,
   DOORSTOP_GIT_COMMIT_OPERATION,
   DOORSTOP_GIT_STAGE_OPERATION,
   DOORSTOP_GIT_STATUS_OPERATION,
   DOORSTOP_GIT_UNSTAGE_OPERATION,
   DOORSTOP_RUN_OPERATION,
+  parseDoorstopAskAgentRequest,
 } from "./doorstop-backend-contract.js";
+import {
+  activateDoorstopDispatch,
+  createDoorstopDispatch,
+  requestDoorstopAskAgent,
+  type DoorstopDispatch,
+} from "./doorstop-dispatch.js";
 
 /** Marker file whose presence makes a project a doorstop project. */
 const DOORSTOP_MARKER_FILE = ".doorstop.yml";
@@ -115,13 +133,22 @@ async function probeContainsDoorstopMarker(root: string, signal: AbortSignal): P
 const plugin: PiWebServerPlugin = {
   apiVersion: 3,
   name: "Opendoor",
+  // INTERIM: no `requires`/`start()` — see the module header. The dispatch
+  // holder deliberately stays empty so `doorstop.ask-agent` rejects with its
+  // "capabilities are not active" message instead of failing registration or
+  // touching sessions on this provider-contributing entry.
   activate(context) {
+    // One activation-scoped dispatch holder. The six existing operations never
+    // read it; only `doorstop.ask-agent` would, and its capabilities are
+    // intentionally unresolvable here until the dispatch moves off this entry.
+    const dispatch = createDoorstopDispatch();
     return {
       workspaceProvider: createDoorstopWorkspaceProvider(context),
       // v3: the six-operation dispatch lives at the activation level, not on
       // the provider (`WorkspaceProvider.request` was removed).
       peer: {
-        request: (request: ServerPluginPeerRequestContext) => dispatchDoorstopOperation(context, request),
+        request: (request: ServerPluginPeerRequestContext) =>
+          dispatchDoorstopOperation(context, request, dispatch),
       },
     };
   },
@@ -166,16 +193,23 @@ export function createDoorstopWorkspaceProvider(context: ServerPluginActivationC
 /** The activation-level peer request dispatch (plan-add-git-actions.md Phase
  *  B step 9): the six contract operations route to their shared backend
  *  handlers (all six serialize per workspace path and share the deadline
- *  budget inside doorstop-backend.ts); every other operation gets the
- *  existing unsupported-operation error — the same message the run handler's
- *  own guard throws. The peer request context is the v3 rename of the old
- *  provider request context (same project/workspace/operation/input/signal
- *  fields), so the handler bodies are unchanged. */
+ *  budget inside doorstop-backend.ts); the new `doorstop.ask-agent` operation
+ *  routes to the capability-driven session dispatch; every other operation
+ *  gets the existing unsupported-operation error — the same message the run
+ *  handler's own guard throws. The peer request context is the v3 rename of
+ *  the old provider request context (same project/workspace/operation/input/
+ *  signal fields), so the six handler bodies are unchanged. */
 export function dispatchDoorstopOperation(
   context: ServerPluginActivationContext,
   request: ServerPluginPeerRequestContext,
+  dispatch: DoorstopDispatch = createDoorstopDispatch(),
 ): Promise<JsonValue> {
   switch (request.operation) {
+    case DOORSTOP_ASK_AGENT_OPERATION:
+      // The one NEW operation (relay design §4). Routed through a helper that
+      // turns a malformed request's synchronous parse throw into the same
+      // promise rejection every other dispatch failure uses.
+      return requestDoorstopAskAgentOperation(dispatch, request);
     case DOORSTOP_RUN_OPERATION:
       return requestDoorstopBackend(context, request);
     case DOORSTOP_BASELINE_OPERATION:
@@ -193,5 +227,25 @@ export function dispatchDoorstopOperation(
       // promise, and the async handlers' own guard rejects with this same
       // error — one message source, one failure mode.
       return Promise.reject(unsupportedBackendOperationError(request.operation));
+  }
+}
+
+/** Validate the ask-agent request (synchronously, so a malformed input never
+ *  reaches a capability) and dispatch it against the peer request's own
+ *  workspace authority (F3: the browser never sends project/workspace ids). */
+function requestDoorstopAskAgentOperation(
+  dispatch: DoorstopDispatch,
+  request: ServerPluginPeerRequestContext,
+): Promise<JsonValue> {
+  try {
+    const input = parseDoorstopAskAgentRequest(request.input);
+    return requestDoorstopAskAgent(
+      dispatch,
+      { projectId: request.workspace.projectId, workspaceId: request.workspace.id },
+      input,
+      request.signal,
+    );
+  } catch (error) {
+    return Promise.reject(error);
   }
 }

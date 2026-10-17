@@ -175,9 +175,18 @@ describe("createOpendoorBrowserContributions (contribution shape)", () => {
     // The action ids (unqualified local ids; qualification happens through
     // the panel target, asserted in pi-web-plugin.test.ts).
     expect(contributions.actions?.map(({ id }) => id)).toEqual(["view.doorstop", "workspace.refresh-doorstop"]);
-    // Exactly one panel, one label — nothing extra leaked into the host.
+    // Exactly one panel, one workspace label, one session-row label —
+    // nothing extra leaked into the host.
     expect(contributions.workspacePanels).toHaveLength(1);
     expect(contributions.workspaceLabels).toHaveLength(1);
+    // F4b: a missing/regressed session-label registration must fail here (and
+    // typecheck), not silently drop the flagship row indicators.
+    expect(contributions.sessionLabels).toHaveLength(1);
+    const sessionLabel = contributions.sessionLabels?.[0];
+    if (sessionLabel === undefined) throw new Error("Expected opendoor session label contribution");
+    expect(sessionLabel.id).toBe("doorstop.review");
+    expect(sessionLabel.order).toBe(10);
+    expect(typeof sessionLabel.items).toBe("function");
 
     expect(panel.id).toBe("workspace.doorstop");
     expect(panel.title).toBe("Requirements");

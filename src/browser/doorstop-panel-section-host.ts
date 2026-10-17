@@ -67,6 +67,13 @@ export interface DoorstopPanelSectionsApi {
   stageItem(item: ItemRecord): void;
   unstageItem(item: ItemRecord): void;
   insertPrompt(text: string): void;
+  /** Ask the paired server to start (or attach to) a review conversation
+   *  for `uid`, carrying the public opendoor metadata that makes the new row
+   *  link back into the Requirements panel. OPTIONAL and PRESENT only when
+   *  the workspace has the paired opendoor backend: the palette's Ask-agent
+   *  menu hides the entry when this is undefined (unpaired install / older
+   *  panel host), so the peer/terminal gate itself is unchanged. */
+  startReviewSession?: ((uid: string, prompt: string) => void) | undefined;
   runDoorstop(
     op: DoorstopRunRequest["op"],
     title: string,

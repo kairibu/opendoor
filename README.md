@@ -23,7 +23,10 @@ Requires **pi-web 1.202609.1 or newer** (browser plugin API v4 / server
 plugin API v3). Tested through **pi-web 1.202610.3**, which is **additive**
 for this plugin — no source changes were needed, and once-per-plugin
 v4/v3 deprecation diagnostics are expected (see **Rollout** below for the
-upgrade order and the 1.202610.x sessiond-restart note). The plugin is
+upgrade order and the 1.202610.x sessiond-restart note). The Phase 3 pairing
+on top of that migration (public session metadata + session-list row
+labels, plan §2.1) stays on the same v4/v3 contracts and adds a
+1.202610.x floor for the paired dispatch path (see below). The plugin is
 fully wired and green, in two halves:
 
 - **Browser entry** (`src/browser/pi-web-plugin.ts`, apiVersion 4, name `Opendoor`)
@@ -50,12 +53,18 @@ fully wired and green, in two halves:
   - **actions** `view.doorstop` (mod+7) and `workspace.refresh-doorstop`
     (mod+shift+d);
   - **label** `doorstop-status` — the informational requirement-health counts
-    (async-cache idiom, feature spec §7.4).
+    (async-cache idiom, feature spec §7.4);
+  - **session-row label** `doorstop.review` — a compact indicator on session
+    rows carrying public `opendoor` metadata; clicking it reopens the
+    Requirements tab on the row's machine/workspace (works for unselected and
+    archived rows, no live Pi connection needed). See **Session metadata and
+    session-list row labels** below.
 
 - **Server entry** (`src/server-plugin.ts`, apiVersion 3, default export `PiWebServerPlugin`)
   contributes a workspace provider that claims only projects whose root
   contains a `.doorstop.yml` (cheap `fs.access` probe — everything else stays
-  with the bundled Git provider) and serves a six-operation backend:
+  with the bundled Git provider) and serves a six-operation backend plus the
+  new `doorstop.ask-agent` dispatch operation:
   `doorstop.run` runs one Doorstop CLI invocation — a review request carrying
   the opt-in `commit: true` flag is followed by a pathspec-limited git commit
   of the item file (`doorstop: review <uid>`) — the read-only
@@ -67,7 +76,11 @@ fully wired and green, in two halves:
   server-side (the browser never sends shell strings), and runs through the
   host's `execFile()` helper with `cwd` = the workspace path, timeouts
   clamped to 8.5 s (the review+git pipeline shares one deadline budget under
-  the host's 10 s callback bound), and per-workspace run serialization.
+  the host's 10 s callback bound), and per-workspace run serialization. The
+  server entry also declares
+  `requires: [PI_WEB_HOST_PI_SESSIONS_CAPABILITY,
+  PI_WEB_HOST_PI_SESSION_EVENTS_CAPABILITY]` for the paired dispatch path,
+  which sets a **1.202610.x floor** for that path (see **Rollout**).
 
 Dispatch (per action, in `src/browser/doorstop-panel-element.ts`): when the workspace
 is opendoor-owned with an active backend, the action sends a structured
@@ -284,7 +297,17 @@ bottom:
     expanded status bar body.
 - **Ask the agent** menu: inserts ready-made prompts (explain, fix suspect
   links, draft child requirement, review readiness) into the session prompt
-  editor using the item's paths and state (feature spec §7.3).
+  editor using the item's paths and state (feature spec §7.3). On a paired
+  install the menu adds **Start review session**: it asks the paired server
+  to start (or attach to) a review conversation pre-seeded with public
+  `opendoor` metadata, then opens that chat. The new session's list row
+  carries a **`firstUid +n` label** that reopens the Requirements tab on the
+  row's workspace — including for unselected and archived rows and with no
+  live Pi connection — landing on the item detail pane. Unpaired installs
+  hide the entry (composer-insert remains), and a refused dispatch surfaces
+  the server's message on the palette error line. See **Session metadata and
+  session-list row labels** in the feature spec for the flow, the metadata
+  schema, and the capability floor.
 - Fingerprints and the requirement state are recomputed in the browser from
   the YAML files; everything mutating goes through the visible `doorstop`
   CLI — paired, headlessly via the server entry (output captured in the
@@ -351,3 +374,14 @@ is **not sufficient** (the release touched the session-serving paths
 heavily). The restart interrupts active sessions and terminals; reload the
 PI WEB page afterwards and confirm the manifest shows the opendoor entry
 with a `backendRevision`.
+
+#### Paired dispatch and session-row labels (1.202610.x floor)
+
+The **Start review session** flow and the session-list row labels require a
+**1.202610.x** session daemon: the opendoor server entry now declares the
+host PI-sessions and PI-session-events capabilities in `requires`. On an
+older (pre-1.202610) daemon those requirements are unmet, so the opendoor
+server module does not start — the panel falls back to the unchanged
+terminal path, and no metadata is published, so the labels stay inert. On
+1.202610.x, restart `pi-web-sessiond.service` once to load the server-side
+change; the browser side only needs a page reload.

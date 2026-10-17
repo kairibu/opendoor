@@ -23,12 +23,14 @@ import type {
 } from "@jmfederico/pi-web/server-plugin-api";
 import plugin, { createDoorstopWorkspaceProvider } from "./server-plugin.js";
 import {
+  DOORSTOP_ASK_AGENT_OPERATION,
   DOORSTOP_BASELINE_OPERATION,
   DOORSTOP_GIT_COMMIT_OPERATION,
   DOORSTOP_GIT_STAGE_OPERATION,
   DOORSTOP_GIT_STATUS_OPERATION,
   DOORSTOP_GIT_UNSTAGE_OPERATION,
   DOORSTOP_RUN_OPERATION,
+  parseDoorstopAskAgentResponse,
   parseDoorstopBaselineResponse,
   parseDoorstopGitCommitResponse,
   parseDoorstopGitStageResponse,
@@ -249,6 +251,63 @@ describe("createDoorstopWorkspaceProvider", () => {
     await expect(peerRequest(requestFor("doorstop.purge", null))).rejects.toThrow(
       "opendoor: unsupported workspace backend operation: doorstop.purge",
     );
+  });
+});
+
+describe("doorstop.ask-agent dispatch wiring (interim)", () => {
+  // INTERIM (host provider-cycle rule): this provider-contributing entry
+  // cannot require the late session capabilities, so the dispatch holder
+  // always stays empty and the ask operation rejects cleanly — see the
+  // server-plugin.ts module header. The dispatch mechanics themselves
+  // (capability-driven spawn + metadata seeding) are exercised in
+  // doorstop-dispatch.test.ts; the redesigned pathway moves them off this
+  // entry (Pi package extension, follow-up relay).
+  it("declares no capability requirements and exposes no start()", async () => {
+    expect(plugin.requires).toBeUndefined();
+    const activation = await plugin.activate(contextFor());
+    expect(activation.start).toBeUndefined();
+  });
+
+  it("rejects dispatch on this entry with the capabilities-are-not-active message", async () => {
+    const activation = await plugin.activate(contextFor());
+    const peerRequest = activation.peer?.request;
+    if (peerRequest === undefined) throw new Error("Expected the activation peer request handler");
+    await expect(
+      peerRequest({
+        project: projectFor("/workspace/demo checkout"),
+        workspace: {
+          id: "/workspace/demo checkout",
+          projectId: "project-demo",
+          path: "/workspace/demo checkout",
+          label: "demo",
+          isMain: true,
+        },
+        operation: DOORSTOP_ASK_AGENT_OPERATION,
+        input: { uid: "REQ0001", prompt: "Review REQ0001" },
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toThrow("opendoor: session dispatch capabilities are not active on this server");
+  });
+
+  it("rejects a malformed ask request without touching the capabilities", async () => {
+    const activation = await plugin.activate(contextFor());
+    const peerRequest = activation.peer?.request;
+    if (peerRequest === undefined) throw new Error("Expected the activation peer request handler");
+    await expect(
+      peerRequest({
+        project: projectFor("/workspace/demo checkout"),
+        workspace: {
+          id: "/workspace/demo checkout",
+          projectId: "project-demo",
+          path: "/workspace/demo checkout",
+          label: "demo",
+          isMain: true,
+        },
+        operation: DOORSTOP_ASK_AGENT_OPERATION,
+        input: { uid: "bad uid", prompt: "x" },
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toThrow("Invalid doorstop UID in field: uid");
   });
 });
 
