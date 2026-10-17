@@ -20,7 +20,7 @@ export const statusBarStyles = css`
           border-top: 1px solid var(--pi-border);
           background: var(--pi-bg);
           color: var(--pi-muted);
-          font: 12px system-ui, sans-serif;
+          font: 13px system-ui, sans-serif;
         }
 
         .doorstop-status-bar-row {
@@ -47,7 +47,7 @@ export const statusBarStyles = css`
 
         .doorstop-last-run-commit {
           margin: 0 0 6px;
-          font-size: 12px;
+          font-size: 13px;
           overflow-wrap: anywhere;
         }
 
@@ -55,6 +55,7 @@ export const statusBarStyles = css`
           flex: 0 0 auto; /* the badge label keeps its full width */
           border-radius: 999px;
           padding: 0 7px;
+          /* Strict parity: pi-web keeps compact chips at 11px. */
           font-size: 11px;
           white-space: nowrap;
         }
@@ -87,12 +88,12 @@ export const statusBarStyles = css`
           text-overflow: ellipsis;
           white-space: nowrap;
           color: var(--pi-muted);
-          font-size: 12px;
+          font-size: 13px;
         }
 
         .doorstop-last-run-dismiss {
           flex: 0 0 auto;
-          /* Buttons do not inherit font; match the bar's 12px system-ui. */
+          /* Buttons do not inherit font; match the bar's 13px system-ui. */
           font: inherit;
         }
 
@@ -102,7 +103,7 @@ export const statusBarStyles = css`
           background: var(--pi-surface);
           color: var(--pi-text);
           padding: 6px 8px;
-          font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
           white-space: pre-wrap;
           word-break: break-word;
           overflow-wrap: anywhere;
@@ -114,6 +115,6 @@ export const statusBarStyles = css`
         .doorstop-last-run-notice {
           margin: 4px 0 0;
           color: var(--pi-muted);
-          font-size: 11px;
+          font-size: 12px;
         }
 `;

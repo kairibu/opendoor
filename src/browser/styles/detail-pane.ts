@@ -20,14 +20,14 @@ export const detailPaneStyles = css`
 
         .doorstop-detail-head h3 {
           margin: 0;
-          font-size: 15px;
+          font-size: 16px;
           min-width: 0;
           overflow-wrap: anywhere;
         }
 
         .doorstop-level {
           color: var(--pi-muted);
-          font-size: 12px;
+          font-size: 13px;
         }
 
         .doorstop-flags {
@@ -41,7 +41,7 @@ export const detailPaneStyles = css`
           border-radius: 999px;
           color: var(--pi-muted);
           padding: 0 7px;
-          font-size: 11px;
+          font-size: 12px;
         }
 
         .doorstop-flag.is-inactive {
@@ -64,7 +64,7 @@ export const detailPaneStyles = css`
 
         .doorstop-changes-summary {
           color: var(--pi-muted);
-          font-size: 11px;
+          font-size: 12px;
           text-transform: uppercase;
           letter-spacing: 0.03em;
           cursor: pointer;
@@ -77,12 +77,12 @@ export const detailPaneStyles = css`
 
         .doorstop-changes-notice {
           margin: 6px 0 0;
-          font-size: 12px;
+          font-size: 13px;
         }
 
         .doorstop-changes-source {
           margin: 6px 0 4px;
-          font-size: 11px;
+          font-size: 12px;
         }
 
         .doorstop-diff-lines {
@@ -152,7 +152,7 @@ export const detailPaneStyles = css`
 
         .doorstop-field-name {
           color: var(--pi-muted);
-          font-size: 11px;
+          font-size: 12px;
           text-transform: uppercase;
           letter-spacing: 0.03em;
         }
@@ -160,7 +160,7 @@ export const detailPaneStyles = css`
         .doorstop-field-chip {
           border-radius: 5px;
           border: 1px solid var(--pi-border-muted);
-          font-size: 12px;
+          font-size: 13px;
           padding: 1px 6px;
           overflow-wrap: anywhere;
         }
@@ -183,7 +183,7 @@ export const detailPaneStyles = css`
 
         .doorstop-section-title {
           color: var(--pi-muted);
-          font-size: 11px;
+          font-size: 12px;
           text-transform: uppercase;
           letter-spacing: 0.03em;
           margin: 0;
@@ -244,7 +244,7 @@ export const detailPaneStyles = css`
 
         .doorstop-fingerprint {
           color: var(--pi-muted);
-          font-size: 11px;
+          font-size: 12px;
           /* The link row wraps, which could push the trash can onto a second
              line on narrow panes. Let the fingerprint shrink and ellipsize
              instead (min-width: 0 lifts the flex min-content floor). */
@@ -269,7 +269,7 @@ export const detailPaneStyles = css`
 
         .doorstop-attribute dt {
           color: var(--pi-muted);
-          font-size: 12px;
+          font-size: 13px;
         }
 
         .doorstop-attribute dd {
@@ -310,6 +310,7 @@ export const detailPaneStyles = css`
 
         .doorstop-finding-severity {
           flex: 0 0 auto;
+          /* Strict parity: pi-web keeps compact chips at 11px. */
           font-size: 11px;
           font-weight: 600;
         }

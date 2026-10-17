@@ -48,7 +48,7 @@ export const itemActionPaletteStyles = css`
 
         .doorstop-op-error {
           color: var(--pi-danger);
-          font-size: 12px;
+          font-size: 13px;
         }
 
         .doorstop-menu {

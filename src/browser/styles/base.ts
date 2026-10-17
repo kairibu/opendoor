@@ -12,7 +12,7 @@ export const baseStyles = css`
           overflow: hidden;
           color: var(--pi-text);
           background: var(--pi-bg);
-          font: 13px system-ui, sans-serif;
+          font: 14px system-ui, sans-serif;
         }
 
         button {
@@ -38,7 +38,7 @@ export const baseStyles = css`
           border-radius: 6px;
           background: var(--pi-surface);
           color: var(--pi-text);
-          font-size: 12px;
+          font-size: 13px;
           padding: 4px 6px;
         }
 
@@ -47,7 +47,7 @@ export const baseStyles = css`
           border-radius: 5px;
           background: var(--pi-bg);
           padding: 1px 4px;
-          font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         }
 
         .doorstop-muted {

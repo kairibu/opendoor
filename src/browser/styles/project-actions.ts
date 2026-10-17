@@ -42,7 +42,7 @@ export const projectActionsStyles = css`
         .doorstop-doc-chip {
           border-radius: 999px;
           padding: 2px 9px;
-          font-size: 12px;
+          font-size: 13px;
         }
 
         .doorstop-doc-chip.is-selected {
@@ -53,12 +53,12 @@ export const projectActionsStyles = css`
 
         .doorstop-doc-arrow {
           color: var(--pi-muted);
-          font-size: 11px;
+          font-size: 12px;
         }
 
         .doorstop-doc-count {
           color: var(--pi-muted);
-          font-size: 11px;
+          font-size: 12px;
         }
 
         .doorstop-dot {
@@ -93,7 +93,7 @@ export const projectActionsStyles = css`
           border-radius: 999px;
           color: var(--pi-warning);
           padding: 1px 8px;
-          font-size: 12px;
+          font-size: 13px;
         }
 
         /* --- project-scoped git actions (plan-add-git-actions Phase D step 17) --- */
@@ -116,7 +116,7 @@ export const projectActionsStyles = css`
           background: transparent;
           color: var(--pi-muted);
           padding: 2px 9px;
-          font-size: 12px;
+          font-size: 13px;
         }
 
         .doorstop-git-status-text {
@@ -172,7 +172,7 @@ export const projectActionsStyles = css`
           background: transparent;
           color: var(--pi-muted);
           padding: 3px 10px;
-          font-size: 12px;
+          font-size: 13px;
         }
 
         .doorstop-view-tab + .doorstop-view-tab {

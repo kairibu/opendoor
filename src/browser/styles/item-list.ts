@@ -138,7 +138,7 @@ export const itemListStyles = css`
 
         .doorstop-item-level {
           color: var(--pi-muted);
-          font-size: 11px;
+          font-size: 12px;
         }
 
         .doorstop-item-summary {
@@ -168,7 +168,7 @@ export const itemListStyles = css`
           text-overflow: ellipsis;
           white-space: nowrap;
           color: var(--pi-muted);
-          font-size: 11px;
+          font-size: 12px;
         }
 
         /* The item body ("text" configured in showAdditionalAttribute) on its own
@@ -182,7 +182,8 @@ export const itemListStyles = css`
           padding-inline-start: 5ch;
           min-width: 0;
           color: var(--pi-muted);
-          font-size: 11px;
+          /* Body-like content: reads one tier above the 12px metadata. */
+          font-size: 13px;
           white-space: pre-wrap;
           overflow-wrap: anywhere;
           display: -webkit-box;
@@ -231,6 +232,7 @@ export const itemListStyles = css`
         .doorstop-chip {
           border-radius: 999px;
           padding: 0 7px;
+          /* Strict parity: pi-web keeps compact chips at 11px. */
           font-size: 11px;
           white-space: nowrap;
         }
@@ -280,12 +282,12 @@ export const findingsStyles = css`
         }
 
         .doorstop-findings-counts {
-          font-size: 12px;
+          font-size: 13px;
           font-weight: 600;
         }
 
         .doorstop-findings-note {
-          font-size: 11px;
+          font-size: 12px;
         }
 
         .doorstop-findings-list {
