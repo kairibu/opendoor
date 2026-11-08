@@ -14,6 +14,7 @@ import type {
 } from "./doorstop-panel-controller.js";
 import type { DoorstopWorkspaceResult } from "./doorstop-panel.js";
 import type { DoorstopPanelView } from "./doorstop-panel-view-model.js";
+import type { DoorstopMarkdownRenderer } from "./doorstop-markdown.js";
 
 /**
  * The narrow section API: the exact slice of the panel element the
@@ -30,6 +31,10 @@ export interface DoorstopPanelSectionsApi {
   controller: DoorstopWorkspaceController | undefined;
   /** Terminal + prompt editor. */
   context: WorkspacePanelContextV5 | undefined;
+  /** Host `markdown-rendering@1` renderer for the item body; the machine id it
+   *  needs comes from `context.machine.id`. `undefined` → the detail pane
+   *  falls back to escaped text (see doorstop-markdown.ts D1). */
+  markdownRenderer: DoorstopMarkdownRenderer | undefined;
   result: DoorstopWorkspaceResult | undefined;
   loading: boolean;
   stale: boolean;

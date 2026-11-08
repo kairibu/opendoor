@@ -82,8 +82,63 @@ describe("bundled opendoor browser entry", () => {
   });
 });
 
+// Plan §2.1 (decision D1, reasoned in doorstop-markdown.ts): the plugin
+// DECLARES the host markdown-rendering capability, resolves it in `start()`,
+// and the panel wiring mirrors the resolved renderer onto the body element.
+describe("host markdown rendering (plan §2.1)", () => {
+  it("declares pi-web/markdown-rendering@1 — the plugin's effective host floor", () => {
+    const requirement = plugin.requires?.find(({ id }) => id === "markdown-rendering");
+    if (requirement === undefined) throw new Error("Expected the markdown-rendering requirement");
+    expect(requirement.pluginId).toBe("pi-web");
+    expect(requirement.version).toBe(1);
+    // The requirement is exactly the plugin's whole requirement list: no
+    // other capability is declared, so nothing else can raise the floor.
+    expect(plugin.requires).toHaveLength(1);
+
+    // parse() is the host-boundary guard: a mismatched capability value must
+    // fail loudly at resolve time, never produce a render call on `undefined`.
+    expect(() => requirement.parse({})).toThrow(/markdown rendering/i);
+    expect(() => requirement.parse({ render: "nope" })).toThrow(/markdown rendering/i);
+    const renderer = { render: () => html`<span></span>` };
+    expect(requirement.parse(renderer)).toBe(renderer);
+  });
+
+  it("resolves the renderer in start() and binds it onto the panel body element", async () => {
+    const activation = await activatePlugin("opendoor");
+    const requirement = plugin.requires?.[0];
+    if (requirement === undefined) throw new Error("Expected the markdown-rendering requirement");
+    const renderer = { render: () => html`<span></span>` };
+    const requested: string[] = [];
+
+    expect(typeof activation.start).toBe("function");
+    await activation.start?.({
+      signal: new AbortController().signal,
+      capabilities: {
+        resolve: <Value,>(capability: { id: string; parse: (value: unknown) => Value }) => {
+          requested.push(capability.id);
+          return capability.parse(renderer);
+        },
+      },
+    });
+    expect(requested).toEqual(["markdown-rendering"]);
+
+    // The panel render function closed over the holder BEFORE start(), so this
+    // proves the late binding: the render issued after start() carries the
+    // resolved renderer, which is what the detail pane's item body uses.
+    const panel = activation.contributions.workspacePanels?.[0];
+    if (panel === undefined) throw new Error("Expected opendoor workspace panel");
+    const template = panel.render(panelContext());
+    expect(template.values).toContain(renderer);
+  });
+});
+
 async function activate(runtimePluginId: string) {
-  const activation = await plugin.activate({
+  const activation = await activatePlugin(runtimePluginId);
+  return activation.contributions;
+}
+
+async function activatePlugin(runtimePluginId: string) {
+  return await plugin.activate({
     apiVersion: 5,
     pluginId: "opendoor",
     runtimePluginId,
@@ -92,7 +147,6 @@ async function activate(runtimePluginId: string) {
     signal: new AbortController().signal,
     lifetimeSignal: new AbortController().signal,
   });
-  return activation.contributions;
 }
 
 function panelContext(workspace = doorstopWorkspace, machineId = "local"): WorkspacePanelContextV5 {

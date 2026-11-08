@@ -38,6 +38,7 @@ import { DEFAULT_OPENDOOR_SETTINGS } from "../doorstop-settings.js";
 import { loadDoorstopWorkspace } from "./doorstop-panel.js";
 import type { DoorstopWorkspaceController } from "./doorstop-panel-controller.js";
 import { createOpendoorBrowserContributions } from "./doorstop-contributions.js";
+import { createDoorstopMarkdownHolder, type DoorstopMarkdownHolder } from "./doorstop-markdown.js";
 import { createFakeFiles, dirEntry, fileEntry, text, tree, type FakeWorkspaceFiles } from "../test-support.js";
 import { doorstopWorkspace, fakeCatalog, flushAll, makeDocument, makeWorkspace, navigationHarness, panelContext } from "../test-fixtures.js";
 
@@ -108,8 +109,8 @@ function makeResult(counts: Partial<DoorstopCounts> = {}): DoorstopWorkspaceResu
 
 // --- helpers -----------------------------------------------------------------
 
-function createContributions(runtimePluginId = "opendoor") {
-  return createOpendoorBrowserContributions(runtimePluginId, html, svg);
+function createContributions(runtimePluginId = "opendoor", markdown: DoorstopMarkdownHolder = createDoorstopMarkdownHolder()) {
+  return createOpendoorBrowserContributions(runtimePluginId, html, svg, markdown);
 }
 
 /** The label contribution's two synchronous callbacks, guarded to be
@@ -222,7 +223,13 @@ describe("createOpendoorBrowserContributions (contribution shape)", () => {
 
 describe("panel render wiring", () => {
   it("mirrors every DoorstopPanelBodyElement property from the workspace controller", async () => {
-    const contributions = createContributions();
+    // Plan §2.1: the render also mirrors the host markdown renderer resolved
+    // from the capability holder; give the holder one so the binding is
+    // asserted by identity (a renderer-less holder binds `undefined`, the
+    // detail pane's escaped-text fallback).
+    const markdown = createDoorstopMarkdownHolder();
+    markdown.renderer = { render: () => html`<p class="markdown-stub"></p>` };
+    const contributions = createContributions("opendoor", markdown);
     const panel = contributions.workspacePanels?.[0];
     if (panel === undefined) throw new Error("Expected opendoor panel contribution");
 
@@ -266,6 +273,9 @@ describe("panel render wiring", () => {
     const expectedNames = [
       "controller",
       "context",
+      // Plan §2.1: the host markdown renderer for the item body, mirrored from
+      // the capability holder that `start()` fills in.
+      "markdownRenderer",
       "result",
       "loading",
       "stale",
@@ -290,29 +300,30 @@ describe("panel render wiring", () => {
     // object fields, value equality for the primitives.
     expect(updated.values[0]).toBe(controller);
     expect(updated.values[1]).toBe(context);
-    expect(updated.values[2]).toBe(controller.result);
-    expect(updated.values[3]).toBe(controller.loading);
-    expect(updated.values[4]).toBe(controller.stale);
-    expect(updated.values[5]).toBe(controller.error);
-    expect(updated.values[6]).toBe(controller.selectedUid);
-    expect(updated.values[7]).toBe(controller.selectedDocumentPrefix);
-    expect(updated.values[8]).toBe(controller.stateFilter);
-    expect(updated.values[9]).toBe(controller.search);
-    expect(updated.values[9]).toBe("allocated");
+    expect(updated.values[2]).toBe(markdown.renderer);
+    expect(updated.values[3]).toBe(controller.result);
+    expect(updated.values[4]).toBe(controller.loading);
+    expect(updated.values[5]).toBe(controller.stale);
+    expect(updated.values[6]).toBe(controller.error);
+    expect(updated.values[7]).toBe(controller.selectedUid);
+    expect(updated.values[8]).toBe(controller.selectedDocumentPrefix);
+    expect(updated.values[9]).toBe(controller.stateFilter);
+    expect(updated.values[10]).toBe(controller.search);
+    expect(updated.values[10]).toBe("allocated");
     // The Phase D additions mirror by identity too.
-    expect(updated.values[10]).toBe(controller.lastRun);
-    expect(updated.values[11]).toBe(controller.runInProgress);
-    expect(updated.values[11]).toBe("Doorstop: validate");
+    expect(updated.values[11]).toBe(controller.lastRun);
+    expect(updated.values[12]).toBe(controller.runInProgress);
+    expect(updated.values[12]).toBe("Doorstop: validate");
     // The baseline cache state mirrors as counters/flag (plain values).
-    expect(updated.values[12]).toBe(controller.baselineVersion);
-    expect(updated.values[12]).toBe(0);
-    expect(updated.values[13]).toBe(controller.baselineInFlight);
-    expect(updated.values[13]).toBeUndefined();
-    // The Phase D step 16 git-status strip state mirrors by identity / flag.
-    expect(updated.values[14]).toBe(controller.gitStatusView);
+    expect(updated.values[13]).toBe(controller.baselineVersion);
+    expect(updated.values[13]).toBe(0);
+    expect(updated.values[14]).toBe(controller.baselineInFlight);
     expect(updated.values[14]).toBeUndefined();
-    expect(updated.values[15]).toBe(controller.gitStatusInFlight);
-    expect(updated.values[15]).toBe(false);
+    // The Phase D step 16 git-status strip state mirrors by identity / flag.
+    expect(updated.values[15]).toBe(controller.gitStatusView);
+    expect(updated.values[15]).toBeUndefined();
+    expect(updated.values[16]).toBe(controller.gitStatusInFlight);
+    expect(updated.values[16]).toBe(false);
   });
 
   // V5 plugwire guard: the panel never consults the host's read-only catalog

@@ -27,6 +27,7 @@ import {
   defineDoorstopPanelElements,
   type DoorstopPanelBodyElement,
 } from "./doorstop-panel-elements.js";
+import type { DoorstopMarkdownRenderer } from "./doorstop-markdown.js";
 import {
   flushMicro,
   makeDocument,
@@ -235,17 +236,22 @@ export async function mountBody(
     peer?: Mock;
     peerChannelOnly?: boolean;
     provider?: Workspace["provider"];
+    /** Host `markdown-rendering@1` renderer to mirror onto the body element
+     *  (the contributions wiring's `.markdownRenderer=` binding). Omitted →
+     *  the detail pane's escaped-text fallback, which is what every other
+     *  mount exercises. */
+    markdownRenderer?: DoorstopMarkdownRenderer;
   } = {},
 ): Promise<{ body: DoorstopPanelBodyElement; controller: DoorstopWorkspaceController; context: ReturnType<typeof panelContext>["context"] }> {
   defineDoorstopPanelElements();
   const created = panelContext(hook);
   const controller = new DoorstopWorkspaceController({ isConnected: false }, created.context, job);
   const body = document.createElement(bodyElementTag) as DoorstopPanelBodyElement;
-  bindBody(body, controller, created.context);
+  bindBody(body, controller, created.context, hook.markdownRenderer);
   document.body.append(body);
   await body.updateComplete;
   await settle();
-  bindBody(body, controller, created.context);
+  bindBody(body, controller, created.context, hook.markdownRenderer);
   await flushMicro(body);
   return { body, controller, context: created.context };
 }
@@ -317,9 +323,11 @@ export function bindBody(
   body: DoorstopPanelBodyElement,
   controller: DoorstopWorkspaceController,
   context: WorkspacePanelContextV5,
+  markdownRenderer?: DoorstopMarkdownRenderer,
 ): void {
   body.controller = controller;
   body.context = context;
+  body.markdownRenderer = markdownRenderer;
   body.result = controller.result;
   body.loading = controller.loading;
   body.stale = controller.stale;

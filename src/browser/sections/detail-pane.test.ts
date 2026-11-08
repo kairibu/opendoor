@@ -5,10 +5,13 @@
 // blocks moved verbatim from doorstop-panel-element.test.ts; shared scaffolding
 // lives in ../doorstop-panel-element-test-support.ts.
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
+import { html } from "lit";
+import type { MarkdownRenderRequest } from "@jmfederico/pi-web/plugin-api";
 import { type DoorstopIndex } from "../../doorstop-contract.js";
 import { computeItemStamp } from "../../doorstop-state.js";
 import { shortFingerprint, type DoorstopPanelBodyElement } from "../doorstop-panel-elements.js";
+import type { DoorstopMarkdownRenderer } from "../doorstop-markdown.js";
 import { text } from "../../test-support.js";
 import {
   flushMicro,
@@ -32,6 +35,109 @@ import {
 
 // Shared DOM/confirm reset between tests.
 afterEach(resetElementTestEnvironment);
+
+/** A stand-in for the host `markdown-rendering@1` capability: it records the
+ *  request and returns a recognizable template result, so the tests can assert
+ *  (a) the exact request the detail pane built and (b) that the host template
+ *  is embedded structurally instead of being flattened to a string. */
+function fakeMarkdownRenderer(): { renderer: DoorstopMarkdownRenderer; render: Mock } {
+  const render = vi.fn((request: MarkdownRenderRequest) => html`<div class="markdown-stub">${request.text}</div>`);
+  return { renderer: { render }, render };
+}
+
+describe("DoorstopPanelBodyElement (detail pane: item text is host-rendered Markdown, plan §2.1)", () => {
+  it("renders the item body through the host renderer with the workspace machine id and the raw item text", async () => {
+    const { renderer, render } = fakeMarkdownRenderer();
+    const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()), {
+      markdownRenderer: renderer,
+    });
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+    root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0001"]')?.click();
+    bindBody(body, controller, context, renderer);
+    await flushMicro(body);
+
+    const bodyCell = root.querySelector(".doorstop-detail .doorstop-text.doorstop-text-markdown");
+    if (bodyCell === null) throw new Error("markdown item body");
+    // The host template result renders inside THIS shadow tree.
+    expect(bodyCell.querySelector(".markdown-stub")?.textContent).toBe("The system shall do X.");
+    // One render for the item body — the pane never feeds flags, chips, link
+    // rows, references, findings or the header through the renderer.
+    expect(render).toHaveBeenCalledTimes(1);
+    expect(render).toHaveBeenCalledWith({
+      machineId: "local",
+      text: "The system shall do X.",
+      allowManualPreview: true,
+    });
+    // `truncated` is never sent: a truncated read never reaches the index.
+    expect(render.mock.calls[0]?.[0]).not.toHaveProperty("truncated");
+    // No escaped-text fallback node next to it.
+    expect(root.querySelector(".doorstop-detail p.doorstop-text")).toBeNull();
+  });
+
+  it("keeps the escaped-text rendering when no host renderer is wired (fallback)", async () => {
+    const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()));
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+    root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0001"]')?.click();
+    bindBody(body, controller, context);
+    await flushMicro(body);
+
+    const plain = root.querySelector(".doorstop-detail p.doorstop-text");
+    expect(plain?.textContent).toBe("The system shall do X.");
+    expect(plain?.classList.contains("doorstop-text-markdown")).toBe(false);
+    expect(root.querySelector(".doorstop-text-markdown")).toBeNull();
+  });
+
+  it("renders the empty marker without calling the renderer", async () => {
+    const { renderer, render } = fakeMarkdownRenderer();
+    const { body, controller, context } = await mountBody(
+      () => Promise.resolve(makeResult([makeItem({ uid: "REQ0001", documentPrefix: "REQ", text: "" })], [makeDocument()])),
+      { markdownRenderer: renderer },
+    );
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+    root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0001"]')?.click();
+    bindBody(body, controller, context, renderer);
+    await flushMicro(body);
+
+    const empty = root.querySelector(".doorstop-detail .doorstop-text.doorstop-text-empty");
+    expect(empty?.textContent).toBe("empty");
+    expect(root.querySelector(".doorstop-text-markdown")).toBeNull();
+    expect(render).not.toHaveBeenCalled();
+  });
+
+  it("does not duplicate a markdown item's header inside the rendered body", async () => {
+    // `parseDoorstopItem` moves a leading `# Heading` into `item.header`, so the
+    // detail pane receives a body without it (doorstop-model.ts deriveMarkdownBody).
+    const { renderer, render } = fakeMarkdownRenderer();
+    const item = makeItem({
+      uid: "REQ0001",
+      documentPrefix: "REQ",
+      header: "Identifiers",
+      text: "Doorstop **shall** provide unique identifiers.",
+    });
+    const { body, controller, context } = await mountBody(() => Promise.resolve(makeResult([item], [makeDocument()])), {
+      markdownRenderer: renderer,
+    });
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+    root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0001"]')?.click();
+    bindBody(body, controller, context, renderer);
+    await flushMicro(body);
+
+    expect(render).toHaveBeenCalledWith({
+      machineId: "local",
+      text: "Doorstop **shall** provide unique identifiers.",
+      allowManualPreview: true,
+    });
+    // The header renders as the pane's own plain <h3> — once, never as part of
+    // the markdown source.
+    const head = root.querySelector(".doorstop-detail-head h3");
+    expect(head?.textContent).toBe("Identifiers");
+    expect(root.querySelector(".doorstop-detail h3 .markdown-stub")).toBeNull();
+  });
+});
 
 describe("DoorstopPanelBodyElement (detail pane: links, references, attributes, findings)", () => {
   it("shows suspect links with recorded vs current fingerprint shorts and navigates on click", async () => {

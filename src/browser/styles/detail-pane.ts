@@ -204,6 +204,76 @@ export const detailPaneStyles = css`
           font-style: italic;
         }
 
+        /* Plan §2.1: the item body is host-rendered Markdown. The host renderer
+         * mounts its nodes in THIS shadow root (the host's
+         * pi-web-content-rendering-boundary element deliberately has no shadow
+         * root of its own — createRenderRoot returns the element), so the prose
+         * rules below reach them. The plain-text pre-wrap on .doorstop-text is
+         * not appropriate inside Markdown blocks; the boundary's own source
+         * fallback sets its own pre-wrap inline. */
+        .doorstop-text-markdown {
+          white-space: normal;
+        }
+
+        .doorstop-text-markdown > :first-child {
+          margin-top: 0;
+        }
+
+        .doorstop-text-markdown > :last-child {
+          margin-bottom: 0;
+        }
+
+        .doorstop-text-markdown :is(p, ul, ol, blockquote, table) {
+          margin: 0 0 8px;
+        }
+
+        .doorstop-text-markdown :is(ul, ol) {
+          padding-left: 20px;
+        }
+
+        .doorstop-text-markdown :is(h1, h2, h3, h4, h5, h6) {
+          margin: 12px 0 6px;
+          font-size: 14px;
+          font-weight: 600;
+        }
+
+        .doorstop-text-markdown code {
+          border: 1px solid var(--pi-border-muted);
+          border-radius: 4px;
+          background: var(--pi-bg);
+          padding: 0 3px;
+          font-size: 12px;
+        }
+
+        .doorstop-text-markdown pre {
+          border: 1px solid var(--pi-border-muted);
+          border-radius: 6px;
+          padding: 8px;
+          overflow-x: auto;
+        }
+
+        .doorstop-text-markdown pre code {
+          border: 0;
+          background: transparent;
+          padding: 0;
+        }
+
+        .doorstop-text-markdown blockquote {
+          border-left: 3px solid var(--pi-border-muted);
+          padding-left: 8px;
+          color: var(--pi-muted);
+        }
+
+        .doorstop-text-markdown table {
+          border-collapse: collapse;
+        }
+
+        .doorstop-text-markdown :is(th, td) {
+          border: 1px solid var(--pi-border-muted);
+          padding: 2px 6px;
+          text-align: left;
+        }
+
         .doorstop-links {
           display: grid;
           gap: 4px;

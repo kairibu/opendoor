@@ -20,17 +20,43 @@
 // gate (`context.workspace.provider?.pluginId`) — behavior, rendering and
 // fallback paths are unchanged; the migration only upgrades the entry
 // contract so v5 contexts arrive when the host dispatches them.
+//
+// DECISION D1 (plan-piweb-1-202611-1 §2.1): the plugin DECLARES the host's
+// `markdown-rendering@1` capability so the detail pane can render item text as
+// Markdown. There is no optional-resolve in the public contract (resolve is
+// total and undeclared capabilities are rejected before `start`), so the
+// declaration hard-raises this plugin's effective host floor to
+// **1.202611.1** — the release that introduces the capability. The reasoning,
+// the rejected alternative, and the README/peerDependencies consequence are
+// documented once in doorstop-markdown.ts; `start()` below is the only place
+// the value can be obtained.
 // ---------------------------------------------------------------------------
 
 import type { PiWebPluginV5 } from "@jmfederico/pi-web/plugin-api";
 import { createOpendoorBrowserContributions } from "./doorstop-contributions.js";
+import {
+  createDoorstopMarkdownHolder,
+  DOORSTOP_MARKDOWN_CAPABILITY,
+} from "./doorstop-markdown.js";
 
+/** One holder per activation: `start()` (the only hook that can resolve
+ *  capabilities) fills it after `activate()` has already built the panel
+ *  contributions, and every panel render reads it through the factory. Kept
+ *  per-activation rather than module-level so a re-activation can never leak a
+ *  renderer into the previous activation's panel. */
 const plugin: PiWebPluginV5 = {
   apiVersion: 5,
   name: "Opendoor",
-  activate: ({ runtimePluginId, html, svg }) => ({
-    contributions: createOpendoorBrowserContributions(runtimePluginId, html, svg),
-  }),
+  requires: [DOORSTOP_MARKDOWN_CAPABILITY],
+  activate: ({ runtimePluginId, html, svg }) => {
+    const markdown = createDoorstopMarkdownHolder();
+    return {
+      contributions: createOpendoorBrowserContributions(runtimePluginId, html, svg, markdown),
+      start: ({ capabilities }) => {
+        markdown.renderer = capabilities.resolve(DOORSTOP_MARKDOWN_CAPABILITY);
+      },
+    };
+  },
 };
 
 export default plugin;

@@ -29,6 +29,7 @@ import { renderProjectActions } from "./sections/project-actions.js";
 import { renderViewer, renderStateChip as renderStateChipTemplate } from "./sections/item-list.js";
 import { renderItemActionPalette } from "./sections/item-action-palette.js";
 import { renderStatusBar } from "./sections/status-bar.js";
+import type { DoorstopMarkdownRenderer } from "./doorstop-markdown.js";
 
 export const bodyElementTag = "pi-web-opendoor-panel-body";
 
@@ -40,6 +41,12 @@ export const bodyElementTag = "pi-web-opendoor-panel-body";
 export interface DoorstopPanelBodyElement extends LitElement {
   controller: DoorstopWorkspaceController | undefined;
   context: WorkspacePanelContextV5 | undefined;
+  /** Host `markdown-rendering@1` renderer for the item body (plan
+   *  plan-piweb-1-202611-1 §2.1). Set from `start()` through the
+   *  contributions holder; `undefined` only before that or on a directly
+   *  constructed element, where the detail pane keeps the escaped-text
+   *  fallback. */
+  markdownRenderer: DoorstopMarkdownRenderer | undefined;
   result: DoorstopWorkspaceResult | undefined;
   loading: boolean;
   stale: boolean;
@@ -82,6 +89,9 @@ function defineDoorstopPanelBodyElement(): void {
 
       @property({ attribute: false })
       context: WorkspacePanelContextV5 | undefined;
+
+      @property({ attribute: false })
+      markdownRenderer: DoorstopMarkdownRenderer | undefined;
 
       @property({ attribute: false })
       result: DoorstopWorkspaceResult | undefined;

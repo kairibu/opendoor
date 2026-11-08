@@ -49,6 +49,7 @@ import { DoorstopWorkspaceRegistry, loadDoorstopWorkspace } from "./doorstop-pan
 import { readPanelNavigationQuery } from "./doorstop-panel-navigation.js";
 import { createDoorstopSessionLabel } from "./doorstop-session-labels.js";
 import { defineDoorstopPanelElements } from "./doorstop-panel-elements.js";
+import type { DoorstopMarkdownHolder } from "./doorstop-markdown.js";
 
 const DOORSTOP_PANEL_LOCAL_ID = "workspace.doorstop";
 
@@ -68,6 +69,11 @@ const DOORSTOP_LABEL_STATE_LIMIT = 8;
  * revert restores the pre-refactor host-tag renderer. A plugin-lit
  * TemplateResult renders fine under the host's lit-html — template results
  * are structural objects, not tied to a lit copy.
+ *
+ * `markdown` is the late-bound holder for the host's `markdown-rendering@1`
+ * renderer (plan-piweb-1-202611-1 §2.1, decision D1 in doorstop-markdown.ts):
+ * `start()` fills it after this factory has already run, and the panel render
+ * below mirrors its current value onto the body element.
  */
 // Every callback below takes a v5 context variant (pi-web 1.202610.8):
 // the same context shape it always read plus `catalog`/`backend` — neither
@@ -77,6 +83,7 @@ export function createOpendoorBrowserContributions(
   runtimePluginId: string,
   _html: HtmlTemplateTag,
   _svg: SvgTemplateTag,
+  markdown: DoorstopMarkdownHolder,
 ): PluginContributionsV5 {
   const panelId = `${runtimePluginId}:${DOORSTOP_PANEL_LOCAL_ID}`;
   const registry = new DoorstopWorkspaceRegistry();
@@ -84,7 +91,7 @@ export function createOpendoorBrowserContributions(
   defineDoorstopPanelElements();
   return {
     actions: createDoorstopActions(panelId),
-    workspacePanels: [createDoorstopPanel(registry)],
+    workspacePanels: [createDoorstopPanel(registry, markdown)],
     workspaceLabels: [createDoorstopLabel(labelCache)],
     sessionLabels: [createDoorstopSessionLabel(runtimePluginId)],
   };
@@ -122,7 +129,7 @@ function createDoorstopActions(panelId: string): PluginActionV5[] {
   ];
 }
 
-function createDoorstopPanel(registry: DoorstopWorkspaceRegistry): WorkspacePanelContributionV5 {
+function createDoorstopPanel(registry: DoorstopWorkspaceRegistry, markdown: DoorstopMarkdownHolder): WorkspacePanelContributionV5 {
   return {
     id: DOORSTOP_PANEL_LOCAL_ID,
     title: "Requirements",
@@ -172,7 +179,7 @@ function createDoorstopPanel(registry: DoorstopWorkspaceRegistry): WorkspacePane
     // (never loads, never renders); unknown paths and pre-first-load panels
     // return undefined (the host asks the next panel / serves Files).
     fileOpenQuery: (context, path) => registry.fileOpenQuery(context, path),
-    render: (context) => renderDoorstopPanel(registry, context),
+    render: (context) => renderDoorstopPanel(registry, context, markdown),
   };
 }
 
@@ -187,7 +194,11 @@ function createDoorstopPanel(registry: DoorstopWorkspaceRegistry): WorkspacePane
  * this function). Every property of the `DoorstopPanelBodyElement` surface is
  * wired here.
  */
-function renderDoorstopPanel(registry: DoorstopWorkspaceRegistry, context: WorkspacePanelContextV5) {
+function renderDoorstopPanel(
+  registry: DoorstopWorkspaceRegistry,
+  context: WorkspacePanelContextV5,
+  markdown: DoorstopMarkdownHolder,
+) {
   const controller = registry.for(context);
   // Plan Phase C step C2 — deep links: apply the contribution-scoped URL query
   // (uid/doc/filter/search, plus the C3 chat-link `file` key) to the controller
@@ -213,6 +224,7 @@ function renderDoorstopPanel(registry: DoorstopWorkspaceRegistry, context: Works
     <pi-web-opendoor-panel-body
       .controller=${controller}
       .context=${context}
+      .markdownRenderer=${markdown.renderer}
       .result=${controller.result}
       .loading=${controller.loading}
       .stale=${controller.stale}

@@ -155,7 +155,11 @@ export function renderItemRow(
   const shownAttributes = shownAttributeRows(item, attributeKeys);
   // The item body renders as its own indented second row when `text` is one
   // of the configured names; raw (unquoted) prose, unlike the key: value
-  // attribute pairs above.
+  // attribute pairs above. DELIBERATELY plain text, not Markdown (plan
+  // plan-piweb-1-202611-1 §2.1): the row is a one-line list excerpt inside a
+  // <button>, where block Markdown would break the row's structure and the
+  // accessible name; the rendered document lives in the detail pane
+  // (detail-pane.ts renderItemText).
   const textBody = attributeKeys.includes("text") ? itemTextRow(item) : undefined;
   // The per-row add/remove is pointer-only by design: the row IS a
   // <button>, so a nested <button> would be hoisted out by the HTML

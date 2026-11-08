@@ -19,8 +19,12 @@ import { type DoorstopBaselineView } from "../doorstop-panel-controller.js";
 import type { DoorstopWorkspaceResult } from "../doorstop-panel.js";
 import { diffValueText, documentConfigFor, jsonishText, referenceListText, shortFingerprint } from "../doorstop-panel-view-model.js";
 
-// v1 deliberately renders the item text as escaped text — no markdown,
-// injection-safe by construction.
+// Item text is Markdown: since pi-web 1.202611.1 the body renders through the
+// host's `markdown-rendering@1` capability (plan plan-piweb-1-202611-1 §2.1;
+// decision D1 and the host-floor consequence live in doorstop-markdown.ts).
+// Everything ELSE in this pane stays plain: flags, chips, link rows,
+// references, findings, the diff and the item header are plugin-rendered
+// escaped text, deliberately NOT run through the markdown renderer.
 export function renderDetail(host: DoorstopPanelSectionsApi, result: DoorstopWorkspaceResult): TemplateResult {
   const selectedUid = host.selectedUid;
   if (selectedUid === undefined) {
@@ -47,7 +51,7 @@ export function renderDetail(host: DoorstopPanelSectionsApi, result: DoorstopWor
         ${item.stateKeys.map((key) => host.renderStateChip(key))}
       </div>
       <h4 class="doorstop-section-title">Text</h4>
-      <p class=${item.text === "" ? "doorstop-text doorstop-text-empty" : "doorstop-text"}>${item.text === "" ? "empty" : item.text}</p>
+      ${renderItemText(host, item)}
       ${renderChangesSinceReview(host, item)}
       <h4 class="doorstop-section-title">Parent links</h4>
       ${renderLinksOut(host, item, result.index)}
@@ -77,6 +81,50 @@ export function renderDetail(host: DoorstopPanelSectionsApi, result: DoorstopWor
           </div>`}
     </section>
   `;
+}
+
+/**
+ * The item body — rendered Markdown since plan `plan-piweb-1-202611-1` §2.1.
+ *
+ * The host capability returns a Lit `TemplateResult` synchronously (the host
+ * defers parsing until the node is visible); embedding it here is safe for the
+ * same reason the panel already embeds host-provided `html` tags: a template
+ * result is a structural object, not a binding to a particular lit runtime.
+ * The host applies its DOCUMENT policy — raw source HTML is escaped, images are
+ * omitted, links are limited to `http:`/`https:`/`mailto:` — so `item.text`
+ * stays untrusted input end to end.
+ *
+ * `text` is the body WITHOUT the `header`: `parseDoorstopItem`'s
+ * `deriveMarkdownBody` consumes the first level-1 heading of a markdown item
+ * into `item.header`, which the detail head renders as plain text, so the
+ * heading is never duplicated in the body.
+ *
+ * `truncated` is deliberately NOT passed: a truncated item read never reaches
+ * the index (`applyItemRead` in doorstop-panel.ts skips it with a warning
+ * diagnostic), so every `item.text` is complete within the plugin's read
+ * bounds. `allowManualPreview` mirrors the bundled Files document preview — a
+ * fence with a manual content renderer offers its Render button instead of
+ * silently staying source.
+ *
+ * The fallback branch is the pre-§2.1 escaped-text rendering, kept so item
+ * text never disappears: it covers a body element constructed without the host
+ * renderer (tests) and the theoretical pre-`start()` render described in
+ * doorstop-markdown.ts (decision D1).
+ */
+export function renderItemText(host: DoorstopPanelSectionsApi, item: ItemRecord): TemplateResult {
+  if (item.text === "") {
+    return html`<p class="doorstop-text doorstop-text-empty">empty</p>`;
+  }
+  const renderer = host.markdownRenderer;
+  const machineId = host.context?.machine.id;
+  if (renderer === undefined || machineId === undefined) {
+    return html`<p class="doorstop-text">${item.text}</p>`;
+  }
+  return html`<div class="doorstop-text doorstop-text-markdown">${renderer.render({
+    machineId,
+    text: item.text,
+    allowManualPreview: true,
+  })}</div>`;
 }
 
 export function renderFlags(host: DoorstopPanelSectionsApi, item: ItemRecord): TemplateResult {

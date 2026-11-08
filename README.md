@@ -19,10 +19,17 @@ Full feature spec: [`docs/feature-doorstop-plugin.md`](docs/feature-doorstop-plu
 
 ## Status
 
-Requires **pi-web 1.202610.5 or newer** (browser plugin API v5 / server
+Requires **pi-web 1.202611.1 or newer** (browser plugin API v5 / server
 plugin API v5 — the pi-web host accepts v4/v3 legacy entries with
 deprecation diagnostics, but opendoor itself migrated; see **Rollout**
 below for the upgrade order and the sessiond-restart notes).
+The browser plugin declares the host's `markdown-rendering@1` capability,
+introduced in **1.202611.1**, to render item text as Markdown (plan
+`plans/plan-piweb-1-202611-1.md` §2.1; the reasoning is decision D1 in
+`src/browser/doorstop-markdown.ts`). pi-web's capability resolver has no
+optional-resolve, so the requirement is hard and the floor is honest: on
+1.202610.5–1.202611.0 the plugin does not start. The server entry declares
+no capability and still loads across the whole supported range.
 Tested through **pi-web 1.202611.1**, which is **additive** for this plugin:
 the 1.202610.9 → 1.202611.1 releases only add new plugin surfaces
 (`transcriptRenderers`, `markdownExtensions`/`markdown-rendering`, session
@@ -48,7 +55,8 @@ fully wired and green:
     controller registry (`src/browser/doorstop-panel.ts`): five vertical sections —
     `project-actions` (title, Items/Findings toggle, Refresh / Run validation
     / Publish HTML), `item-list` (filters row + item rows with state chips),
-    `item-details` (links in/out, references, extended attributes,
+    `item-details` (host-rendered **Markdown item text**, links in/out,
+    references, extended attributes,
     collapsible **Changes since review** diff), `item-action-palette`
     (Review / Clear suspect links / Edit / Link / Unlink / Ask-agent menu,
     sized to the host prompt footer), and `status-bar` (status badge,
@@ -433,15 +441,42 @@ capabilities and loads across the whole supported range. `opendoor-plugin`
 
 ### pi-web 1.202611.1 (and 1.202611.0 / 1.202610.9)
 
-**Additive for opendoor — no plugin-code changes or migration.** The plugin
-API stays on version 5 (server plugin API unchanged since 1.202610.8); the
-releases only add new surfaces opendoor does not consume yet
-(`transcriptRenderers`, `markdownExtensions` + the `markdown-rendering`
-host capability, browser/server session-lifecycle commands, `PluginSession-`
-`Snapshot` timestamps/pin state, `fileIconThemes`). The opendoor
-`peerDependencies` floor moves from 1.202609.1 to **1.202610.5** because that
-is the first release that accepts browser API v5 modules — a floor fix for
-the v5 entries, not a 1.202611 change.
+**Additive for opendoor except for one new host capability it now requires
+(item text is Markdown — see the next sub-section).** The plugin API stays on
+version 5 (server plugin API unchanged since 1.202610.8); the remaining
+surfaces of these releases are ones opendoor still does not consume
+(`transcriptRenderers`, `markdownExtensions` (only
+`markdown-rendering` is used), browser/server session-lifecycle commands,
+`PluginSessionSnapshot` timestamps/pin state, `fileIconThemes`). The opendoor
+`peerDependencies` floor is now **1.202611.1** — the release that introduces
+`markdown-rendering@1`, which the browser plugin declares (the previous notes
+here said 1.202610.5, the first release accepting browser API v5 modules;
+that is now historical).
+
+#### Item text is host-rendered Markdown (plan §2.1, decision D1)
+
+Doorstop item bodies (`item.text`) are Markdown, and the detail pane renders
+them through pi-web's own `pi-web/markdown-rendering@1` capability instead of
+an in-plugin parser: the host returns a Lit `TemplateResult` synchronously,
+defers parsing until the node is visible, and applies its **document policy**
+(raw source HTML escaped, images omitted, links limited to `http:`/`https:`/
+`mailto:`). Nothing else in the pane goes through the renderer — flags,
+chips, link rows, references, extended attributes, findings, the diff and the
+item header (`item.header`, the leading `# Heading` the model already lifted
+out of `text`) all stay plugin-rendered plain text. The item list's second
+row (`item-list.ts` `itemTextRow`) also stays plain text: it is a filter
+affordance, not a document view.
+
+Because the public `PluginCapabilityResolver` only offers a total
+`resolve()` (no optional/try resolve, and undeclared capabilities are
+rejected before `start`), the requirement is declared in `requires`, which
+hard-raises the browser plugin's host floor to **1.202611.1**. The mount also
+needs no stylesheet registration for this: the host's rendering boundary
+deliberately renders into the consumer's shadow root, so the panel's own
+`.doorstop-text-markdown` prose rules style the rendered document. Host
+**shared UI** classes and extension presentation HTML do not reach an
+unregistered root — a future follow-up may add `stylesheet-integration` if
+the panel ever wants host typography verbatim.
 
 Host upgrade order across this range:
 
