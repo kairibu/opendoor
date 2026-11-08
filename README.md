@@ -19,22 +19,22 @@ Full feature spec: [`docs/feature-doorstop-plugin.md`](docs/feature-doorstop-plu
 
 ## Status
 
-Requires **pi-web 1.202609.1 or newer** (browser plugin API v4 / server
-plugin API v3). Tested through **pi-web 1.202610.8**, which remains
-**additive** for this plugin — its browser v4/server v3 entries still load,
-with once-per-plugin deprecation diagnostics expected (see **Rollout** below
-for the upgrade order and the 1.202610.x sessiond-restart note). The Phase 3 pairing
-on top of that migration (public session metadata + session-list row
-labels, plan §2.1) stays on the same v4/v3 contracts. The package is one npm
+Requires **pi-web 1.202610.5 or newer** (browser plugin API v5 / server
+plugin API v5 — the pi-web host accepts v4/v3 legacy entries with
+deprecation diagnostics, but opendoor itself migrated; see **Rollout**
+below for the upgrade order and the sessiond-restart notes).
+Tested through **pi-web 1.202611.1**, which is **additive** for this plugin:
+the 1.202610.9 → 1.202611.1 releases only add new plugin surfaces
+(`transcriptRenderers`, `markdownExtensions`/`markdown-rendering`, session
+lifecycle, `sessions?` on the discovery context) and touch none of the
+contracts opendoor consumes. The package is one npm
 package (`opendoor-plugin`) that ships a PI WEB plugin AND a Pi extension:
 the plugin's browser/server halves below, plus the review-dispatch extension
 that starts labeled review conversations (`/opendoor-review`, see **Review
-dispatch (Pi extension)** below). The plugin loads on older hosts unchanged;
-only the extension's dispatch bridge, the public metadata, and the row
-labels need a 1.202610.x session daemon (see **Rollout**). The plugin is
+dispatch (Pi extension)** below). The plugin is
 fully wired and green:
 
-- **Browser entry** (`src/browser/pi-web-plugin.ts`, apiVersion 4, name `Opendoor`)
+- **Browser entry** (`src/browser/pi-web-plugin.ts`, apiVersion 5, name `Opendoor`)
   delegates to `createOpendoorBrowserContributions` in
   `src/browser/doorstop-contributions.ts`, which contributes:
 
@@ -65,7 +65,7 @@ fully wired and green:
     archived rows, no live Pi connection needed). See **Session metadata and
     session-list row labels** below.
 
-- **Server entry** (`src/server-plugin.ts`, apiVersion 3, default export `PiWebServerPlugin`)
+- **Server entry** (`src/server-plugin.ts`, apiVersion 5, default export `PiWebServerPlugin`)
   contributes a workspace provider that claims only projects whose root
   contains a `.doorstop.yml` (cheap `fs.access` probe — everything else stays
   with the bundled Git provider) and serves a six-operation backend:
@@ -430,3 +430,37 @@ capabilities and loads across the whole supported range. `opendoor-plugin`
 `pi-web-sessiond.service` once to load the server-side change, then run
 `/reload` in each idle conversation to load the extension's
 `/opendoor-review` command; the browser side only needs a page reload.
+
+### pi-web 1.202611.1 (and 1.202611.0 / 1.202610.9)
+
+**Additive for opendoor — no plugin-code changes or migration.** The plugin
+API stays on version 5 (server plugin API unchanged since 1.202610.8); the
+releases only add new surfaces opendoor does not consume yet
+(`transcriptRenderers`, `markdownExtensions` + the `markdown-rendering`
+host capability, browser/server session-lifecycle commands, `PluginSession-`
+`Snapshot` timestamps/pin state, `fileIconThemes`). The opendoor
+`peerDependencies` floor moves from 1.202609.1 to **1.202610.5** because that
+is the first release that accepts browser API v5 modules — a floor fix for
+the v5 entries, not a 1.202611 change.
+
+Host upgrade order across this range:
+
+1. Refresh the pi-web checkout; then **restart the web/API process before
+   `pi-web-sessiond.service`** if the previous host used session pins pre-
+   1.202610.9 (pins moved to daemon-owned storage; an older web/API process
+   must not keep writing pins after the migration). Session-daemon restarts
+   interrupt active sessions and terminals; reload the PI WEB page after.
+2. 1.202611.1 introduces the `hostAccess` policy (`5a8181c`): a
+   **persistent notice asks administrators to choose** the access policy;
+   until then behavior is unchanged. **Reverse proxies must preserve the
+   public `Host` (including nonstandard ports) and the browser `Origin`
+   unchanged**, and a web/API (+ dev UI server, if running) restart is
+   needed after changing the policy — the session daemon stays untouched
+   for policy changes.
+3. After all restarts, confirm the manifest still shows the opendoor entry
+   with a `backendRevision`, then `/reload` idle conversations as before if
+   the extension command list went stale anywhere.
+
+Discoverability note (`e42938f`): community plugin listings now require the
+`pi-web.dev-plugin` npm keyword; opendoor's `package.json` carries it —
+keep it on the keywords list.
