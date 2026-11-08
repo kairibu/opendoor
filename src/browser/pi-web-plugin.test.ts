@@ -13,13 +13,13 @@
 
 import { html, svg } from "lit";
 import { describe, expect, it, vi } from "vitest";
-import type { PluginRuntimeContext, WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
+import type { PluginRuntimeContextV5, WorkspacePanelContextV5 } from "@jmfederico/pi-web/plugin-api";
 import plugin from "./pi-web-plugin.js";
-import { doorstopWorkspace, runtimeContext } from "../test-fixtures.js";
+import { doorstopWorkspace, fakeCatalog, runtimeContext } from "../test-fixtures.js";
 
 describe("bundled opendoor browser entry", () => {
   it("exports the host-expected plugin shape and contributes panel, actions, and label", async () => {
-    expect(plugin.apiVersion).toBe(4);
+    expect(plugin.apiVersion).toBe(5);
     expect(plugin.name).toBe("Opendoor");
     expect(typeof plugin.activate).toBe("function");
 
@@ -70,8 +70,8 @@ describe("bundled opendoor browser entry", () => {
     expect(goToRequirements.enabled).toBeUndefined();
     expect(refresh.enabled).toBeUndefined();
 
-    const selectWorkspaceTool = vi.fn<PluginRuntimeContext["selectWorkspaceTool"]>();
-    const refreshWorkspacePanels = vi.fn<PluginRuntimeContext["refreshWorkspacePanels"]>();
+    const selectWorkspaceTool = vi.fn<PluginRuntimeContextV5["selectWorkspaceTool"]>();
+    const refreshWorkspacePanels = vi.fn<PluginRuntimeContextV5["refreshWorkspacePanels"]>();
     const runtime = runtimeContext({ selectWorkspaceTool, refreshWorkspacePanels });
 
     await goToRequirements.run(runtime);
@@ -84,7 +84,7 @@ describe("bundled opendoor browser entry", () => {
 
 async function activate(runtimePluginId: string) {
   const activation = await plugin.activate({
-    apiVersion: 4,
+    apiVersion: 5,
     pluginId: "opendoor",
     runtimePluginId,
     html,
@@ -95,10 +95,13 @@ async function activate(runtimePluginId: string) {
   return activation.contributions;
 }
 
-function panelContext(workspace = doorstopWorkspace, machineId = "local"): WorkspacePanelContext {
+function panelContext(workspace = doorstopWorkspace, machineId = "local"): WorkspacePanelContextV5 {
   const noop = () => undefined;
   return {
     machine: { id: machineId, name: machineId, kind: machineId === "local" ? "local" : "remote" },
+    // v5 context surface: the fake catalog (and absent backend) is inert —
+    // the plugin never consults either; see fakeCatalog in test-fixtures.
+    catalog: fakeCatalog(machineId),
     workspace,
     state: {
       selectedWorkspace: workspace,

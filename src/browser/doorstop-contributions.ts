@@ -24,23 +24,23 @@
 // operations are deliberately NOT palette actions: they need the rendered
 // panel — either the workspace's paired server surface
 // (`context.peer.request`) or, unpaired, the panel terminal
-// (`context.terminal`), which only exists on the `WorkspacePanelContext` of a
-// rendered panel (the palette action callback context has neither). So they
+// (`context.terminal`), which only exists on the `WorkspacePanelContextV5` of
+// a rendered panel (the palette action callback context has neither). So they
 // stay as panel-toolbar/action-row buttons, dispatched by
 // doorstop-panel-element via the Phase D step 9 runDoorstop dispatcher.
 // ---------------------------------------------------------------------------
 
 import type {
   HtmlTemplateTag,
-  PluginAction,
-  PluginContributions,
-  PluginRuntimeContext,
+  PluginActionV5,
+  PluginContributionsV5,
+  PluginRuntimeContextV5,
   SvgTemplateTag,
-  WorkspaceLabelContribution,
-  WorkspaceLabelContext,
+  WorkspaceLabelContributionV5,
+  WorkspaceLabelContextV5,
   WorkspaceLabelItem,
-  WorkspacePanelContext,
-  WorkspacePanelContribution,
+  WorkspacePanelContextV5,
+  WorkspacePanelContributionV5,
 } from "@jmfederico/pi-web/plugin-api";
 import { html, svg } from "lit";
 import type { DoorstopIndex } from "../doorstop-contract.js";
@@ -69,11 +69,15 @@ const DOORSTOP_LABEL_STATE_LIMIT = 8;
  * TemplateResult renders fine under the host's lit-html — template results
  * are structural objects, not tied to a lit copy.
  */
+// Every callback below takes a v5 context variant (pi-web 1.202610.8):
+// the same context shape it always read plus `catalog`/`backend` — neither
+// is consulted anywhere in this module, so behavior is byte-identical while
+// the host's v5 callback dispatch typechecks against `PiWebPluginV5`.
 export function createOpendoorBrowserContributions(
   runtimePluginId: string,
   _html: HtmlTemplateTag,
   _svg: SvgTemplateTag,
-): PluginContributions {
+): PluginContributionsV5 {
   const panelId = `${runtimePluginId}:${DOORSTOP_PANEL_LOCAL_ID}`;
   const registry = new DoorstopWorkspaceRegistry();
   const labelCache = new DoorstopLabelCache();
@@ -86,7 +90,7 @@ export function createOpendoorBrowserContributions(
   };
 }
 
-function createDoorstopActions(panelId: string): PluginAction[] {
+function createDoorstopActions(panelId: string): PluginActionV5[] {
   return [
     {
       id: "view.doorstop",
@@ -101,7 +105,7 @@ function createDoorstopActions(panelId: string): PluginAction[] {
       group: "Navigation",
       // Enabled unconditionally: the Requirements panel is useful for every
       // workspace (paired or unpaired — it needs no owned provider).
-      run: (context: PluginRuntimeContext) => { context.selectWorkspaceTool(panelId); },
+      run: (context: PluginRuntimeContextV5) => { context.selectWorkspaceTool(panelId); },
     },
     {
       id: "workspace.refresh-doorstop",
@@ -113,12 +117,12 @@ function createDoorstopActions(panelId: string): PluginAction[] {
       // Re-run discovery + load for the selected workspace's Requirements
       // panel (context.refreshWorkspacePanels routes the panel's
       // onInvalidate → registry.invalidate).
-      run: (context: PluginRuntimeContext) => { context.refreshWorkspacePanels(panelId); },
+      run: (context: PluginRuntimeContextV5) => { context.refreshWorkspacePanels(panelId); },
     },
   ];
 }
 
-function createDoorstopPanel(registry: DoorstopWorkspaceRegistry): WorkspacePanelContribution {
+function createDoorstopPanel(registry: DoorstopWorkspaceRegistry): WorkspacePanelContributionV5 {
   return {
     id: DOORSTOP_PANEL_LOCAL_ID,
     title: "Requirements",
@@ -146,8 +150,8 @@ function createDoorstopPanel(registry: DoorstopWorkspaceRegistry): WorkspacePane
     // terminal fallback keeps every action working; the discovery-based
     // empty state carries the "no documents" story (feature spec §7.1).
     visible: () => true,
-    // Plan Phase C step C1 — typed invalidation (browser API v4): declare the
-    // fixed workspace resources whose automatic invalidations this panel
+    // Plan Phase C step C1 — typed invalidation (browser API v4, unchanged
+    // on v5): declare the fixed workspace resources whose automatic invalidations this panel
     // receives. With `workspace.files` declared, the host calls onInvalidate
     // not only for the manual Refresh action (refreshWorkspacePanels) but
     // also when workspace files change (`reason: "mutation"` — e.g. the
@@ -183,7 +187,7 @@ function createDoorstopPanel(registry: DoorstopWorkspaceRegistry): WorkspacePane
  * this function). Every property of the `DoorstopPanelBodyElement` surface is
  * wired here.
  */
-function renderDoorstopPanel(registry: DoorstopWorkspaceRegistry, context: WorkspacePanelContext) {
+function renderDoorstopPanel(registry: DoorstopWorkspaceRegistry, context: WorkspacePanelContextV5) {
   const controller = registry.for(context);
   // Plan Phase C step C2 — deep links: apply the contribution-scoped URL query
   // (uid/doc/filter/search, plus the C3 chat-link `file` key) to the controller
@@ -227,7 +231,7 @@ function renderDoorstopPanel(registry: DoorstopWorkspaceRegistry, context: Works
   `;
 }
 
-function createDoorstopLabel(labelCache: DoorstopLabelCache): WorkspaceLabelContribution {
+function createDoorstopLabel(labelCache: DoorstopLabelCache): WorkspaceLabelContributionV5 {
   return {
     id: "doorstop-status",
     order: 10,
@@ -282,7 +286,7 @@ class DoorstopLabelCache {
   /** Synchronous: cached counts for the workspace, or nothing. A cache miss
    *  (or a still-running load) yields no items this cycle — the load's
    *  completion re-renders the label. */
-  items(context: WorkspaceLabelContext): WorkspaceLabelItem[] {
+  items(context: WorkspaceLabelContextV5): WorkspaceLabelItem[] {
     const key = doorstopLabelKey(context);
     let entry = this.entries.get(key);
     if (entry === undefined) {
@@ -319,7 +323,7 @@ class DoorstopLabelCache {
   }
 
   /** Synchronous: show the label only once discovery found documents. */
-  visible(context: WorkspaceLabelContext): boolean {
+  visible(context: WorkspaceLabelContextV5): boolean {
     const entry = this.entries.get(doorstopLabelKey(context));
     if (entry === undefined || entry.result === undefined) return false;
     return entry.result.index.documents.length > 0;
@@ -329,7 +333,7 @@ class DoorstopLabelCache {
    *  the LRU, and ask the host to re-render the label. A failed load drops
    *  the entry so the next items() (a cache miss) retries — never thrown
    *  from a synchronous callback. */
-  private startLoad(context: WorkspaceLabelContext, key: string, entry: DoorstopLabelEntry): void {
+  private startLoad(context: WorkspaceLabelContextV5, key: string, entry: DoorstopLabelEntry): void {
     loadDoorstopWorkspace(context.files)
       .then((result) => {
         // Re-check the entry is still the cached one for this key (the LRU
@@ -369,6 +373,6 @@ function formatCounts(index: DoorstopIndex): string {
   return parts.join(" · ");
 }
 
-function doorstopLabelKey(context: WorkspaceLabelContext): string {
+function doorstopLabelKey(context: WorkspaceLabelContextV5): string {
   return JSON.stringify([context.machine.id, context.workspace.projectId, context.workspace.id]);
 }

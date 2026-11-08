@@ -29,7 +29,7 @@
 // ---------------------------------------------------------------------------
 
 import type { ReactiveController } from "lit";
-import type { JsonValue, WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
+import type { JsonValue, WorkspacePanelContextV5 } from "@jmfederico/pi-web/plugin-api";
 import type { DoorstopDocumentConfig, DoorstopFiles, ItemRecord, ItemStateKey } from "../doorstop-contract.js";
 import { formatUnknownError, isItemStateKey } from "../doorstop-contract.js";
 import {
@@ -73,6 +73,16 @@ import type { DoorstopWorkspaceResult } from "./doorstop-panel.js";
  * `DoorstopRunRequest`.
  */
 export type DoorstopGitRunOp = "git-stage" | "git-commit" | "git-unstage";
+
+/**
+ * The op discriminator of the in-browser review-dispatch insert (relay
+ * `opendoor-dispatch-redesign` design §3). Composing and inserting the
+ * `/opendoor-review <uid>` command is a browser-side action with no backend
+ * run behind it, so it is its own op literal — deliberately NOT a
+ * `DoorstopRunRequest["op"]` (it never reaches the server, the terminal, or
+ * sessiond) and never a git op. It exists so the insert lands in the SAME
+ * status-bar run-outcome area every other panel action narrates through. */
+export type DoorstopAskRunOp = "ask-review";
 
 /** The git outcome a git run narrates in its Last-run `commit` field: the
  *  stage response on `git-stage` runs (status `staged`/`clean`/`skipped`/
@@ -134,7 +144,7 @@ export type DoorstopGitStatusView =
 export interface DoorstopLastRunView {
   /** The run's op (also the terminal-metadata `opendoor.op` value, doorstop
    *  ops only; the git ops are backend-only and never reach the terminal). */
-  op: DoorstopRunRequest["op"] | DoorstopGitRunOp;
+  op: DoorstopRunRequest["op"] | DoorstopGitRunOp | DoorstopAskRunOp;
   /** Human title of the run (button label / terminal title). */
   title: string;
   status: "ok" | "failed" | "killed" | "error";
@@ -241,7 +251,7 @@ export class DoorstopWorkspaceController implements ReactiveController {
   /** Workspace panel context. Refreshed by the registry on reuse — the host
    *  may hand out fresh `files` adapters between renders, and a re-load must
    *  see the current one. */
-  context: WorkspacePanelContext;
+  context: WorkspacePanelContextV5;
 
   /** Load result (index + diagnostics + timing); undefined until the first
    *  load. */
@@ -324,7 +334,7 @@ export class DoorstopWorkspaceController implements ReactiveController {
    *  round-trip instead of stacking duplicates). */
   private gitStatusRequest: Promise<void> | undefined;
 
-  constructor(host: DoorstopWorkspaceHost, context: WorkspacePanelContext, loadJob: DoorstopWorkspaceJob) {
+  constructor(host: DoorstopWorkspaceHost, context: WorkspacePanelContextV5, loadJob: DoorstopWorkspaceJob) {
     this.host = host;
     this.context = context;
     this.loadJob = loadJob;
@@ -583,6 +593,38 @@ export class DoorstopWorkspaceController implements ReactiveController {
   dismissRun(): void {
     this.lastRun = undefined;
     this.requestUpdate();
+  }
+
+  /**
+   * Commit the "Start review session" composer-insert as the last run (relay
+   * `opendoor-dispatch-redesign` design §3). The insert happens in the
+   * browser, so the record carries no process data: `status: "ok"` with an
+   * empty stdout/stderr and NO `commit` field — which is exactly what makes
+   * the status bar render its quiet ok badge, skip the commit-narration line
+   * and the error pre, and stay collapsed (`lastRunHasMessage` is false, so
+   * the bar does not auto-expand). The write goes through the single
+   * {@link commitRun} point, so it survives `invalidate()`/`load()` and is
+   * cleared only by `dismissRun()` or the next commit — every existing
+   * run-outcome semantic is inherited unchanged.
+   *
+   * `at` is REQUIRED by {@link DoorstopLastRunView} (the run-start epoch ms
+   * every `commitRun` caller sets); `durationMs` is 0 because no run was
+   * measured — the insert is synchronous.
+   */
+  commitAskReview(uid: string): void {
+    this.commitRun({
+      op: "ask-review",
+      title: `Opendoor: review dispatch ${uid}`,
+      status: "ok",
+      exitCode: null,
+      signal: null,
+      stdout: "",
+      stderr: "",
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      durationMs: 0,
+      at: Date.now(),
+    });
   }
 
   /** Run the Stage action (plan Phase C step 12): stage every Doorstop-managed

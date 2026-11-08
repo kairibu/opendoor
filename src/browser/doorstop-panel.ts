@@ -44,7 +44,7 @@
 import type {
   ContributionQueryValue,
   WorkspaceInvalidation,
-  WorkspacePanelContext,
+  WorkspacePanelContextV5,
 } from "@jmfederico/pi-web/plugin-api";
 import type {
   DiscoveryDiagnostic,
@@ -354,7 +354,7 @@ export class DoorstopWorkspaceRegistry {
   private readonly fileOpenEntries = new Map<string, DoorstopFileOpenIndex>();
 
   /** Get-or-create the controller for a workspace (the render entry point). */
-  for(context: WorkspacePanelContext): DoorstopWorkspaceController {
+  for(context: WorkspacePanelContextV5): DoorstopWorkspaceController {
     const key = workspaceContextKey(context);
     const existing = this.workspaces.get(key);
     if (existing !== undefined) {
@@ -380,7 +380,8 @@ export class DoorstopWorkspaceRegistry {
   /** Panel invalidation: re-run discovery + load unconditionally for the
    *  connected workspace (paired or unpaired: the load job is browser-side, so there is no owned-workspace gate).
    *
-   *  Plan Phase C step C1 — the v4 typed invalidation: `invalidation` carries
+   *  Plan Phase C step C1 — the typed invalidation (browser API v4,
+   *  unchanged on v5): `invalidation` carries
    *  the reason (`"manual"` Refresh action / `"mutation"` a workspace file
    *  changed / `"agent-activity"` agent work finished) and the affected
    *  resources. The rescan stays REASON-AGNOSTIC deliberately: every reason
@@ -391,7 +392,7 @@ export class DoorstopWorkspaceRegistry {
    *  starts a fresh one), so `"agent-activity"` bursts cannot stack loads.
    *  The payload is accepted (so the contribution can forward it) but not
    *  consulted. */
-  invalidate(context: WorkspacePanelContext, invalidation?: WorkspaceInvalidation): Promise<void> {
+  invalidate(context: WorkspacePanelContextV5, invalidation?: WorkspaceInvalidation): Promise<void> {
     void invalidation;
     return this.for(context).invalidate();
   }
@@ -401,7 +402,7 @@ export class DoorstopWorkspaceRegistry {
    *  that has a result, so the index always mirrors the last landed
    *  discovery; never throws and triggers nothing (the hook must be free of
    *  side effects — recording a plain index from a landed result is one). */
-  recordFileOpenIndex(context: WorkspacePanelContext, result: DoorstopWorkspaceResult): void {
+  recordFileOpenIndex(context: WorkspacePanelContextV5, result: DoorstopWorkspaceResult): void {
     const key = workspaceContextKey(context);
     const existing = this.fileOpenEntries.get(key);
     // The render path calls this on EVERY render with a result (keystrokes,
@@ -432,7 +433,7 @@ export class DoorstopWorkspaceRegistry {
    *  falls back to Files; the panel still deep-links once opened and
    *  re-rendered). */
   fileOpenQuery(
-    context: WorkspacePanelContext,
+    context: WorkspacePanelContextV5,
     path: string,
   ): Readonly<Record<string, ContributionQueryValue>> | undefined {
     const entries = this.fileOpenEntries.get(workspaceContextKey(context));
@@ -477,6 +478,6 @@ class DoorstopPanelHost implements DoorstopWorkspaceHost {
   isConnected = false;
 }
 
-function workspaceContextKey(context: WorkspacePanelContext): string {
+function workspaceContextKey(context: WorkspacePanelContextV5): string {
   return JSON.stringify([context.machine.id, context.workspace.projectId, context.workspace.id]);
 }

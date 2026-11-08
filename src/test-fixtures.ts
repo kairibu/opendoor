@@ -16,11 +16,12 @@
 
 import { vi, type Mock } from "vitest";
 import type {
-  PluginRuntimeContext,
+  PluginCatalog,
+  PluginRuntimeContextV5,
   TerminalCommandRun,
   TerminalCommandRunHandle,
   Workspace,
-  WorkspacePanelContext,
+  WorkspacePanelContextV5,
   WorkspacePanelNavigationV1,
 } from "@jmfederico/pi-web/plugin-api";
 import type { DoorstopDocumentConfig, DoorstopIndex, ItemRecord } from "./doorstop-contract.js";
@@ -29,6 +30,32 @@ import type { DoorstopWorkspaceResult } from "./browser/doorstop-panel.js";
 import { DEFAULT_OPENDOOR_SETTINGS } from "./doorstop-settings.js";
 import { computeItemStamp, computeItemStates } from "./doorstop-state.js";
 import { createFakeFiles, type FakeWorkspaceFiles } from "./test-support.js";
+
+// --- read-only catalog fake (browser API v5) -----------------------------------
+
+/** A minimal read-only catalog fake (browser API v5): the v5 callback
+ *  contexts carry `catalog`/`backend` by construction, but the opendoor
+ *  contributions never touch either surface — the stubs exist purely so the
+ *  fixtures typecheck against the V5 context variants. The getters never
+ *  resolve real data (the harness workspaces below are the stand-ins). */
+export function fakeCatalog(machineId = "local"): PluginCatalog {
+  return {
+    machineId,
+    version: 1,
+    projects: {
+      list: () => Promise.resolve([]),
+      get: () => Promise.reject(new Error("fakeCatalog: not implemented")),
+    },
+    workspaces: {
+      list: () => Promise.resolve([]),
+      get: () => Promise.reject(new Error("fakeCatalog: not implemented")),
+    },
+    sessions: {
+      list: () => Promise.resolve([]),
+      get: () => Promise.reject(new Error("fakeCatalog: not implemented")),
+    },
+  } satisfies PluginCatalog;
+}
 
 // --- document / item / index fixtures ------------------------------------------
 
@@ -179,9 +206,10 @@ export interface PanelContextHook {
   focusPrompt?: Mock;
   runCommand?: Mock;
   peer?: Mock;
-  /** Build the v4 openChannel-only peer shape (a legal `PluginPeer` with
-   *  `request?: undefined`): the paired-backend gate must treat it as
-   *  unpaired and fall back to the terminal instead of silently no-oping. */
+  /** Build the v5 openChannel-only peer shape (a legal `PluginPeer` with
+   *  `request?: undefined`; the surface also exists on v4): the
+   *  paired-backend gate must treat it as unpaired and fall back to the
+   *  terminal instead of silently no-oping. */
   peerChannelOnly?: boolean;
   /** Deep-link navigation harness (plan Phase C step C2): when supplied, the
    *  context carries this `navigation` — a real-shaped
@@ -193,7 +221,7 @@ export interface PanelContextHook {
 }
 
 export interface PanelContextResult {
-  context: WorkspacePanelContext;
+  context: WorkspacePanelContextV5;
   requestRender: Mock;
   insertText: Mock;
   focusPrompt: Mock;
@@ -202,7 +230,7 @@ export interface PanelContextResult {
   navigation: PanelNavigationHarness | undefined;
 }
 
-/** Test harness for the v4 panel deep-link navigation (plan Phase C step
+/** Test harness for the panel deep-link navigation (plan Phase C step
  *  C2): a real `WorkspacePanelNavigationV1` shape over a mutable backing
  *  query record (tests simulate URL changes — back/forward — by mutating
  *  `query` and re-rendering) plus a `setCalls` log of every controller write
@@ -255,8 +283,12 @@ export function panelContext(hook: PanelContextHook = {}): PanelContextResult {
   const workspace = hook.provider === undefined ? baseWorkspace : { ...baseWorkspace, provider: hook.provider };
   const files: FakeWorkspaceFiles = hook.fake ?? createFakeFiles();
   const navigation = hook.navigation;
-  const context: WorkspacePanelContext & { focusPrompt: Mock } = {
+  const context: WorkspacePanelContextV5 & { focusPrompt: Mock } = {
     machine: { id: "local", name: "local", kind: "local" },
+    // v5 contexts carry catalog/backend by construction; the plugin never
+    // consults the read-only catalog (which is the reason it does NOT
+    // declare the host catalog capability), so the fake is inert.
+    catalog: fakeCatalog(),
     workspace,
     state: {
       selectedWorkspace: workspace,
@@ -271,9 +303,9 @@ export function panelContext(hook: PanelContextHook = {}): PanelContextResult {
     // it, so the fixture stubs a no-op destination navigation.
     navigate: async () => undefined,
     terminal: { open: () => undefined, runCommand },
-    // The optional `peer` field is only present when the hook supplied one
+    // The peer field is only present when the hook supplied one
     // (exactOptionalPropertyTypes forbids an explicit undefined write). The
-    // v4 peer is a request handler (the fake never needs openChannel), unless
+    // v5 peer is a request handler (the fake never needs openChannel), unless
     // `peerChannelOnly` asks for the openChannel-only variant that must fall
     // back to the terminal.
     ...(hook.peerChannelOnly === true
@@ -281,7 +313,7 @@ export function panelContext(hook: PanelContextHook = {}): PanelContextResult {
       : peerRequest === undefined
         ? {}
         : { peer: { request: peerRequest } }),
-    // The optional v4 `navigation` (deep links) is only present when the hook
+    // The optional `navigation` (deep links) is only present when the hook
     // supplied one (exactOptionalPropertyTypes forbids an explicit undefined
     // write) — exactly the absent-navigation shape of older hosts.
     ...(navigation === undefined ? {} : { navigation }),
@@ -317,11 +349,15 @@ function completedTerminalHandle(): TerminalCommandRunHandle {
   return { run, completed: Promise.resolve(run) };
 }
 
-/** A full `PluginRuntimeContext` with no-op host methods; `patch` overrides
- *  individual entries (usually the navigation/refresh spies). */
-export function runtimeContext(patch: Partial<PluginRuntimeContext> = {}): PluginRuntimeContext {
+/** A full v5 `PluginRuntimeContextV5` with no-op host methods; `patch`
+ *  overrides individual entries (usually the navigation/refresh spies). */
+export function runtimeContext(patch: Partial<PluginRuntimeContextV5> = {}): PluginRuntimeContextV5 {
   const noop = () => undefined;
   return {
+    // v5 contexts carry catalog/backend by construction (never consulted by
+    // the opendoor actions); the peer surface stays absent — this plugin is
+    // browser-only at runtime scope.
+    catalog: fakeCatalog(),
     state: {
       selectedWorkspace: doorstopWorkspace,
       workspaceTool: "opendoor:workspace.doorstop",

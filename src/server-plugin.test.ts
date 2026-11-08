@@ -15,22 +15,20 @@ import { afterEach, describe, expect, it } from "vitest";
 import type {
   JsonValue,
   ProjectInput,
-  ServerPluginActivationContext,
+  ServerPluginActivationContextV5,
   ServerPluginExecFileRequest,
   ServerPluginExecFileResult,
-  ServerPluginPeerRequestContext,
+  ServerPluginPeerRequestContextV5,
   WorkspaceProvider,
 } from "@jmfederico/pi-web/server-plugin-api";
 import plugin, { createDoorstopWorkspaceProvider } from "./server-plugin.js";
 import {
-  DOORSTOP_ASK_AGENT_OPERATION,
   DOORSTOP_BASELINE_OPERATION,
   DOORSTOP_GIT_COMMIT_OPERATION,
   DOORSTOP_GIT_STAGE_OPERATION,
   DOORSTOP_GIT_STATUS_OPERATION,
   DOORSTOP_GIT_UNSTAGE_OPERATION,
   DOORSTOP_RUN_OPERATION,
-  parseDoorstopAskAgentResponse,
   parseDoorstopBaselineResponse,
   parseDoorstopGitCommitResponse,
   parseDoorstopGitStageResponse,
@@ -60,9 +58,9 @@ function projectFor(path: string): ProjectInput {
 }
 
 /** Minimal activation context — probe/list/request never touch execFile here. */
-function contextFor(): ServerPluginActivationContext {
+function contextFor(): ServerPluginActivationContextV5 {
   return {
-    apiVersion: 3,
+    apiVersion: 5,
     pluginId: "opendoor",
     packageRoot: "/fake/package-root",
     dataDirectory: "/fake/data-directory",
@@ -155,8 +153,9 @@ describe("createDoorstopWorkspaceProvider", () => {
   it("returns a frozen primary-tier provider without a request method", () => {
     const provider: WorkspaceProvider = createDoorstopWorkspaceProvider(contextFor());
     expect(Object.isFrozen(provider)).toBe(true);
-    // v3 removed the provider-level request dispatch: the provider shrinks
-    // to probe/list (the request handler lives on the activation peer).
+    // The provider-level request dispatch was removed back in v3 (v5 keeps
+    // the removal): the provider shrinks to probe/list (the request handler
+    // lives on the activation peer).
     expect("request" in provider).toBe(false);
     // Primary tier: `fallback` unset (git is the fallback provider).
     expect(provider.fallback).toBeUndefined();
@@ -200,9 +199,12 @@ describe("createDoorstopWorkspaceProvider", () => {
     const peerRequest = activation.peer?.request;
     if (peerRequest === undefined) throw new Error("Expected the activation peer request handler");
     const signal = new AbortController().signal;
-    const requestFor = (operation: string, input: JsonValue): ServerPluginPeerRequestContext => ({
-      project: projectFor("/workspace/demo checkout"),
-      workspace: { id: "/workspace/demo checkout", projectId: "project-demo", path: "/workspace/demo checkout", label: "demo", isMain: true },
+    const requestFor = (operation: string, input: JsonValue): ServerPluginPeerRequestContextV5 => ({
+      scope: {
+        kind: "workspace",
+        project: projectFor("/workspace/demo checkout"),
+        workspace: { id: "/workspace/demo checkout", projectId: "project-demo", path: "/workspace/demo checkout", label: "demo", isMain: true },
+      },
       operation,
       input,
       signal,
@@ -251,69 +253,72 @@ describe("createDoorstopWorkspaceProvider", () => {
     await expect(peerRequest(requestFor("doorstop.purge", null))).rejects.toThrow(
       "opendoor: unsupported workspace backend operation: doorstop.purge",
     );
+
+    // v5 non-workspace scopes can never reach the handlers (all six execute
+    // with `workspace.path` as cwd): machine scope carries no workspace, and
+    // a project-scoped peer has no workspace projection either. Both reject
+    // with the scope-rejection sibling of the unsupported-operation message.
+    const execCountBeforeRejections = requests.length;
+    // One inert signal shared by both scope-rejection probes below.
+    const scopeSignal = new AbortController().signal;
+    await expect(
+      peerRequest({ scope: { kind: "machine" }, operation: DOORSTOP_RUN_OPERATION, input: { op: "validate" }, signal: scopeSignal }),
+    ).rejects.toThrow("opendoor: doorstop.run peer requests require workspace scope (got machine)");
+    await expect(
+      peerRequest({
+        scope: { kind: "project", project: projectFor("/project/demo") },
+        operation: DOORSTOP_GIT_STATUS_OPERATION,
+        input: {},
+        signal: scopeSignal,
+      }),
+    ).rejects.toThrow("opendoor: doorstop.git-status peer requests require workspace scope (got project)");
+    // The rejected scopes never exec anything.
+    expect(requests.length).toBe(execCountBeforeRejections);
   });
 });
 
-describe("doorstop.ask-agent dispatch wiring (interim)", () => {
-  // INTERIM (host provider-cycle rule): this provider-contributing entry
-  // cannot require the late session capabilities, so the dispatch holder
-  // always stays empty and the ask operation rejects cleanly — see the
-  // server-plugin.ts module header. The dispatch mechanics themselves
-  // (capability-driven spawn + metadata seeding) are exercised in
-  // doorstop-dispatch.test.ts; the redesigned pathway moves them off this
-  // entry (Pi package extension, follow-up relay).
-  it("declares no capability requirements and exposes no start()", async () => {
+describe("retired doorstop.ask-agent dispatch (relay opendoor-dispatch-redesign §2.2)", () => {
+  // The capability-driven dispatch moved OFF this provider-contributing entry
+  // to the opendoor Pi extension (`src/pi-extension/opendoor-review.ts`), so
+  // `doorstop.ask-agent` no longer exists as an operation here and
+  // `src/doorstop-dispatch.ts` is deleted. The op grammar constraint holds
+  // trivially: the peer keeps exactly the six paired operations.
+  it("declares no capability requirements and exposes no start() (permanent)", async () => {
     expect(plugin.requires).toBeUndefined();
     const activation = await plugin.activate(contextFor());
     expect(activation.start).toBeUndefined();
   });
 
-  it("rejects dispatch on this entry with the capabilities-are-not-active message", async () => {
+  it("treats the retired doorstop.ask-agent like any unsupported operation", async () => {
     const activation = await plugin.activate(contextFor());
     const peerRequest = activation.peer?.request;
     if (peerRequest === undefined) throw new Error("Expected the activation peer request handler");
     await expect(
       peerRequest({
-        project: projectFor("/workspace/demo checkout"),
-        workspace: {
-          id: "/workspace/demo checkout",
-          projectId: "project-demo",
-          path: "/workspace/demo checkout",
-          label: "demo",
-          isMain: true,
+        scope: {
+          kind: "workspace",
+          project: projectFor("/workspace/demo checkout"),
+          workspace: {
+            id: "/workspace/demo checkout",
+            projectId: "project-demo",
+            path: "/workspace/demo checkout",
+            label: "demo",
+            isMain: true,
+          },
         },
-        operation: DOORSTOP_ASK_AGENT_OPERATION,
+        // The literal is kept as a string: the contract export was removed
+        // with the operation, and this pins that the old name is rejected.
+        operation: "doorstop.ask-agent",
         input: { uid: "REQ0001", prompt: "Review REQ0001" },
         signal: new AbortController().signal,
       }),
-    ).rejects.toThrow("opendoor: session dispatch capabilities are not active on this server");
-  });
-
-  it("rejects a malformed ask request without touching the capabilities", async () => {
-    const activation = await plugin.activate(contextFor());
-    const peerRequest = activation.peer?.request;
-    if (peerRequest === undefined) throw new Error("Expected the activation peer request handler");
-    await expect(
-      peerRequest({
-        project: projectFor("/workspace/demo checkout"),
-        workspace: {
-          id: "/workspace/demo checkout",
-          projectId: "project-demo",
-          path: "/workspace/demo checkout",
-          label: "demo",
-          isMain: true,
-        },
-        operation: DOORSTOP_ASK_AGENT_OPERATION,
-        input: { uid: "bad uid", prompt: "x" },
-        signal: new AbortController().signal,
-      }),
-    ).rejects.toThrow("Invalid doorstop UID in field: uid");
+    ).rejects.toThrow("opendoor: unsupported workspace backend operation: doorstop.ask-agent");
   });
 });
 
 describe("default export", () => {
-  it("is the paired server plugin shape (apiVersion 3, provider + peer)", async () => {
-    expect(plugin.apiVersion).toBe(3);
+  it("is the paired server plugin shape (apiVersion 5, provider + peer)", async () => {
+    expect(plugin.apiVersion).toBe(5);
     expect(plugin.name).toBe("Opendoor");
     const activation = await plugin.activate(contextFor());
     const provider = activation.workspaceProvider;

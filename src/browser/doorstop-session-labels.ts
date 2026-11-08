@@ -1,11 +1,11 @@
 // ---------------------------------------------------------------------------
 // Opendoor session-list row labels (relay `opendoor-session-metadata-labels`
-// design §3): the browser `SessionLabelContribution` that renders a compact
+// design §3): the browser `SessionLabelContributionV5` that renders a compact
 // row indicator for every conversation carrying the public `opendoor`
 // namespace metadata, linking back into the Requirements tab on the row's
 // own machine/workspace.
 //
-// Contract discipline (released browser API v4):
+// Contract discipline (released browser API v4, held unchanged on v5):
 //   - `items(context)` is SYNCHRONOUS and side-effect-free: it only parses
 //     the detached row snapshot's public metadata and builds one render item.
 //     `context.navigate` is called from the click handler, NEVER from
@@ -29,8 +29,8 @@
 import { html, type TemplateResult } from "lit";
 import type {
   PluginNavigationDestination,
-  SessionLabelContext,
-  SessionLabelContribution,
+  SessionLabelContextV5,
+  SessionLabelContributionV5,
   SessionLabelItem,
   Workspace,
 } from "@jmfederico/pi-web/plugin-api";
@@ -52,7 +52,7 @@ export const DOORSTOP_SESSION_LABEL_ID = "doorstop.review";
  * the Requirements panel tool id the label navigates back to, exactly as the
  * panel contribution does.
  */
-export function createDoorstopSessionLabel(runtimePluginId: string): SessionLabelContribution {
+export function createDoorstopSessionLabel(runtimePluginId: string): SessionLabelContributionV5 {
   const panelId = `${runtimePluginId}:${DOORSTOP_PANEL_LOCAL_ID}`;
   return {
     id: DOORSTOP_SESSION_LABEL_ID,
@@ -65,7 +65,7 @@ export function createDoorstopSessionLabel(runtimePluginId: string): SessionLabe
  * One pure synchronous pass over a session row's public metadata: one render
  * item for a valid opendoor payload, otherwise nothing. Exported for tests.
  */
-export function sessionLabelItems(context: SessionLabelContext, panelId: string): SessionLabelItem[] {
+export function sessionLabelItems(context: SessionLabelContextV5, panelId: string): SessionLabelItem[] {
   const value = context.session.metadata?.[OPENDOOR_SESSION_METADATA_NAMESPACE];
   const metadata = parseDoorstopSessionMetadata(value);
   if (metadata === undefined) return [];

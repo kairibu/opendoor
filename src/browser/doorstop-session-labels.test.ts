@@ -6,20 +6,23 @@
 // the exact reopen destination + click navigation.
 
 import { describe, expect, it, vi } from "vitest";
-import type { SessionLabelContext, SessionUiMetadata } from "@jmfederico/pi-web/plugin-api";
+import type { SessionLabelContextV5, SessionUiMetadata } from "@jmfederico/pi-web/plugin-api";
 import {
   createDoorstopSessionLabel,
   doorstopReopenDestination,
   sessionLabelItems,
 } from "./doorstop-session-labels.js";
 import { createFakeFiles } from "../test-support.js";
-import { doorstopWorkspace } from "../test-fixtures.js";
+import { doorstopWorkspace, fakeCatalog } from "../test-fixtures.js";
 
 const PANEL_ID = "opendoor:workspace.doorstop";
 
-function contextWith(metadata: SessionUiMetadata | undefined, navigate = vi.fn()): SessionLabelContext {
+function contextWith(metadata: SessionUiMetadata | undefined, navigate = vi.fn()): SessionLabelContextV5 {
   return {
     machine: { id: "local", name: "local", kind: "local" },
+    // v5 context surface: the fake catalog is inert — the label never
+    // consults it (see fakeCatalog in test-fixtures).
+    catalog: fakeCatalog(),
     workspace: doorstopWorkspace,
     files: createFakeFiles().files,
     host: { requestRender: vi.fn() },

@@ -1,7 +1,7 @@
 // @vitest-environment node
 //
 // Layer 2 (node env): backend request handler tests (plan Phase F step 12).
-// A fake `ServerPluginActivationContext` supplies a recording `execFile`
+// A fake `ServerPluginActivationContextV5` supplies a recording `execFile`
 // returning canned `ServerPluginExecFileResult`s; every request goes through
 // the exported `requestDoorstopBackend` (the only public seam — argv and the
 // exec request are observable on the recorded calls). Coverage per plan:
@@ -20,7 +20,7 @@ import type {
   JsonObject,
   JsonValue,
   ServerPluginPeerRequestContext,
-  ServerPluginActivationContext,
+  ServerPluginActivationContextV5,
   ServerPluginExecFileRequest,
   ServerPluginExecFileResult,
 } from "@jmfederico/pi-web/server-plugin-api";
@@ -71,7 +71,7 @@ interface FakeContextOptions {
 }
 
 interface FakeContext {
-  context: ServerPluginActivationContext;
+  context: ServerPluginActivationContextV5;
   /** Every execFile request in call order. */
   requests: ServerPluginExecFileRequest[];
 }
@@ -79,8 +79,8 @@ interface FakeContext {
 /** Fake activation context: noop logger, empty settings, recording execFile. */
 function createFakeContext(options: FakeContextOptions = {}): FakeContext {
   const requests: ServerPluginExecFileRequest[] = [];
-  const context: ServerPluginActivationContext = {
-    apiVersion: 3,
+  const context: ServerPluginActivationContextV5 = {
+    apiVersion: 5,
     pluginId: "opendoor",
     packageRoot: "/fake/package-root",
     dataDirectory: "/fake/data-directory",
@@ -1062,7 +1062,7 @@ function gitCommitRequest(
 interface GitHandlerSpec {
   /** Verb name, used only in assertion failure context. */
   verb: string;
-  run: (context: ServerPluginActivationContext, request: ServerPluginPeerRequestContext) => Promise<JsonValue>;
+  run: (context: ServerPluginActivationContextV5, request: ServerPluginPeerRequestContext) => Promise<JsonValue>;
   parse: (response: JsonValue) => { status: string; stderr?: string };
   /** Build a valid request from an input, with an optional operation override. */
   build: (input: JsonValue, operation?: string) => ServerPluginPeerRequestContext;

@@ -14,7 +14,7 @@
 // DOM at all.
 
 import { describe, expect, it, vi, type Mock } from "vitest";
-import type { WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
+import type { WorkspacePanelContextV5 } from "@jmfederico/pi-web/plugin-api";
 import {
   DOORSTOP_GIT_STATUS_FILES_MAX,
   type DoorstopBaselineResponse,
@@ -441,7 +441,7 @@ describe("DoorstopWorkspaceController (fake host, no DOM)", () => {
 
   it("keeps one controller per workspace in the LRU and evicts the oldest", async () => {
     const registry = new DoorstopWorkspaceRegistry();
-    const contexts: WorkspacePanelContext[] = [];
+    const contexts: WorkspacePanelContextV5[] = [];
     const controllers: DoorstopWorkspaceController[] = [];
     for (let i = 0; i < DOORSTOP_WORKSPACE_STATE_LIMIT; i += 1) {
       const { context } = panelContext({ fake: createFakeFiles(), workspace: makeWorkspace(`workspace-${String(i)}`) });

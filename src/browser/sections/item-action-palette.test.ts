@@ -12,7 +12,6 @@ import {
   type TerminalCommandRunHandle,
 } from "@jmfederico/pi-web/plugin-api";
 import {
-  DOORSTOP_ASK_AGENT_OPERATION,
   DOORSTOP_GIT_STAGE_OPERATION,
   DOORSTOP_GIT_STATUS_OPERATION,
   DOORSTOP_GIT_STATUS_FILES_MAX,
@@ -21,6 +20,7 @@ import {
   type DoorstopGitStatusResponse,
 } from "../../doorstop-backend-contract.js";
 import {
+  composeReviewCommand,
   draftChildRequirementPrompt,
   explainItemPrompt,
   fixSuspectLinksPrompt,
@@ -46,6 +46,19 @@ import {
 
 // Shared DOM/confirm reset between tests.
 afterEach(resetElementTestEnvironment);
+
+/** The element-local state members the narrow `DoorstopPanelBodyElement`
+ *  section interface does not expose (`targetError`, `statusExpanded`, and a
+ *  writable `context`). Tests reach the class fields directly, exactly as the
+ *  element's own handlers do. */
+interface BodyShell {
+  targetError: string | undefined;
+  statusExpanded: boolean;
+  context: { prompt: { insertText: Mock } } | undefined;
+}
+function bodyShell(body: DoorstopPanelBodyElement): BodyShell {
+  return body as unknown as BodyShell;
+}
 
 describe("DoorstopPanelBodyElement (terminal actions: exact command lines + metadata)", () => {
   it("runs validation with the exact command and open:true", async () => {
@@ -456,105 +469,93 @@ describe("DoorstopPanelBodyElement (Ask-agent menu)", () => {
 });
 
 describe("DoorstopPanelBodyElement (Start review session)", () => {
-  /** A paired backend that answers the mount-time git-status fetch and the
-   *  ask-agent dispatch; every other operation answers a run response. */
-  function askBackend(ask: (input: unknown) => Promise<unknown>): Mock {
-    return vi.fn((operation: string, input: unknown) => {
+  /** A paired backend answering the mount-time git-status fetch; every other
+   *  operation answers a run response. The review-dispatch path must never
+   *  reach this backend — the peer `doorstop.ask-agent` operation is retired. */
+  function pairedBackend(): Mock {
+    return vi.fn((operation: string) => {
       if (operation === DOORSTOP_GIT_STATUS_OPERATION) return Promise.resolve(makeGitStatusResponse());
-      if (operation === DOORSTOP_ASK_AGENT_OPERATION) return ask(input);
       return Promise.resolve(makeRunResponse());
     });
   }
 
-  it("hides the entry without the paired backend and shows it with one", async () => {
+  it("shows the composer-insert entry with AND without the paired backend", async () => {
     const unpaired = await mountBody(() => Promise.resolve(makeTreeResult()));
     await selectItemRow(unpaired.body, unpaired.controller, unpaired.context, "REQ0002");
     unpaired.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-menu-toggle")?.click();
     await flushMicro(unpaired.body);
-    expect(unpaired.body.shadowRoot?.querySelector(".doorstop-start-review-session")).toBeNull();
+    expect(unpaired.body.shadowRoot?.querySelector(".doorstop-start-review-session")).not.toBeNull();
 
-    const paired = await mountGitBody(askBackend(async () => ({ dispatched: true })));
+    const paired = await mountGitBody(pairedBackend());
     await selectItemRow(paired.body, paired.controller, paired.context, "REQ0002");
     paired.body.shadowRoot?.querySelector<HTMLElement>(".doorstop-menu-toggle")?.click();
     await flushMicro(paired.body);
     expect(paired.body.shadowRoot?.querySelector(".doorstop-start-review-session")).not.toBeNull();
   });
 
-  it("dispatches the exact review prompt and navigates to the spawned chat", async () => {
-    const backend = askBackend(async () => ({ dispatched: true, sessionId: "session-9" }));
+  it("inserts the exact /opendoor-review command and commits the ask-review status record", async () => {
+    const backend = pairedBackend();
     const { body, controller, context } = await mountGitBody(backend);
-    const navigate = vi.fn(async () => undefined);
-    context.navigate = navigate;
     await selectItemRow(body, controller, context, "REQ0002");
+    body.shadowRoot?.querySelector<HTMLElement>(".doorstop-menu-toggle")?.click();
+    await flushMicro(body);
+    body.shadowRoot?.querySelector<HTMLElement>(".doorstop-start-review-session")?.click();
+    await flushMicro(body);
 
     const result = controller.result;
-    if (result === undefined) throw new Error("result");
-    const req0002 = result.index.byUid.get("REQ0002");
+    const req0002 = result?.index.byUid.get("REQ0002");
     if (req0002 === undefined) throw new Error("fixture");
-    const children = result.index.childrenByUid.get("REQ0002") ?? [];
-
-    body.shadowRoot?.querySelector<HTMLElement>(".doorstop-menu-toggle")?.click();
-    await flushMicro(body);
-    body.shadowRoot?.querySelector<HTMLElement>(".doorstop-start-review-session")?.click();
-    await flushMicro(body);
-
-    expect(backend).toHaveBeenCalledWith(DOORSTOP_ASK_AGENT_OPERATION, {
-      uid: "REQ0002",
-      prompt: reviewReadinessPrompt(req0002, children),
-    });
-    expect(navigate).toHaveBeenCalledWith({
-      machineId: "local",
-      projectId: "project-1",
-      workspaceId: "workspace-1",
-      sessionId: "session-9",
-      view: "chat",
-    });
-  });
-
-  it("surfaces a rejected dispatch on the palette's error line", async () => {
-    const backend = askBackend(async () => {
-      throw new Error("Session dispatch is disabled for this session");
-    });
-    const { body, controller, context } = await mountGitBody(backend);
-    await selectItemRow(body, controller, context, "REQ0002");
-    body.shadowRoot?.querySelector<HTMLElement>(".doorstop-menu-toggle")?.click();
-    await flushMicro(body);
-    body.shadowRoot?.querySelector<HTMLElement>(".doorstop-start-review-session")?.click();
-    await flushMicro(body);
-    expect(body.shadowRoot?.querySelector(".doorstop-op-error")?.textContent).toContain(
-      "Session dispatch is disabled for this session",
+    expect(context.prompt.insertText).toHaveBeenCalledWith(composeReviewCommand(req0002));
+    // The command line is line 1 and the safe-token UID cannot leak
+    // whitespace into the extension's argument parse.
+    expect(context.prompt.insertText).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/opendoor-review REQ0002\nReview REQ0002 /u),
     );
+    // `focusPrompt` is on the runtime context; the panel context type omits
+    // it, so the test reaches it the same way the element does.
+    expect((context as unknown as { focusPrompt: Mock }).focusPrompt).toHaveBeenCalled();
+    // NO peer request on this path (the operation is retired) and NO
+    // targetError write — the status bar is the outcome surface.
+    expect(backend).not.toHaveBeenCalledWith(expect.stringContaining("ask-agent"), expect.anything());
+    expect(bodyShell(body).targetError).toBeUndefined();
+
+    const lastRun = controller.lastRun;
+    expect(lastRun?.op).toBe("ask-review");
+    expect(lastRun?.title).toBe("Opendoor: review dispatch REQ0002");
+    expect(lastRun?.status).toBe("ok");
+    expect(lastRun?.exitCode).toBeNull();
+    expect(lastRun?.commit).toBeUndefined();
+    expect(typeof lastRun?.at).toBe("number");
   });
 
-  it("disables the entry while a run is in flight", async () => {
-    const backend = askBackend(async () => ({ dispatched: true }));
-    const { body, controller, context } = await mountGitBody(backend);
+  it("renders the quiet ok badge with no commit narration and no auto-expand", async () => {
+    const { body, controller, context } = await mountGitBody(pairedBackend());
     await selectItemRow(body, controller, context, "REQ0002");
-    controller.beginRun("Doorstop: review REQ0002");
+    body.shadowRoot?.querySelector<HTMLElement>(".doorstop-menu-toggle")?.click();
+    await flushMicro(body);
+    body.shadowRoot?.querySelector<HTMLElement>(".doorstop-start-review-session")?.click();
+    await flushMicro(body);
+    // Mirror the host render wiring (the controller's commit lands asynchronously).
     bindBody(body, controller, context);
     await flushMicro(body);
-    body.shadowRoot?.querySelector<HTMLElement>(".doorstop-menu-toggle")?.click();
-    await flushMicro(body);
-    const entry = body.shadowRoot?.querySelector<HTMLButtonElement>(".doorstop-start-review-session");
-    expect(entry?.disabled).toBe(true);
+
+    expect(bodyShell(body).statusExpanded).toBe(false);
+    const root = body.shadowRoot;
+    expect(root?.querySelector(".doorstop-status-bar")).not.toBeNull();
+    expect(root?.querySelector(".doorstop-last-run-status")?.textContent).toBe("ok");
+    expect(root?.querySelector(".doorstop-last-run-commit")).toBeNull();
+    expect(root?.querySelector(".doorstop-last-run")).toBeNull();
   });
 
-  it("offers the selected live conversation id to the dispatch when it is in this workspace (F1)", async () => {
-    const backend = askBackend(async () => ({ dispatched: true }));
-    const { body, controller, context } = await mountGitBody(backend);
-    context.state = {
-      ...context.state,
-      selectedSession: { id: "live-session", cwd: context.workspace.path, archived: false, pending: false },
-    };
+  it("does not claim a run without a panel context (the insert is a no-op)", async () => {
+    const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()));
     await selectItemRow(body, controller, context, "REQ0002");
     body.shadowRoot?.querySelector<HTMLElement>(".doorstop-menu-toggle")?.click();
     await flushMicro(body);
+    bodyShell(body).context = undefined;
     body.shadowRoot?.querySelector<HTMLElement>(".doorstop-start-review-session")?.click();
     await flushMicro(body);
-    expect(backend).toHaveBeenCalledWith(
-      DOORSTOP_ASK_AGENT_OPERATION,
-      expect.objectContaining({ sessionId: "live-session" }),
-    );
+    expect(controller.lastRun).toBeUndefined();
   });
 });
 

@@ -162,9 +162,9 @@ describe("DoorstopPanelBodyElement (peer path + last run, Phase D)", () => {
     expect(peerGit).not.toHaveBeenCalled();
     expect(git.controller.lastRun).toBeUndefined();
 
-    // v4 removed the provider `capabilities.request` field, so `peer.request`
-    // presence is the paired-backend gate: an opendoor provider with NO peer
-    // falls back to the terminal.
+    // `capabilities.request` was removed back in v4 (v5 keeps the removal),
+    // so `peer.request` presence is the paired-backend gate: an opendoor
+    // provider with NO peer falls back to the terminal.
     const noPeer = await mountBody(() => Promise.resolve(makeTreeResult()), {
       provider: opendoorProvider,
     });
@@ -173,7 +173,7 @@ describe("DoorstopPanelBodyElement (peer path + last run, Phase D)", () => {
     expect(noPeer.context.terminal.runCommand).toHaveBeenCalled();
     expect(noPeer.controller.lastRun).toBeUndefined();
 
-    // A v4 peer may legally be openChannel-only (`request?: undefined`): the
+    // A peer may legally be openChannel-only (`request?: undefined`): the
     // gate must treat it as unpaired (never silently no-op the run) and fall
     // back to the terminal.
     const channelOnly = await mountBody(() => Promise.resolve(makeTreeResult()), {

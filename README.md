@@ -20,14 +20,19 @@ Full feature spec: [`docs/feature-doorstop-plugin.md`](docs/feature-doorstop-plu
 ## Status
 
 Requires **pi-web 1.202609.1 or newer** (browser plugin API v4 / server
-plugin API v3). Tested through **pi-web 1.202610.3**, which is **additive**
-for this plugin — no source changes were needed, and once-per-plugin
-v4/v3 deprecation diagnostics are expected (see **Rollout** below for the
-upgrade order and the 1.202610.x sessiond-restart note). The Phase 3 pairing
+plugin API v3). Tested through **pi-web 1.202610.8**, which remains
+**additive** for this plugin — its browser v4/server v3 entries still load,
+with once-per-plugin deprecation diagnostics expected (see **Rollout** below
+for the upgrade order and the 1.202610.x sessiond-restart note). The Phase 3 pairing
 on top of that migration (public session metadata + session-list row
-labels, plan §2.1) stays on the same v4/v3 contracts and adds a
-1.202610.x floor for the paired dispatch path (see below). The plugin is
-fully wired and green, in two halves:
+labels, plan §2.1) stays on the same v4/v3 contracts. The package is one npm
+package (`opendoor-plugin`) that ships a PI WEB plugin AND a Pi extension:
+the plugin's browser/server halves below, plus the review-dispatch extension
+that starts labeled review conversations (`/opendoor-review`, see **Review
+dispatch (Pi extension)** below). The plugin loads on older hosts unchanged;
+only the extension's dispatch bridge, the public metadata, and the row
+labels need a 1.202610.x session daemon (see **Rollout**). The plugin is
+fully wired and green:
 
 - **Browser entry** (`src/browser/pi-web-plugin.ts`, apiVersion 4, name `Opendoor`)
   delegates to `createOpendoorBrowserContributions` in
@@ -63,8 +68,7 @@ fully wired and green, in two halves:
 - **Server entry** (`src/server-plugin.ts`, apiVersion 3, default export `PiWebServerPlugin`)
   contributes a workspace provider that claims only projects whose root
   contains a `.doorstop.yml` (cheap `fs.access` probe — everything else stays
-  with the bundled Git provider) and serves a six-operation backend plus the
-  new `doorstop.ask-agent` dispatch operation:
+  with the bundled Git provider) and serves a six-operation backend:
   `doorstop.run` runs one Doorstop CLI invocation — a review request carrying
   the opt-in `commit: true` flag is followed by a pathspec-limited git commit
   of the item file (`doorstop: review <uid>`) — the read-only
@@ -77,10 +81,22 @@ fully wired and green, in two halves:
   host's `execFile()` helper with `cwd` = the workspace path, timeouts
   clamped to 8.5 s (the review+git pipeline shares one deadline budget under
   the host's 10 s callback bound), and per-workspace run serialization. The
-  server entry also declares
-  `requires: [PI_WEB_HOST_PI_SESSIONS_CAPABILITY,
-  PI_WEB_HOST_PI_SESSION_EVENTS_CAPABILITY]` for the paired dispatch path,
-  which sets a **1.202610.x floor** for that path (see **Rollout**).
+  server entry permanently declares no `requires` and no `start()`: the
+  capability-driven `doorstop.ask-agent` dispatch it once carried was
+  unreachable by construction on a workspace-provider-contributing entry
+  (PI WEB rejects the provider-dependency capability cycle) and has been
+  retired. The review dispatch now runs in the Pi extension below.
+- **Pi extension** (`src/pi-extension/opendoor-review.ts`, bundled to
+  `dist/pi-extension/index.js` and declared by `pi.extensions`) registers
+  `/opendoor-review <UID> [instruction…]`. It publishes the shipped public
+  `opendoor` session metadata (`{ schema: 1, op: "review", uids }`) and asks
+  PI WEB's own per-session dispatch bridge to start an independent
+  conversation in the same registered project — the same spawn semantics and
+  delegation restrictions as `spawn_session`, with model/thinking inherited
+  from the initiating conversation. Every outcome (started / refused / no
+  bridge) is reported as a message in the initiating conversation. This is
+  the pathway the panel's **Start review session** entry drives (see **Review
+  dispatch (Pi extension)** below).
 
 Dispatch (per action, in `src/browser/doorstop-panel-element.ts`): when the workspace
 is opendoor-owned with an active backend, the action sends a structured
@@ -297,17 +313,18 @@ bottom:
     expanded status bar body.
 - **Ask the agent** menu: inserts ready-made prompts (explain, fix suspect
   links, draft child requirement, review readiness) into the session prompt
-  editor using the item's paths and state (feature spec §7.3). On a paired
-  install the menu adds **Start review session**: it asks the paired server
-  to start (or attach to) a review conversation pre-seeded with public
-  `opendoor` metadata, then opens that chat. The new session's list row
-  carries a **`firstUid +n` label** that reopens the Requirements tab on the
-  row's workspace — including for unselected and archived rows and with no
-  live Pi connection — landing on the item detail pane. Unpaired installs
-  hide the entry (composer-insert remains), and a refused dispatch surfaces
-  the server's message on the palette error line. See **Session metadata and
-  session-list row labels** in the feature spec for the flow, the metadata
-  schema, and the capability floor.
+  editor using the item's paths and state (feature spec §7.3). **Start
+  review session** composes `/opendoor-review <UID>` plus the item context
+  into that same editor and needs no paired backend: sending it lets the
+  opendoor Pi extension start an independent review conversation whose list
+  row carries a **`firstUid +n` label** that reopens the Requirements tab on
+  the row's workspace — including for unselected and archived rows and with
+  no live Pi connection — landing on the item detail pane. After the insert
+  the panel's status bar shows a quiet `ok` **review dispatch** run row.
+  Without the extension installed the inserted text is still a
+  self-sufficient review instruction, so the review happens in the current
+  conversation; a refused dispatch is reported in the chat by the extension.
+  See **Session metadata and session-list row labels** in the feature spec.
 - Fingerprints and the requirement state are recomputed in the browser from
   the YAML files; everything mutating goes through the visible `doorstop`
   CLI — paired, headlessly via the server entry (output captured in the
@@ -323,11 +340,26 @@ npm test           # vitest (unit tests under src/**/*.test.ts)
 npm run test:coverage  # v8 coverage report
 npm run typecheck  # tsc --noEmit (strict)
 npm run build      # esbuild: dist/browser/pi-web-plugin.js + dist/server-plugin.js
-                   # (+ verbatim package.json manifest copy into dist/)
+                   # + dist/pi-extension/index.js, then the dist-root
+                   # package.json plugin manifest (see the build script header)
 npm run dev        # watch mode build
 ```
 
 ## Installing the plugin locally (id `opendoor`)
+
+The package carries two independently enabled halves: the **PI WEB plugin**
+(browser + server entries) and the **Pi extension** (`/opendoor-review`).
+The repository-root `package.json` is the npm-package-root manifest, so both
+halves come from ONE install through **Settings → Pi packages** (npm name,
+git/URL, or a local package source). The `ln -s dist` route below remains
+available for plugin-only development.
+
+### PI WEB plugin (browser + server entries)
+
+Install the package once — **Settings → Pi packages** with source
+`opendoor-plugin` (or this repository's path / git URL) — then enable
+**Opendoor** under **Settings → PI WEB plugins**. For a plugin-only local
+build the symlink route still works:
 
 ```sh
 npm run build
@@ -347,6 +379,18 @@ The manifest should list an `opendoor` plugin entry **with a
 `backendRevision`** (signing the paired server module). If `backendRevision`
 is missing, the server module failed to load — check the sessiond log; the
 plugin still works fully via the terminal fallback.
+
+### Review dispatch (Pi extension)
+
+Installing the package is what loads the extension; enabling the PI WEB
+plugin is a separate decision. After installing or updating the package on a
+machine, run `/reload` in each idle conversation so the `/opendoor-review`
+command is registered there (an ordinary Pi-resource change — no provider
+restart involved). The extension needs PI WEB **1.202610.x** for the
+session-dispatch bridge; on an older host it reports "requires PI WEB's
+session dispatch bridge" in the conversation and starts nothing. The panel's
+**Start review session** entry needs no paired backend — it only composes the
+command into the prompt editor.
 
 ## Rollout (pi-web 1.202609.1)
 
@@ -375,13 +419,14 @@ heavily). The restart interrupts active sessions and terminals; reload the
 PI WEB page afterwards and confirm the manifest shows the opendoor entry
 with a `backendRevision`.
 
-#### Paired dispatch and session-row labels (1.202610.x floor)
+#### Review dispatch and session-row labels (1.202610.x floor)
 
-The **Start review session** flow and the session-list row labels require a
-**1.202610.x** session daemon: the opendoor server entry now declares the
-host PI-sessions and PI-session-events capabilities in `requires`. On an
-older (pre-1.202610) daemon those requirements are unmet, so the opendoor
-server module does not start — the panel falls back to the unchanged
-terminal path, and no metadata is published, so the labels stay inert. On
-1.202610.x, restart `pi-web-sessiond.service` once to load the server-side
-change; the browser side only needs a page reload.
+The **Start review session** dispatch and the session-list row labels require
+a **1.202610.x** session daemon: that release introduced the public session
+metadata, the session-list label contribution, and the per-session dispatch
+bridge the extension emits on. The opendoor **server** entry declares no
+capabilities and loads across the whole supported range. `opendoor-plugin`
+**0.4.0** is the first release carrying the extension. Restart
+`pi-web-sessiond.service` once to load the server-side change, then run
+`/reload` in each idle conversation to load the extension's
+`/opendoor-review` command; the browser side only needs a page reload.

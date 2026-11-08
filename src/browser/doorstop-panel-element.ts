@@ -1,4 +1,4 @@
-import type { WorkspacePanelContext, PluginPeer } from "@jmfederico/pi-web/plugin-api";
+import type { WorkspacePanelContextV5, PluginPeer } from "@jmfederico/pi-web/plugin-api";
 import { LitElement, html, nothing, type PropertyValues, type TemplateResult } from "lit";
 import { createRef, type Ref } from "lit/directives/ref.js";
 import { property, state } from "lit/decorators.js";
@@ -7,11 +7,8 @@ import type { ItemRecord, ItemStateKey } from "../doorstop-contract.js";
 import { formatUnknownError } from "../doorstop-contract.js";
 import {
   OPENDOOR_PLUGIN_ID,
-  DOORSTOP_ASK_AGENT_OPERATION,
   DOORSTOP_RUN_OPERATION,
-  parseDoorstopAskAgentResponse,
   parseDoorstopRunResponse,
-  type DoorstopAskAgentRequest,
   type DoorstopGitStatusFile,
   type DoorstopGitStatusResponse,
   type DoorstopRunRequest,
@@ -42,7 +39,7 @@ export const bodyElementTag = "pi-web-opendoor-panel-body";
  */
 export interface DoorstopPanelBodyElement extends LitElement {
   controller: DoorstopWorkspaceController | undefined;
-  context: WorkspacePanelContext | undefined;
+  context: WorkspacePanelContextV5 | undefined;
   result: DoorstopWorkspaceResult | undefined;
   loading: boolean;
   stale: boolean;
@@ -70,7 +67,7 @@ export interface DoorstopPanelBodyElement extends LitElement {
 /** The real host's workspace panel context does not declare `focusPrompt`
  *  (it lives on the runtime context); present only where the host supplies
  *  it (tests). */
-type PanelContextWithFocusPrompt = WorkspacePanelContext & { focusPrompt?: () => void };
+type PanelContextWithFocusPrompt = WorkspacePanelContextV5 & { focusPrompt?: () => void };
 
 export function defineDoorstopPanelElements(): void {
   defineDoorstopPanelBodyElement();
@@ -84,7 +81,7 @@ function defineDoorstopPanelBodyElement(): void {
       controller: DoorstopWorkspaceController | undefined;
 
       @property({ attribute: false })
-      context: WorkspacePanelContext | undefined;
+      context: WorkspacePanelContextV5 | undefined;
 
       @property({ attribute: false })
       result: DoorstopWorkspaceResult | undefined;
@@ -261,14 +258,15 @@ function defineDoorstopPanelBodyElement(): void {
       }
 
       /** section-API: the baseline fetch and the review→commit pipeline live
-       *  server-side, so this gates the sections that need them. The v4 peer
-       *  is the exact revision-paired path to this package's own active server
-       *  entry; v4 also removed the provider `capabilities.request` field, so
-       *  `peer.request` presence is the paired-backend gate (a legal
-       *  openChannel-only peer is NOT paired for these request-shaped
-       *  sections). The opendoor provider ownership check is kept for the
-       *  ownership-based information display (behavior-preserving Phase A;
-       *  Phase C revisits it). */
+       *  server-side, so this gates the sections that need them. The peer
+       *  (`context.peer.request`) is the exact revision-paired path to this
+       *  package's own active server entry — unchanged by the v5 migration
+       *  (the v5 scoped `backend` is not consulted here), so `peer.request`
+       *  presence stays the paired-backend gate (a legal openChannel-only
+       *  peer is NOT paired for these request-shaped sections). The opendoor
+       *  provider ownership check is kept for the ownership-based
+       *  information display (behavior-preserving Phase A; Phase C revisits
+       *  it). */
       backendActive(): boolean {
         const context = this.context;
         return (
@@ -352,63 +350,6 @@ function defineDoorstopPanelBodyElement(): void {
         (context as PanelContextWithFocusPrompt).focusPrompt?.();
         this.askMenuOpen = false;
       }
-
-      /**
-       * section-API (relay `opendoor-session-metadata-labels` §5): the
-       * "Start review session" dispatch. Present only when the workspace has
-       * the paired opendoor backend — the SAME gate `runDoorstop` uses for
-       * backend routing — so `renderAskMenu` hides the entry purely on
-       * `startReviewSession === undefined` (unpaired install or older panel
-       * host), and the peer/terminal gate itself is unchanged.
-       *
-       * The handler sends the composed review prompt through the new
-       * `doorstop.ask-agent` peer operation, including the panel's selected
-       * live conversation id for THIS workspace when there is one (F1), and
-       * on a resolved session id navigates the host to that chat. A rejection
-       * surfaces on the palette's existing `targetError` line; the
-       * composer-insert entries remain available as the fallback.
-       */
-      get startReviewSession(): ((uid: string, prompt: string) => void) | undefined {
-        return this.backendActive() ? this.dispatchReviewSession : undefined;
-      }
-
-      private readonly dispatchReviewSession = (uid: string, prompt: string): void => {
-        const context = this.context;
-        const request = context?.peer?.request;
-        if (context === undefined || request === undefined) return;
-        // F1: the primary path attaches to the user's own live conversation.
-        // Only a selected, live conversation hosted in THIS workspace is
-        // offered — anything else falls back to the server's seed session.
-        const selected = context.state?.selectedSession;
-        const sessionId =
-          selected !== undefined &&
-          !selected.archived &&
-          !selected.pending &&
-          selected.cwd === context.workspace.path
-            ? selected.id
-            : undefined;
-        const input: DoorstopAskAgentRequest =
-          sessionId === undefined ? { uid, prompt } : { uid, prompt, sessionId };
-        this.targetError = undefined;
-        void request(DOORSTOP_ASK_AGENT_OPERATION, input)
-          .then((response) => {
-            const parsed = parseDoorstopAskAgentResponse(response);
-            // No session id inside the admission window is NOT a failure: the
-            // row announces itself and its label when `session.created`
-            // lands, so there is nothing to navigate to yet.
-            if (parsed.sessionId === undefined) return;
-            void context.navigate({
-              machineId: context.machine.id,
-              projectId: context.workspace.projectId,
-              workspaceId: context.workspace.id,
-              sessionId: parsed.sessionId,
-              view: "chat",
-            });
-          })
-          .catch((error: unknown) => {
-            this.targetError = formatUnknownError(error);
-          });
-      };
 
       /**
        * The single dispatch surface of every panel action, with TWO paths:

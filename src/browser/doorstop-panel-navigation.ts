@@ -1,7 +1,8 @@
 // ---------------------------------------------------------------------------
-// Opendoor panel navigation (plan Phase C step C2 — browser API v4 deep links):
-// the contribution-scoped address-bar query state the host exposes on the
-// panel context (`WorkspacePanelContext.navigation`, host-namespaced under the
+// Opendoor panel navigation (plan Phase C step C2 — browser API v4 deep links,
+// unchanged on v5): the contribution-scoped address-bar query state the host
+// exposes on the panel context (`WorkspacePanelContextV5.navigation`,
+// host-namespaced under the
 // panel's runtime id, so these plain key names cannot collide with another
 // panel's keys).
 //

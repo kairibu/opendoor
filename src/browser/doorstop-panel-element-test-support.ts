@@ -7,7 +7,7 @@
 // individual test files; see plans/plan-browser-split.md section 6.3.)
 
 import { vi, type Mock } from "vitest";
-import type { TerminalCommandRun, Workspace, WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
+import type { TerminalCommandRun, Workspace, WorkspacePanelContextV5 } from "@jmfederico/pi-web/plugin-api";
 import type { DoorstopDocumentConfig, ItemRecord } from "../doorstop-contract.js";
 import {
   DOORSTOP_GIT_STATUS_OPERATION,
@@ -39,9 +39,10 @@ import {
 
 /** Provider metadata variants for the dispatch tests: the opendoor provider
  *  enables the peer path, the git provider (the usual fallback owner) forces
- *  the terminal path via the ownership gate. v4 removed the provider
- *  `capabilities.request` field, so capabilities carry only `remove`; the
- *  paired-backend gate is `peer.request` presence on the context. */
+ *  the terminal path via the ownership gate. The provider
+ *  `capabilities.request` field was removed back in v4 (v5 keeps the
+ *  removal), so capabilities carry only `remove`; the paired-backend gate
+ *  is `peer.request` presence on the context. */
 export const opendoorProvider: Workspace["provider"] = {
   pluginId: "opendoor",
   capabilities: { remove: false },
@@ -299,7 +300,7 @@ export function gitStatusFile(
 export async function selectItemRow(
   body: DoorstopPanelBodyElement,
   controller: DoorstopWorkspaceController,
-  context: WorkspacePanelContext,
+  context: WorkspacePanelContextV5,
   uid: string,
 ): Promise<void> {
   body.shadowRoot?.querySelector<HTMLElement>(`.doorstop-item-row[data-uid="${uid}"]`)?.click();
@@ -315,7 +316,7 @@ export async function selectItemRow(
 export function bindBody(
   body: DoorstopPanelBodyElement,
   controller: DoorstopWorkspaceController,
-  context: WorkspacePanelContext,
+  context: WorkspacePanelContextV5,
 ): void {
   body.controller = controller;
   body.context = context;

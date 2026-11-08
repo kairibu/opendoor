@@ -6,7 +6,7 @@
 // lives in ../doorstop-panel-element-test-support.ts.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type WorkspacePanelContext } from "@jmfederico/pi-web/plugin-api";
+import { type WorkspacePanelContextV5 } from "@jmfederico/pi-web/plugin-api";
 import {
   DOORSTOP_GIT_COMMIT_OPERATION,
   DOORSTOP_GIT_STAGE_OPERATION,
@@ -195,7 +195,7 @@ describe("DoorstopPanelBodyElement (git strip + stage + commit, plan-add-git-act
     expect(root?.querySelector(".doorstop-git-stage")).toBeNull();
     expect(root?.querySelector(".doorstop-git-commit")).toBeNull();
 
-    // A v4 openChannel-only peer (no `request`) is NOT a paired backend: the
+    // An openChannel-only peer (no `request`) is NOT a paired backend: the
     // request-shaped git controls stay hidden instead of rendering dead.
     const channelOnly = await mountBody(() => Promise.resolve(makeTreeResult()), {
       peerChannelOnly: true,
@@ -361,7 +361,7 @@ describe("DoorstopPanelBodyElement (git strip + stage + commit, plan-add-git-act
     const before = gitStatusCalls(backend);
     body.shadowRoot?.querySelector<HTMLButtonElement>(".doorstop-git-stage")?.click();
     await flushMicro(body);
-    bindBody(body, (body as DoorstopPanelBodyElement).controller as DoorstopWorkspaceController, body.context as WorkspacePanelContext);
+    bindBody(body, (body as DoorstopPanelBodyElement).controller as DoorstopWorkspaceController, body.context as WorkspacePanelContextV5);
     await flushMicro(body);
     // The run's success path invalidated (clearing the cached view), and the
     // element's next render re-fetched the strip through the orphan guard.

@@ -10,6 +10,7 @@
 import { describe, expect, it } from "vitest";
 import type { ItemRecord } from "../doorstop-contract.js";
 import {
+  composeReviewCommand,
   draftChildRequirementPrompt,
   explainItemPrompt,
   fixSuspectLinksPrompt,
@@ -322,6 +323,37 @@ describe("setupProjectPrompt", () => {
   });
 });
 
+describe("composeReviewCommand", () => {
+  it("pins the exact two-line command + item-context insert", () => {
+    const item = makeItem({ uid: "REQ0002", path: "reqs/srd/REQ0002.yml" });
+    expect(composeReviewCommand(item)).toBe(
+      "/opendoor-review REQ0002\n" +
+        "Review REQ0002 (`reqs/srd/REQ0002.yml`) against its child links and references; run `doorstop` " +
+        "validation and, when it is ready, `doorstop review REQ0002`.",
+    );
+  });
+
+  it("puts the command alone on line 1 so the extension's first-token UID parse is unambiguous", () => {
+    const command = composeReviewCommand(makeItem({ uid: "TST0007", path: "tests/TST0007.yml" }));
+    const [first, ...rest] = command.split("\n");
+    expect(first).toBe("/opendoor-review TST0007");
+    // Exactly two lines: the command and the instruction (the extension's
+    // argument text is everything after the single space on line 1).
+    expect(rest).toHaveLength(1);
+    expect(rest[0]?.startsWith("Review TST0007 (")).toBe(true);
+  });
+
+  it("never emits whitespace or metacharacters into the command line for index UIDs", () => {
+    // Doorstop index UIDs are `[\w.-]+` by contract; the builder must not
+    // quote or transform them (a quoting attempt would break the extension's
+    // token parse).
+    for (const uid of ["REQ0001", "TST-2.3", "REQ_0004"]) {
+      const first = composeReviewCommand(makeItem({ uid, path: `reqs/${uid}.yml` })).split("\n")[0];
+      expect(first).toBe(`/opendoor-review ${uid}`);
+    }
+  });
+});
+
 describe("prompt word budget", () => {
   const wordCount = (text: string): number => text.trim().split(/\s+/).length;
 
@@ -354,6 +386,7 @@ describe("prompt word budget", () => {
       reviewReadinessPrompt(makeItem({ uid: "REQ006", text: "" })),
       validatePrompt(),
       setupProjectPrompt(),
+      composeReviewCommand(item),
     ];
     for (const prompt of prompts) {
       expect(wordCount(prompt), prompt).toBeLessThanOrEqual(120);

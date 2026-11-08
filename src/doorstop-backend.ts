@@ -5,7 +5,7 @@ import type {
   JsonObject,
   JsonValue,
   ServerPluginPeerRequestContext,
-  ServerPluginActivationContext,
+  ServerPluginActivationContextV5,
   ServerPluginExecFileResult,
 } from "@jmfederico/pi-web/server-plugin-api";
 import {
@@ -100,7 +100,10 @@ const ITEM_PATH_WALK_MAX_ENTRIES = 2048;
  *  skip set plus the plugin's own settings directory (never an item dir). */
 const ITEM_PATH_WALK_SKIP_DIRS: ReadonlySet<string> = new Set([".git", "node_modules", ".pi-web"]);
 
-const activationRunQueues = new WeakMap<ServerPluginActivationContext, Map<string, Promise<void>>>();
+// Type-only change accompanying the v5 server entry migration: the handler
+// context parameter is the v5 activation context (the legacy v3 name remains
+// a backwards-compatible alias for the workspace-only request contract).
+const activationRunQueues = new WeakMap<ServerPluginActivationContextV5, Map<string, Promise<void>>>();
 
 /**
  * Lenient host-settings projection: `doorstopPath` and `gitPath` (non-empty
@@ -121,7 +124,7 @@ interface DoorstopBackendSettings {
 /** The server-plugin dispatcher routes by operation; this guard keeps DIRECT
  *  calls pinned to the run contract. */
 export async function requestDoorstopBackend(
-  context: ServerPluginActivationContext,
+  context: ServerPluginActivationContextV5,
   request: ServerPluginPeerRequestContext,
 ): Promise<JsonValue> {
   if (request.operation !== DOORSTOP_RUN_OPERATION) {
@@ -187,7 +190,7 @@ function doorstopArgv(run: DoorstopRunRequest): readonly string[] {
  * kill, callback abort) and rethrows untouched.
  */
 async function runDoorstop(
-  context: ServerPluginActivationContext,
+  context: ServerPluginActivationContextV5,
   settings: DoorstopBackendSettings,
   cwd: string,
   args: readonly string[],
@@ -255,7 +258,7 @@ function doorstopRunResponse(
  * the activation never accumulates settled promises.
  */
 async function runSerialized<T>(
-  context: ServerPluginActivationContext,
+  context: ServerPluginActivationContextV5,
   cwd: string,
   action: () => Promise<T>,
 ): Promise<T> {
@@ -340,7 +343,7 @@ function commitStderrExcerpt(stderr: string): string {
  * handlers degrade it to `{ git: false }` / an empty candidate set.
  */
 async function runGit(
-  context: ServerPluginActivationContext,
+  context: ServerPluginActivationContextV5,
   settings: DoorstopBackendSettings,
   cwd: string,
   args: readonly string[],
@@ -423,7 +426,7 @@ function gitStepFailure(result: ServerPluginExecFileResult, args: readonly strin
  * error).
  */
 async function reviewCommitPipeline(
-  context: ServerPluginActivationContext,
+  context: ServerPluginActivationContextV5,
   settings: DoorstopBackendSettings,
   cwd: string,
   uid: string,
@@ -529,7 +532,7 @@ async function reviewCommitPipeline(
  * serialization and the same `startedAt` deadline budget.
  */
 export async function requestDoorstopBaseline(
-  context: ServerPluginActivationContext,
+  context: ServerPluginActivationContextV5,
   request: ServerPluginPeerRequestContext,
 ): Promise<JsonValue> {
   if (request.operation !== DOORSTOP_BASELINE_OPERATION) {
@@ -639,7 +642,7 @@ export async function requestDoorstopBaseline(
  *  always acceptable and the response must keep resolving in the contract
  *  shape. */
 async function baselineGit(
-  context: ServerPluginActivationContext,
+  context: ServerPluginActivationContextV5,
   settings: DoorstopBackendSettings,
   cwd: string,
   args: readonly string[],
@@ -790,7 +793,7 @@ function itemFileBase(name: string): string | undefined {
  * serialization and the `startedAt` deadline budget.
  */
 export async function requestDoorstopGitStatus(
-  context: ServerPluginActivationContext,
+  context: ServerPluginActivationContextV5,
   request: ServerPluginPeerRequestContext,
 ): Promise<JsonValue> {
   if (request.operation !== DOORSTOP_GIT_STATUS_OPERATION) {
@@ -1117,7 +1120,7 @@ function unstageResetTargets(stdout: string, paths: readonly string[]): string[]
  * excerpt for a git error) and only a host-attributed ABORT rethrows.
  */
 export async function requestDoorstopGitStage(
-  context: ServerPluginActivationContext,
+  context: ServerPluginActivationContextV5,
   request: ServerPluginPeerRequestContext,
 ): Promise<JsonValue> {
   if (request.operation !== DOORSTOP_GIT_STAGE_OPERATION) {
@@ -1218,7 +1221,7 @@ function stageResponse(status: DoorstopGitStageResponse["status"], staged?: numb
  * rethrows.
  */
 export async function requestDoorstopGitUnstage(
-  context: ServerPluginActivationContext,
+  context: ServerPluginActivationContextV5,
   request: ServerPluginPeerRequestContext,
 ): Promise<JsonValue> {
   if (request.operation !== DOORSTOP_GIT_UNSTAGE_OPERATION) {
@@ -1319,7 +1322,7 @@ function unstagedResponse(
  * rethrows.
  */
 export async function requestDoorstopGitCommit(
-  context: ServerPluginActivationContext,
+  context: ServerPluginActivationContextV5,
   request: ServerPluginPeerRequestContext,
 ): Promise<JsonValue> {
   if (request.operation !== DOORSTOP_GIT_COMMIT_OPERATION) {

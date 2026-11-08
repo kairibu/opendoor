@@ -23,6 +23,12 @@
 //     children the caller resolves from the index's reverse map, or defers
 //     child-link coverage to the `doorstop` run when none are passed; an item
 //     without references gets no reference list to verify.
+//   - composeReviewCommand is the ONE builder that is NOT a bare instruction:
+//     it emits the `/opendoor-review <uid>` Pi command on line 1 (consumed by
+//     the opendoor Pi extension, which spawns an independent labeled review
+//     conversation) and the self-sufficient review instruction on line 2 (the
+//     command's argument text, and the whole text an agent reads when the
+//     extension is not installed — the documented fallback).
 // ---------------------------------------------------------------------------
 
 import type { ItemRecord } from "../doorstop-contract.js";
@@ -187,6 +193,30 @@ export function reviewReadinessPrompt(item: ItemRecord, children: readonly ItemR
     `verify that ${facts.join("; ")}. Then run \`doorstop\` in the workspace root and weigh any WARNING ` +
     `or ERROR it reports about ${item.uid} (for example a requirement that should link to ${item.uid} ` +
     `but does not). Report a verdict, and if ${item.uid} is not ready, the exact fixes to make first.`
+  );
+}
+
+/**
+ * Start review session — the composer-insert half of the dispatch flow
+ * (relay `opendoor-dispatch-redesign` design §1.2/§2.1). Two lines:
+ *
+ *   1. `/opendoor-review <uid>` — the Pi-extension prompt command. The
+ *      extension parses the UID from the first token and treats the rest of
+ *      the insert as the spawned conversation's prompt (verbatim).
+ *   2. The item-context instruction, built from the item's own path: the
+ *      spawned review session gets actionable context, and when NO extension
+ *      is installed the agent reading this text as an ordinary prompt does the
+ *      same review in the current conversation (the documented degradation).
+ *
+ * The UID is a Doorstop index UID (already a safe token by contract), so the
+ * command line can never smuggle whitespace or metacharacters into the
+ * extension's argument parse.
+ */
+export function composeReviewCommand(item: ItemRecord): string {
+  return (
+    `/opendoor-review ${item.uid}\n` +
+    `Review ${item.uid} (\`${item.path}\`) against its child links and references; run \`doorstop\` ` +
+    `validation and, when it is ready, \`doorstop review ${item.uid}\`.`
   );
 }
 

@@ -10,18 +10,23 @@
 // and falls back to the terminal when unpaired (Phase D step 9). Host
 // imports are type-only.
 //
-// Browser plugin API v4 (pi-web 1.202609.1): `apiVersion: 4`. The v4 host
-// removed the old `context.backend` surface and the provider
-// `capabilities.request` field; the peer (`context.peer`) is now the exact
-// revision-paired path to this package's own active server entry, decoupled
-// from workspace ownership.
+// Browser plugin API v5 (pi-web 1.202610.8): `apiVersion: 5`, typed as
+// `PiWebPluginV5`. The v5 host adds `catalog` (read-only
+// project/workspace/session discovery) and a scoped `backend` to the
+// panel/action/label callback contexts delivered through the unchanged
+// contribution surface (`PiWebPluginV5` is the v4 entrypoint's contributions
+// plus the V5 context variants). This entry exposes neither new surface
+// yet: the panel keeps reading `context.peer` and the existing ownership
+// gate (`context.workspace.provider?.pluginId`) — behavior, rendering and
+// fallback paths are unchanged; the migration only upgrades the entry
+// contract so v5 contexts arrive when the host dispatches them.
 // ---------------------------------------------------------------------------
 
-import type { PiWebPlugin } from "@jmfederico/pi-web/plugin-api";
+import type { PiWebPluginV5 } from "@jmfederico/pi-web/plugin-api";
 import { createOpendoorBrowserContributions } from "./doorstop-contributions.js";
 
-const plugin: PiWebPlugin = {
-  apiVersion: 4,
+const plugin: PiWebPluginV5 = {
+  apiVersion: 5,
   name: "Opendoor",
   activate: ({ runtimePluginId, html, svg }) => ({
     contributions: createOpendoorBrowserContributions(runtimePluginId, html, svg),

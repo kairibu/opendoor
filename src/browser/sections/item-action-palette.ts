@@ -10,7 +10,7 @@
 import { html, nothing, type TemplateResult } from "lit";
 import { ref, type Ref } from "lit/directives/ref.js";
 import { gitStageIconSvg, gitUnstageIconSvg } from "../doorstop-panel-icons.js";
-import { draftChildRequirementPrompt, explainItemPrompt, fixSuspectLinksPrompt, reviewReadinessPrompt } from "../doorstop-prompts.js";
+import { composeReviewCommand, draftChildRequirementPrompt, explainItemPrompt, fixSuspectLinksPrompt, reviewReadinessPrompt } from "../doorstop-prompts.js";
 import type { DoorstopPanelSectionsApi } from "../doorstop-panel-section-host.js";
 import { type DoorstopIndex, type ItemRecord } from "../../doorstop-contract.js";
 import { doorstopCommitAfterReview, firstChildDocumentPrefix, gitStatusFileFor, itemStageable, itemUnstageable, isValidTargetUid, suspectParentItems } from "../doorstop-panel-view-model.js";
@@ -114,9 +114,6 @@ export function renderAskMenu(
 ): TemplateResult {
   const children = index.childrenByUid.get(item.uid) ?? [];
   const childPrefix = firstChildDocumentPrefix(index, item);
-  // Read the optional member ONCE: absent means "no paired backend" (the
-  // entry is hidden), and the captured callable is what the click invokes.
-  const startReviewSession = host.startReviewSession;
   return html`
     <div class="doorstop-menu">
       <button
@@ -148,21 +145,39 @@ export function renderAskMenu(
                 }}
               >Draft child requirement</button>
               <button type="button" role="menuitem" class="doorstop-menu-item doorstop-review-readiness" @click=${() => { host.insertPrompt(reviewReadinessPrompt(item, children)); }}>Review readiness</button>
-              ${startReviewSession === undefined
-                ? nothing
-                : html`<button
-                    type="button"
-                    role="menuitem"
-                    class="doorstop-menu-item doorstop-start-review-session"
-                    ?disabled=${host.runInProgress !== undefined}
-                    title=${`Start a review conversation for ${item.uid}`}
-                    @click=${() => { startReviewSession(item.uid, reviewReadinessPrompt(item, children)); }}
-                  >Start review session</button>`}
+              <button
+                type="button"
+                role="menuitem"
+                class="doorstop-menu-item doorstop-start-review-session"
+                title=${`Start an independent review session for ${item.uid} (inserts /opendoor-review)`}
+                @click=${() => { insertReviewCommand(host, item); }}
+              >Start review session</button>
             </div>
           `
         : nothing}
     </div>
   `;
+}
+
+/**
+ * Start review session (relay `opendoor-dispatch-redesign` design §2.1/§3):
+ * compose the `/opendoor-review <uid>` insert and hand it to the shared
+ * composer-insert path, then commit the status bar's ask-run record so the
+ * bar reports the insert in the SAME run-outcome area every other panel
+ * action uses. The peer `doorstop.ask-agent` operation no longer exists, so
+ * there is no navigation and no `targetError` write on this path; the spawned
+ * conversation announces itself (and its session-row label) through the
+ * host's `session.created` event.
+ *
+ * The `context === undefined` guard mirrors {@link DoorstopPanelSectionsApi.insertPrompt}'s
+ * own no-op guard: a handler with no prompt editor must not claim a run that
+ * never happened (and the entry is not hidden without a paired backend — the
+ * composer-insert entries are the unchanged fallback).
+ */
+export function insertReviewCommand(host: DoorstopPanelSectionsApi, item: ItemRecord): void {
+  if (host.context === undefined) return;
+  host.insertPrompt(composeReviewCommand(item));
+  host.controller?.commitAskReview(item.uid);
 }
 
 export function reviewItem(host: DoorstopPanelSectionsApi, item: ItemRecord): void {

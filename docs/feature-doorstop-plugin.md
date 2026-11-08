@@ -19,36 +19,48 @@ archived rows, and with no live Pi connection.
 
 ### Start review session
 
-On a **paired** install only (the workspace is opendoor-owned with an active
-peer backend), the item palette's **Ask agent** menu gains one entry,
-**Start review session**. It differs from the existing composer-insert
-entries (Explain / Fix suspect links / Draft child requirement / Review
-readiness), which never change:
+The item palette's **Ask agent** menu carries one entry, **Start review
+session**, alongside the plain composer-insert entries (Explain / Fix suspect
+links / Draft child requirement / Review readiness). It needs NO paired
+backend: it composes a two-line insert into the session prompt editor.
 
-1. The browser sends the new peer operation
-   **`doorstop.ask-agent`** with the item UID, the composed review prompt
-   (`reviewReadinessPrompt(item, children)`), and — when the panel has a
-   live conversation selected in that same workspace — that exact
-   conversation id.
-2. The paired server resolves the workspace authority from the request
-   context, then either connects to the supplied live conversation or
-   publishes a promptless seed conversation and connects to it (a refused
-   primary connection falls back to the seed once).
-3. The server emits the host's own session-dispatch frame
-   (`pi-web:session-dispatch:v1`) with the prompt and the public metadata
-   pre-seeded. The host's builtin bridge spawns an independent conversation
-   in a workspace of the same registered project (the same delegation rules
-   as `spawn_session`; the conversation belongs to the user once published).
-4. The server answers `{ dispatched: true, sessionId? }`; the panel
-   navigates to the spawned chat when the id arrived inside the bounded
-   admission window, and otherwise simply waits — the new row announces
-   itself and its label appears via the host's `session.created` event.
+1. Line 1 is the Pi prompt command **`/opendoor-review <UID>`**, registered
+   by the opendoor Pi extension (`src/pi-extension/opendoor-review.ts`, built
+   to `dist/pi-extension/index.js` and declared by the package manifest's
+   `pi.extensions`).
+2. Line 2 is the item-context instruction (the self-sufficient review text
+   naming the item's file path and the `doorstop` commands).
 
-Unpaired installs (or older hosts) hide the entry entirely; the
-composer-insert entries keep working. If dispatch is rejected (delegation
-tools disabled, project-scope refusal), the panel shows the server message
-on its existing error line and the composer-insert entries remain the
-fallback.
+Sending the prompt hands the text to the extension's command handler, which
+parses the UID from the first whitespace-delimited token, takes the remaining
+text as the spawned conversation's instruction (the built-in instruction is
+used only for a bare `/opendoor-review <UID>`), builds the public metadata
+with the shipped strict builder (`buildDoorstopSessionMetadata("review",
+[uid])`), and emits the host's own session-dispatch frame
+(`pi-web:session-dispatch:v1`). The host's builtin bridge spawns an
+independent conversation in a workspace of the same registered project (the
+same delegation rules as `spawn_session`; the conversation belongs to the
+user once published) named `Doorstop review <UID>`, with the metadata
+persisted as the public session entry.
+
+After a successful insert the panel commits a quiet `ok` **review dispatch**
+run record into its existing status bar (op `ask-review`, no exit code, no
+output, no commit narration). The spawned row then announces itself through
+the host's `session.created` event, so the panel neither navigates nor waits.
+
+Degradation is explicit:
+
+- **No extension installed**: line 2 is a self-sufficient instruction, so the
+  agent reading the prompt as ordinary text performs the same review in the
+  current conversation; the spawned row simply does not appear.
+- **No dispatch bridge** (an older host): the extension reports "requires
+  PI WEB's session dispatch bridge" in the initiating conversation and starts
+  nothing.
+- **A refused dispatch** (delegation tools disabled, project-scope refusal,
+  oversized prompt): the bridge's rejection is reported verbatim as a message
+  in the initiating conversation. The panel cannot observe it — with the peer
+  operation retired there is no machine-readable channel back to the browser —
+  so the chat reply is the failure surface, deliberately.
 
 ### Metadata schema
 
@@ -83,11 +95,20 @@ private conversation data.
 
 ### Capability floor and degradation
 
-The paired dispatch path requires a **1.202610.x session daemon**
-(`requires: [PI_WEB_HOST_PI_SESSIONS_CAPABILITY,
-PI_WEB_HOST_PI_SESSION_EVENTS_CAPABILITY]`). On an older daemon the opendoor
-server module does not start: the workspace falls back to the terminal path
-(unchanged) and the session labels stay inert (no metadata is ever
-published). On any host, absent/malformed metadata renders no label — older
-browser hosts that do not support session labels simply ignore the
-contribution. A sessiond restart is required to load the server-side change.
+The opendoor **server** entry declares no capabilities (`requires`) and no
+`start()`; it loads across the plugin's whole supported range. The
+capability-driven `doorstop.ask-agent` peer operation it once carried was
+unreachable by construction — PI WEB rejects a workspace-provider-contributing
+entry that (transitively) requires a late host capability — and has been
+retired together with its dispatch module.
+
+The **1.202610.x floor** therefore applies only to the features that need that
+release: the public `SessionUiMetadata` entry, the session-list label
+contribution, and the per-session extension dispatch bridge. On an older
+daemon the server plugin still loads and the panel works fully; the extension
+reports the missing bridge in the conversation, no metadata is ever
+published, and the labels stay inert. On any host, absent/malformed metadata
+renders no label — older browser hosts that do not support session labels
+simply ignore the contribution. A sessiond restart (server side) plus
+`/reload` in each idle conversation (extension side) is what loads the
+change.

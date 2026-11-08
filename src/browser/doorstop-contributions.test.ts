@@ -25,11 +25,11 @@ import {
   type Mock,
 } from "vitest";
 import type {
-  PluginContributions,
+  PluginContributionsV5,
   Workspace,
-  WorkspaceLabelContext,
+  WorkspaceLabelContextV5,
   WorkspaceLabelItem,
-  WorkspacePanelContext,
+  WorkspacePanelContextV5,
 } from "@jmfederico/pi-web/plugin-api";
 import type { DoorstopCounts } from "../doorstop-contract.js";
 import { buildDoorstopIndex } from "../doorstop-model.js";
@@ -39,7 +39,7 @@ import { loadDoorstopWorkspace } from "./doorstop-panel.js";
 import type { DoorstopWorkspaceController } from "./doorstop-panel-controller.js";
 import { createOpendoorBrowserContributions } from "./doorstop-contributions.js";
 import { createFakeFiles, dirEntry, fileEntry, text, tree, type FakeWorkspaceFiles } from "../test-support.js";
-import { doorstopWorkspace, flushAll, makeDocument, makeWorkspace, navigationHarness, panelContext } from "../test-fixtures.js";
+import { doorstopWorkspace, fakeCatalog, flushAll, makeDocument, makeWorkspace, navigationHarness, panelContext } from "../test-fixtures.js";
 
 // The label cache's LRU bound (DOORSTOP_LABEL_STATE_LIMIT in
 // doorstop-contributions.ts, deliberately module-private); tests pin the
@@ -114,9 +114,9 @@ function createContributions(runtimePluginId = "opendoor") {
 
 /** The label contribution's two synchronous callbacks, guarded to be
  *  present (the factory always sets both). */
-function requireLabel(contributions: PluginContributions): {
-  items: (context: WorkspaceLabelContext) => WorkspaceLabelItem[];
-  visible: (context: WorkspaceLabelContext) => boolean;
+function requireLabel(contributions: PluginContributionsV5): {
+  items: (context: WorkspaceLabelContextV5) => WorkspaceLabelItem[];
+  visible: (context: WorkspaceLabelContextV5) => boolean;
 } {
   const label = contributions.workspaceLabels?.[0];
   if (label === undefined) throw new Error("Expected opendoor label contribution");
@@ -130,10 +130,13 @@ function requireLabel(contributions: PluginContributions): {
 function labelContext(
   fake: FakeWorkspaceFiles,
   workspace: Workspace = doorstopWorkspace,
-): { context: WorkspaceLabelContext; requestRender: Mock } {
+): { context: WorkspaceLabelContextV5; requestRender: Mock } {
   const requestRender = vi.fn();
-  const context: WorkspaceLabelContext = {
+  const context: WorkspaceLabelContextV5 = {
     machine: { id: "local", name: "local", kind: "local" },
+    // v5 context surface: the fake catalog is inert — the label never
+    // consults it (see fakeCatalog in test-fixtures).
+    catalog: fakeCatalog(),
     workspace,
     files: fake.files,
     host: { requestRender },
@@ -198,7 +201,7 @@ describe("createOpendoorBrowserContributions (contribution shape)", () => {
     expect(panel.order).toBe(5);
     expect(panel.order).toBeLessThan(10);
     expect(panel.icon).toBeDefined();
-    expect(panel.visible?.({} as WorkspacePanelContext)).toBe(true);
+    expect(panel.visible?.({} as WorkspacePanelContextV5)).toBe(true);
     // Plan Phase C step C1 — typed invalidation: the panel subscribes to the
     // `workspace.files` resource so the host invalidates it on file
     // mutations and finished agent activity, not only on manual refresh.
@@ -310,6 +313,33 @@ describe("panel render wiring", () => {
     expect(updated.values[14]).toBeUndefined();
     expect(updated.values[15]).toBe(controller.gitStatusInFlight);
     expect(updated.values[15]).toBe(false);
+  });
+
+  // V5 plugwire guard: the panel never consults the host's read-only catalog
+  // (bootstrap discovery, render, a selection interaction, and a re-render
+  // over a real load cycle). The plugin deliberately does NOT declare the
+  // catalog capability (see test-fixtures); this pins the render path too.
+  it("never consults the host catalog during a representative panel cycle", async () => {
+    const contributions = createContributions();
+    const panel = contributions.workspacePanels?.[0];
+    if (panel === undefined) throw new Error("Expected opendoor panel contribution");
+
+    const { context } = panelContext({ fake: docFiles() });
+    const projectsList = vi.spyOn(context.catalog.projects, "list");
+
+    // Render + connect so the load lands against the fake files.
+    const rendered = panel.render(context);
+    const controller = rendered.values[0] as DoorstopWorkspaceController | undefined;
+    if (controller === undefined) throw new Error("Expected the render to bind the controller");
+    controller.hostConnected();
+    await flushAll();
+    if (controller.result === undefined) throw new Error("Expected the controller load to land");
+
+    // A representative selection interaction, then a re-render.
+    controller.selectUid("REQ0001");
+    panel.render(context);
+
+    expect(projectsList).not.toHaveBeenCalled();
   });
 });
 
