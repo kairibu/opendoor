@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { html } from "lit";
 import type { MarkdownRenderRequest } from "@jmfederico/pi-web/plugin-api";
 import { type DoorstopIndex } from "../../doorstop-contract.js";
+import { parseDoorstopItem } from "../../doorstop-model.js";
 import { computeItemStamp } from "../../doorstop-state.js";
 import { shortFingerprint, type DoorstopPanelBodyElement } from "../doorstop-panel-elements.js";
 import type { DoorstopMarkdownRenderer } from "../doorstop-markdown.js";
@@ -108,16 +109,20 @@ describe("DoorstopPanelBodyElement (detail pane: item text is host-rendered Mark
   });
 
   it("does not duplicate a markdown item's header inside the rendered body", async () => {
-    // `parseDoorstopItem` moves a leading `# Heading` into `item.header`, so the
-    // detail pane receives a body without it (doorstop-model.ts deriveMarkdownBody).
+    // The item flows through the REAL model chain: `parseDoorstopItem` lifts the
+    // leading `# Heading` into `item.header` and hands the detail pane a body
+    // WITHOUT it (doorstop-model.ts deriveMarkdownBody), which is exactly the
+    // condition under test — a hand-built ItemRecord could not prove that.
     const { renderer, render } = fakeMarkdownRenderer();
-    const item = makeItem({
-      uid: "REQ0001",
-      documentPrefix: "REQ",
-      header: "Identifiers",
-      text: "Doorstop **shall** provide unique identifiers.",
-    });
-    const { body, controller, context } = await mountBody(() => Promise.resolve(makeResult([item], [makeDocument()])), {
+    const document = makeDocument({ itemformat: "markdown" });
+    const { item, diagnostics } = parseDoorstopItem(
+      "reqs/REQ0001.md",
+      "# Identifiers\n\nDoorstop **shall** provide unique identifiers.",
+      document,
+    );
+    expect(diagnostics).toEqual([]);
+    expect(item.header).toBe("Identifiers");
+    const { body, controller, context } = await mountBody(() => Promise.resolve(makeResult([item], [document])), {
       markdownRenderer: renderer,
     });
     const root = body.shadowRoot;
@@ -136,6 +141,31 @@ describe("DoorstopPanelBodyElement (detail pane: item text is host-rendered Mark
     const head = root.querySelector(".doorstop-detail-head h3");
     expect(head?.textContent).toBe("Identifiers");
     expect(root.querySelector(".doorstop-detail h3 .markdown-stub")).toBeNull();
+  });
+
+  it("takes the machine id from the CURRENT context on re-render (federated path)", async () => {
+    const { renderer, render } = fakeMarkdownRenderer();
+    const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()), {
+      markdownRenderer: renderer,
+    });
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+    root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0001"]')?.click();
+    bindBody(body, controller, context, renderer);
+    await flushMicro(body);
+    expect(render.mock.calls[0]?.[0]).toMatchObject({ machineId: "local" });
+
+    // The host re-binds the same body element against another machine (remote
+    // workspace). The request must follow the NEW context, not the one captured
+    // at mount time — the host selects its markdown engine per machineId.
+    bindBody(body, controller, { ...context, machine: { id: "remote-1", name: "remote-1", kind: "remote" } }, renderer);
+    await flushMicro(body);
+
+    expect(render.mock.calls[1]?.[0]).toMatchObject({
+      machineId: "remote-1",
+      text: "The system shall do X.",
+      allowManualPreview: true,
+    });
   });
 });
 

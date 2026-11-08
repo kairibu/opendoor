@@ -210,20 +210,27 @@ export const detailPaneStyles = css`
          * root of its own — createRenderRoot returns the element), so the prose
          * rules below reach them. The plain-text pre-wrap on .doorstop-text is
          * not appropriate inside Markdown blocks; the boundary's own source
-         * fallback sets its own pre-wrap inline. */
+         * fallback sets its own pre-wrap inline.
+         *
+         * This element does NOT inherit host typography: the boundary only
+         * avoids adding a shadow root, it does not import host theme CSS into
+         * ours, so every rule the document needs is restated here. */
         .doorstop-text-markdown {
           white-space: normal;
         }
 
-        .doorstop-text-markdown > :first-child {
+        /* Edge trimming must reach the BLOCKS, not the wrappers: the boundary
+         * element (display: contents) and its .content-rendering-body wrapper
+         * sit between this element and the rendered blocks, so a direct-child
+         * (> :first-child) selector only ever matched the boundary itself. No
+         * matching :last-child rule: the body keeps the source-fallback span
+         * AFTER the content wrapper, so the last block is never a last-child;
+         * its trailing 8px margin is invisible inside the bordered box. */
+        .doorstop-text-markdown :is(p, ul, ol, pre, blockquote, .table-scroll, h1, h2, h3, h4, h5, h6):first-child {
           margin-top: 0;
         }
 
-        .doorstop-text-markdown > :last-child {
-          margin-bottom: 0;
-        }
-
-        .doorstop-text-markdown :is(p, ul, ol, blockquote, table) {
+        .doorstop-text-markdown :is(p, ul, ol, blockquote, .table-scroll) {
           margin: 0 0 8px;
         }
 
@@ -264,8 +271,32 @@ export const detailPaneStyles = css`
           color: var(--pi-muted);
         }
 
+        /* The host wraps every table in a div.table-scroll role=region
+         * tabindex=0 and styles it ONLY from host theme CSS
+         * (pi-web base/formattedText.css), which does not reach this
+         * unregistered shadow root. Without these two rules a wide table is
+         * clipped by the pane and its focusable region is unusable, so the
+         * panel restates the host's rules (pi-web 1.202611.1).
+         *
+         * overflow-wrap: normal undoes the anywhere inherited from
+         * .doorstop-text: harmless (host-identical) in prose, but inside table
+         * cells it would let every column collapse to min-content instead of
+         * making the table overflow into its scroll region. */
+        .doorstop-text-markdown .table-scroll {
+          max-width: 100%;
+          overflow-x: auto;
+          overflow-y: hidden;
+          overflow-wrap: normal;
+        }
+
+        .doorstop-text-markdown .table-scroll:focus-visible {
+          outline: 1px solid var(--pi-accent);
+          outline-offset: 2px;
+        }
+
         .doorstop-text-markdown table {
           border-collapse: collapse;
+          margin: 0;
         }
 
         .doorstop-text-markdown :is(th, td) {

@@ -12,6 +12,16 @@
 // plugin's own lit shadow tree is exactly the same move the panel already makes
 // for host-provided `html` tags (doorstop-contributions.ts).
 //
+// STYLING BOUNDARY (plan §2.1 review): the rendered document — including the
+// sanitized presentation HTML other plugins' markdown extensions contribute —
+// lands INLINE in the panel's own node tree, because the host's
+// `pi-web-content-rendering-boundary` element deliberately has no shadow root
+// (createRenderRoot returns the element). What does NOT come along is styling:
+// other plugins' stylesheet contributions and host theme CSS never apply to an
+// unregistered root, so host rules such as `.table-scroll` and the `.formatted`
+// prose set are absent here. The panel therefore restates every rule its
+// documents need in `styles/detail-pane.ts` (.doorstop-text-markdown).
+//
 // DECISION D1 — how the capability is obtained: DECLARE it in `requires`.
 //
 //   Option A (chosen): `requires: [DOORSTOP_MARKDOWN_CAPABILITY]` on the

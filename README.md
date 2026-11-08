@@ -472,11 +472,16 @@ Because the public `PluginCapabilityResolver` only offers a total
 rejected before `start`), the requirement is declared in `requires`, which
 hard-raises the browser plugin's host floor to **1.202611.1**. The mount also
 needs no stylesheet registration for this: the host's rendering boundary
-deliberately renders into the consumer's shadow root, so the panel's own
-`.doorstop-text-markdown` prose rules style the rendered document. Host
-**shared UI** classes and extension presentation HTML do not reach an
-unregistered root — a future follow-up may add `stylesheet-integration` if
-the panel ever wants host typography verbatim.
+deliberately renders into the consumer's shadow root (its rendered content —
+including the sanitized presentation HTML other plugins contribute for their
+syntax — lands inline in the panel's own tree), so the panel's
+`.doorstop-text-markdown` prose rules style the rendered document. What the
+unregistered root does *not* get is the host's styling: other plugins'
+stylesheet contributions and host theme CSS (for example the host's own
+`.table-scroll` rules for the table wrappers the renderer emits) do not apply
+automatically — which is why the panel ships its own `.table-scroll` and prose
+rules instead of relying on host typography. A future follow-up may add
+`stylesheet-integration` if the panel ever wants host typography verbatim.
 
 Host upgrade order across this range:
 

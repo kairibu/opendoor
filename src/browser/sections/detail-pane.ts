@@ -111,7 +111,7 @@ export function renderDetail(host: DoorstopPanelSectionsApi, result: DoorstopWor
  * renderer (tests) and the theoretical pre-`start()` render described in
  * doorstop-markdown.ts (decision D1).
  */
-export function renderItemText(host: DoorstopPanelSectionsApi, item: ItemRecord): TemplateResult {
+function renderItemText(host: DoorstopPanelSectionsApi, item: ItemRecord): TemplateResult {
   if (item.text === "") {
     return html`<p class="doorstop-text doorstop-text-empty">empty</p>`;
   }
