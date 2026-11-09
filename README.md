@@ -13,6 +13,20 @@ the **Changes since review** diff, and Review can opt in to a review commit
 Full feature spec: [`docs/feature-doorstop-plugin.md`](docs/feature-doorstop-plugin.md)
 (§5 architecture, §6 requirements state model, §7–§8 UI/actions).
 
+## Installation
+
+Install from npm as a Pi package (requires **pi-web 1.202611.1 or newer**):
+
+```bash
+pi install npm:opendoor-plugin
+```
+
+or via the UI: **Settings → Pi packages → `npm:opendoor-plugin`**.
+
+After installing, restart `pi-web-sessiond` (server plugins load only on
+sessiond restart) and reload the browser tab — the Requirements tab then
+appears for any workspace whose root has a `.doorstop.yml`.
+
 ## Status
 
 Requires **pi-web 1.202611.1 or newer** (browser and server plugin API v5). 
