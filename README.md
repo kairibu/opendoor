@@ -453,7 +453,7 @@ surfaces of these releases are ones opendoor still does not consume
 here said 1.202610.5, the first release accepting browser API v5 modules;
 that is now historical).
 
-#### Item text is host-rendered Markdown (plan §2.1, decision D1)
+#### Item text and prose attributes are host-rendered Markdown (plan §2.1/D1, plan-attribute-markdown §2/D2)
 
 Doorstop item bodies (`item.text`) are Markdown, and the detail pane renders
 them through pi-web's own `pi-web/markdown-rendering@1` capability instead of
@@ -462,8 +462,10 @@ defers parsing until the node is visible, and applies its **document policy**
 (raw source HTML escaped, images omitted, links limited to `http:`/`https:`/
 `mailto:`). Allowed prose attributes render the same way: an extended
 attribute whose name is in the curated allowlist (`DOORSTOP_MARKDOWN_ATTRIBUTES`,
-initially only `rationale`, matched case-insensitively) is rendered through
-the same request when its value is a string; every other extended attribute —
+initially only `rationale`, matched case-insensitively) and whose value is a
+string is rendered through the same request, using the trimmed text. A string
+that is empty or whitespace-only after trimming gets the muted `empty` marker
+instead — neither Markdown nor escaped text. Every other extended attribute —
 and every non-string value — stays escaped text. Nothing else in the pane goes
 through the renderer — flags, chips, link rows, references, findings, the diff
 and the item header (`item.header`, the leading `# Heading` the model already
