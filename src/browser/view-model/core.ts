@@ -236,6 +236,38 @@ export function jsonishText(value: unknown): string {
   return json === undefined ? String(value) : json;
 }
 
+/**
+ * The extended attributes rendered through the host Markdown renderer (plan
+ * `plan-attribute-markdown`, decision D2). Lives here, next to the plain
+ * formatters it complements, because the detail pane's render branch and any
+ * future consumer must agree on exactly one list.
+ *
+ * A CURATED, case-insensitive allowlist — deliberately NOT "every string
+ * attribute" (D2 option B, rejected): string-valued attributes are not always
+ * prose. Identifiers, regexes, commands and single dates would be silently
+ * Markdown-mangled (a value of `*` or `1. item` reflows), and a wrong guess
+ * here CORRUPTS INFORMATION, not just styling. `rationale` is a
+ * requirements-engineering convention, so an attribute of that name is prose
+ * wherever it appears; extending the list (e.g. `note`) is a one-line change
+ * with its own test. The list stays lowercase — the KEY match is
+ * case-insensitive (a YAML author may write `Rationale:`).
+ */
+export const DOORSTOP_MARKDOWN_ATTRIBUTES: readonly string[] = Object.freeze(["rationale"]);
+
+/**
+ * True when `key` is an allowlisted prose attribute AND `value` is a string —
+ * the type guard IS the D3 value-shape gate.
+ *
+ * Non-string values of an allowlisted key are therefore NOT markdown: a
+ * `rationale:` list or map keeps the `jsonishText` `<code>` rendering (unusual,
+ * but it must neither crash nor be silently stringified). Emptiness is left to
+ * the caller: the detail pane trims and renders its muted empty marker for a
+ * whitespace-only string instead of falling back to a quoted `""` code.
+ */
+export function isMarkdownAttribute(key: string, value: unknown): value is string {
+  return typeof value === "string" && DOORSTOP_MARKDOWN_ATTRIBUTES.includes(key.toLowerCase());
+}
+
 export function diffValueText(value: unknown): string {
   return value === undefined ? "—" : jsonishText(value);
 }

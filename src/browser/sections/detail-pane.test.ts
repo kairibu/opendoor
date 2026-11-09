@@ -169,6 +169,203 @@ describe("DoorstopPanelBodyElement (detail pane: item text is host-rendered Mark
   });
 });
 
+describe("DoorstopPanelBodyElement (detail pane: allowlisted prose attributes render Markdown, plan plan-attribute-markdown)", () => {
+  /** Mount ONE item whose body is empty (so the only possible renderer call
+   *  comes from an attribute) with the given extended attributes, select it and
+   *  settle. `text: ""` is deliberate: it keeps "how many times did the pane
+   *  call the renderer" a clean assertion about ATTRIBUTES only. */
+  async function mountAttributes(
+    attributes: Record<string, unknown>,
+    options: { markdownRenderer?: DoorstopMarkdownRenderer } = {},
+  ) {
+    const item = makeItem({ uid: "REQ0001", documentPrefix: "REQ", text: "", attributes });
+    const mounted = await mountBody(() => Promise.resolve(makeResult([item], [makeDocument()])), {
+      ...(options.markdownRenderer === undefined ? {} : { markdownRenderer: options.markdownRenderer }),
+    });
+    const root = mounted.body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+    root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0001"]')?.click();
+    bindBody(mounted.body, mounted.controller, mounted.context, options.markdownRenderer);
+    await flushMicro(mounted.body);
+    return { ...mounted, root };
+  }
+
+  it("renders an allowlisted string attribute through the renderer with the workspace machine id and the exact text", async () => {
+    const { renderer, render } = fakeMarkdownRenderer();
+    const { root } = await mountAttributes(
+      { rationale: "Safety goal SG01 derives this requirement." },
+      { markdownRenderer: renderer },
+    );
+
+    const row = root.querySelector(".doorstop-attribute.doorstop-attribute-markdown");
+    if (row === null) throw new Error("markdown attribute row");
+    expect(row.querySelector("dt")?.textContent).toBe("rationale");
+    // The host template result renders inside THIS shadow tree.
+    expect(row.querySelector("dd .doorstop-text-markdown .markdown-stub")?.textContent).toBe(
+      "Safety goal SG01 derives this requirement.",
+    );
+    // No JSON-quoted <code> next to it.
+    expect(row.querySelector("code")).toBeNull();
+    // One request, exactly the §2.1 discipline: current machine id, manual
+    // preview allowed, never `truncated`.
+    expect(render).toHaveBeenCalledTimes(1);
+    expect(render).toHaveBeenCalledWith({
+      machineId: "local",
+      text: "Safety goal SG01 derives this requirement.",
+      allowManualPreview: true,
+    });
+    expect(render.mock.calls[0]?.[0]).not.toHaveProperty("truncated");
+  });
+
+  it("matches the allowlist case-insensitively", async () => {
+    const { renderer, render } = fakeMarkdownRenderer();
+    const { root } = await mountAttributes({ Rationale: "Capitalised key prose." }, { markdownRenderer: renderer });
+
+    const row = root.querySelector(".doorstop-attribute.doorstop-attribute-markdown");
+    expect(row).not.toBeNull();
+    expect(row?.querySelector("dt")?.textContent).toBe("Rationale");
+    expect(render).toHaveBeenCalledWith({
+      machineId: "local",
+      text: "Capitalised key prose.",
+      allowManualPreview: true,
+    });
+  });
+
+  it("keeps a non-allowlisted string attribute as quoted code", async () => {
+    const { renderer, render } = fakeMarkdownRenderer();
+    const { root } = await mountAttributes({ comment: "free-form prose" }, { markdownRenderer: renderer });
+
+    const row = root.querySelector(".doorstop-attribute");
+    if (row === null) throw new Error("attribute row");
+    expect(row.classList.contains("doorstop-attribute-markdown")).toBe(false);
+    expect(row.querySelector("dd code")?.textContent).toBe('"free-form prose"');
+    expect(root.querySelector(".doorstop-attribute-markdown")).toBeNull();
+    expect(render).not.toHaveBeenCalled();
+  });
+
+  it("keeps a non-string value of an allowlisted key as jsonishText", async () => {
+    const { renderer, render } = fakeMarkdownRenderer();
+    const { root } = await mountAttributes({ rationale: ["first", "second"] }, { markdownRenderer: renderer });
+
+    const row = root.querySelector(".doorstop-attribute");
+    if (row === null) throw new Error("attribute row");
+    expect(row.classList.contains("doorstop-attribute-markdown")).toBe(false);
+    expect(row.querySelector("dd code")?.textContent).toBe('["first","second"]');
+    expect(render).not.toHaveBeenCalled();
+  });
+
+  it("renders the muted empty marker for a whitespace-only attribute without calling the renderer", async () => {
+    const { renderer, render } = fakeMarkdownRenderer();
+    const { root } = await mountAttributes({ rationale: "  \n  " }, { markdownRenderer: renderer });
+
+    const row = root.querySelector(".doorstop-attribute.doorstop-attribute-markdown");
+    if (row === null) throw new Error("markdown attribute row");
+    expect(row.querySelector("dd .doorstop-text-empty")?.textContent).toBe("empty");
+    expect(row.querySelector(".doorstop-text-markdown")).toBeNull();
+    expect(row.querySelector(".markdown-stub")).toBeNull();
+    expect(render).not.toHaveBeenCalled();
+  });
+
+  it("falls back to escaped trimmed text when no host renderer is wired", async () => {
+    const { root } = await mountAttributes({ rationale: "# Raw source\n\n*Not* rendered.\n" });
+
+    const row = root.querySelector(".doorstop-attribute.doorstop-attribute-markdown");
+    if (row === null) throw new Error("markdown attribute row");
+    // Trimmed (the YAML block-scalar trailing newline is dropped), escaped
+    // literal source — no <code>, no markup node, no crash.
+    expect(row.querySelector("dd")?.textContent).toBe("# Raw source\n\n*Not* rendered.");
+    expect(row.querySelector("code")).toBeNull();
+    expect(row.querySelector(".doorstop-text-markdown")).toBeNull();
+  });
+
+  it("keeps the diff view plain for a rationale change (decision D4)", async () => {
+    const { renderer, render } = fakeMarkdownRenderer();
+    const config = makeDocument({ extra: { attributes: { reviewed: ["rationale"] } } });
+    const oldVersion = makeItem({
+      uid: "REQ0003",
+      documentPrefix: "REQ",
+      path: "reqs/REQ0003.yml",
+      text: "The system shall do Z.",
+      attributes: { rationale: "Old rationale." },
+    });
+    const current = makeItem({
+      uid: "REQ0003",
+      documentPrefix: "REQ",
+      path: "reqs/REQ0003.yml",
+      text: "The system shall do Z.",
+      attributes: { rationale: "New **rationale**." },
+    });
+    // The reviewed fingerprint is the PRE-edit stamp → unreviewed + baseline.
+    current.reviewed = computeItemStamp(oldVersion, config, true);
+    const result = makeResult([current], [config], [], new Set(["reqs/REQ0003.yml"]));
+    const backend = withGitStatusBackend((operation: string) =>
+      operation === "doorstop.item-baseline"
+        ? Promise.resolve(
+            makeBaselineResponse({
+              source: "review-commit",
+              candidates: [{ sha: "abc1234", blob: reviewedBlob(oldVersion) }],
+            }),
+          )
+        : Promise.resolve(makeRunResponse()),
+    );
+    const { body, controller, context } = await mountBody(() => Promise.resolve(result), {
+      peer: backend,
+      provider: opendoorProvider,
+      markdownRenderer: renderer,
+    });
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+    root.querySelector<HTMLElement>('.doorstop-item-row[data-uid="REQ0003"]')?.click();
+    bindBody(body, controller, context, renderer);
+    await flushMicro(body);
+    const details = root.querySelector<HTMLDetailsElement>(".doorstop-changes");
+    if (details === null) throw new Error("no changes section");
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+    await flushMicro(body);
+    bindBody(body, controller, context, renderer);
+    await flushMicro(body);
+
+    const field = [...root.querySelectorAll(".doorstop-changes .doorstop-field-change")].find(
+      (change) => change.querySelector(".doorstop-field-name")?.textContent === "rationale",
+    );
+    if (field === undefined) throw new Error("rationale field change");
+    // Exact before/after BYTES, JSON-quoted in <code> — never rendered.
+    expect(field.querySelector(".doorstop-field-chip-before")?.textContent).toBe('"Old rationale."');
+    expect(field.querySelector(".doorstop-field-chip-after")?.textContent).toBe('"New **rationale**."');
+    expect(field.querySelector(".markdown-stub")).toBeNull();
+    // The current-value view above IS rich (the extended-attributes row).
+    expect(root.querySelector('.doorstop-attribute-markdown .markdown-stub')?.textContent).toBe("New **rationale**.");
+    // No render request ever carried the baseline text.
+    expect(render.mock.calls.map((call) => (call[0] as MarkdownRenderRequest).text)).not.toContain("Old rationale.");
+  });
+
+  it("leaves the item-list rows plain (excerpt + configured attribute pairs)", async () => {
+    const { renderer, render } = fakeMarkdownRenderer();
+    const item = makeItem({
+      uid: "REQ0001",
+      documentPrefix: "REQ",
+      text: "The system shall do X.",
+      attributes: { rationale: "# Rationale\n\nProse *text*." },
+    });
+    const result = makeResult([item], [makeDocument()]);
+    // Show the attribute AND the body in the list row, so the guard is real:
+    // the configured rationale pair stays jsonish-quoted in the row button.
+    result.settings = { ...result.settings, showAdditionalAttribute: ["rationale", "text"] };
+    const { body } = await mountBody(() => Promise.resolve(result), { markdownRenderer: renderer });
+    const root = body.shadowRoot;
+    if (root === null) throw new Error("shadow root");
+
+    const row = root.querySelector('.doorstop-item-row[data-uid="REQ0001"]');
+    if (row === null) throw new Error("item row");
+    expect(row.textContent).toContain('rationale: "# Rationale\\n\\nProse *text*."');
+    expect(row.querySelector(".doorstop-item-text")?.textContent).toBe("The system shall do X.");
+    expect(row.querySelector(".markdown-stub")).toBeNull();
+    // No selection yet → the detail pane never asked the renderer either.
+    expect(render).not.toHaveBeenCalled();
+  });
+});
+
 describe("DoorstopPanelBodyElement (detail pane: links, references, attributes, findings)", () => {
   it("shows suspect links with recorded vs current fingerprint shorts and navigates on click", async () => {
     const { body, controller, context } = await mountBody(() => Promise.resolve(makeTreeResult()));

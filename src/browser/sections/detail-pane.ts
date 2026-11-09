@@ -17,14 +17,20 @@ import { computeItemStamp } from "../../doorstop-state.js";
 import type { DiffLine, ItemFieldDiff } from "../../doorstop-diff.js";
 import { type DoorstopBaselineView } from "../doorstop-panel-controller.js";
 import type { DoorstopWorkspaceResult } from "../doorstop-panel.js";
-import { diffValueText, documentConfigFor, jsonishText, referenceListText, shortFingerprint } from "../doorstop-panel-view-model.js";
+import { diffValueText, documentConfigFor, isMarkdownAttribute, jsonishText, referenceListText, shortFingerprint } from "../doorstop-panel-view-model.js";
 
 // Item text is Markdown: since pi-web 1.202611.1 the body renders through the
 // host's `markdown-rendering@1` capability (plan plan-piweb-1-202611-1 §2.1;
 // decision D1 and the host-floor consequence live in doorstop-markdown.ts).
+// Extended attributes ride the same capability ONLY for the curated prose
+// allowlist in `DOORSTOP_MARKDOWN_ATTRIBUTES` (currently `rationale`, matched
+// case-insensitively) and only for string values — see plan
+// plan-attribute-markdown decisions D2/D3 and the `renderAttribute` doc below.
 // Everything ELSE in this pane stays plain: flags, chips, link rows,
-// references, findings, the diff and the item header are plugin-rendered
-// escaped text, deliberately NOT run through the markdown renderer.
+// references, non-allowlisted extended attributes, findings and the item
+// header are plugin-rendered escaped text, deliberately NOT run through the
+// markdown renderer. The baseline diff is plain EVEN for an allowlisted
+// attribute (plan D4): a review decision needs the exact before/after bytes.
 export function renderDetail(host: DoorstopPanelSectionsApi, result: DoorstopWorkspaceResult): TemplateResult {
   const selectedUid = host.selectedUid;
   if (selectedUid === undefined) {
@@ -64,10 +70,7 @@ export function renderDetail(host: DoorstopPanelSectionsApi, result: DoorstopWor
         : html`
             <h4 class="doorstop-section-title">Extended attributes</h4>
             <dl class="doorstop-attributes">
-              ${Object.entries(item.attributes).map(
-                ([key, value]) =>
-                  html`<div class="doorstop-attribute"><dt>${key}</dt><dd><code>${jsonishText(value)}</code></dd></div>`,
-              )}
+              ${Object.entries(item.attributes).map(([key, value]) => renderAttribute(host, key, value))}
             </dl>
           `}
       <h4 class="doorstop-section-title">Findings</h4>
@@ -125,6 +128,54 @@ function renderItemText(host: DoorstopPanelSectionsApi, item: ItemRecord): Templ
     text: item.text,
     allowManualPreview: true,
   })}</div>`;
+}
+
+/**
+ * One extended-attribute row — plan `plan-attribute-markdown` §2.
+ *
+ * MARKDOWN branch (D2 allowlist, `isMarkdownAttribute`): the row uses the
+ * stacked layout variant `.doorstop-attribute-markdown` and the value goes
+ * through the SAME host request as the item body — current-context
+ * `machineId`, `allowManualPreview: true`, never `truncated` (an attribute is
+ * small and complete by construction). Reusing the shared
+ * `.doorstop-text-markdown` prose class means the §2.1 rules (block margins,
+ * code/pre, and the `9bc9cc9` `.table-scroll` fixes) apply here without a
+ * single duplicated rule (D5).
+ *
+ * `value.trim()` is the D3 render decision: YAML block scalars usually end in
+ * a newline, so a whitespace-only value renders the muted `empty` marker of
+ * §2.1 and never calls the renderer. The trimmed text (never the raw padded
+ * value) is what the renderer sees.
+ *
+ * FALLBACK: no `.markdownRenderer` / no `machineId` (a directly-constructed
+ * element, or the pre-`start()` window described in doorstop-markdown.ts D1)
+ * renders the trimmed source as escaped literal text — the `dd` keeps
+ * `white-space: pre-wrap` for exactly this case, so line breaks survive and
+ * the value never disappears.
+ *
+ * PLAIN branch: byte-for-byte the pre-plan markup — the two-column
+ * `jsonishText` `<code>` row — for every non-allowlisted key and for every
+ * non-string value of an allowlisted key (D3).
+ *
+ * The diff view deliberately does NOT call this (D4): `renderFieldChange`
+ * keeps `diffValueText` so a review sees the exact before/after bytes.
+ */
+export function renderAttribute(host: DoorstopPanelSectionsApi, key: string, value: unknown): TemplateResult {
+  if (!isMarkdownAttribute(key, value)) {
+    return html`<div class="doorstop-attribute"><dt>${key}</dt><dd><code>${jsonishText(value)}</code></dd></div>`;
+  }
+  const text = value.trim();
+  const renderer = host.markdownRenderer;
+  const machineId = host.context?.machine.id;
+  const body =
+    text === ""
+      ? html`<p class="doorstop-text doorstop-text-empty">empty</p>`
+      : renderer === undefined || machineId === undefined
+        ? text
+        : html`<div class="doorstop-text-markdown">${renderer.render({ machineId, text, allowManualPreview: true })}</div>`;
+  // Single line on purpose: inter-element whitespace would survive as a text
+  // node, and the stacked `dd` is `white-space: pre-wrap` for the fallback.
+  return html`<div class="doorstop-attribute doorstop-attribute-markdown"><dt>${key}</dt><dd>${body}</dd></div>`;
 }
 
 export function renderFlags(host: DoorstopPanelSectionsApi, item: ItemRecord): TemplateResult {

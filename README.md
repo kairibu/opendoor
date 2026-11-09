@@ -460,12 +460,16 @@ them through pi-web's own `pi-web/markdown-rendering@1` capability instead of
 an in-plugin parser: the host returns a Lit `TemplateResult` synchronously,
 defers parsing until the node is visible, and applies its **document policy**
 (raw source HTML escaped, images omitted, links limited to `http:`/`https:`/
-`mailto:`). Nothing else in the pane goes through the renderer — flags,
-chips, link rows, references, extended attributes, findings, the diff and the
-item header (`item.header`, the leading `# Heading` the model already lifted
-out of `text`) all stay plugin-rendered plain text. The item list's second
-row (`item-list.ts` `itemTextRow`) also stays plain text: it is a filter
-affordance, not a document view.
+`mailto:`). Allowed prose attributes render the same way: an extended
+attribute whose name is in the curated allowlist (`DOORSTOP_MARKDOWN_ATTRIBUTES`,
+initially only `rationale`, matched case-insensitively) is rendered through
+the same request when its value is a string; every other extended attribute —
+and every non-string value — stays escaped text. Nothing else in the pane goes
+through the renderer — flags, chips, link rows, references, findings, the diff
+and the item header (`item.header`, the leading `# Heading` the model already
+lifted out of `text`) all stay plugin-rendered plain text. The item list's
+second row (`item-list.ts` `itemTextRow`) also stays plain text: it is a
+filter affordance, not a document view.
 
 Because the public `PluginCapabilityResolver` only offers a total
 `resolve()` (no optional/try resolve, and undeclared capabilities are

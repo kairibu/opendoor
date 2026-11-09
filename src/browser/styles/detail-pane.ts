@@ -379,6 +379,28 @@ export const detailPaneStyles = css`
           overflow-wrap: anywhere;
         }
 
+        /* Plan plan-attribute-markdown D5: an allowlisted prose attribute
+         * (initially "rationale") is host-rendered Markdown, so its row uses a
+         * STACKED variant — the label above a full-width block — instead of
+         * the two-column key|value grid sized for single-line <code> values.
+         * The dt keeps the existing small muted label rule above.
+         *
+         * Nothing here restates the §2.1 prose rules: the rendered container
+         * carries the shared .doorstop-text-markdown class, so block
+         * margins, code/pre, blockquote and the 9bc9cc9 .table-scroll fixes
+         * apply automatically. */
+        .doorstop-attribute.doorstop-attribute-markdown {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 3px;
+        }
+
+        /* The escaped-text fallback (no host renderer) is prose too: keep its
+         * line breaks. This only reaches the fallback — the markdown container
+         * inside resets white-space to normal (.doorstop-text-markdown). */
+        .doorstop-attribute-markdown dd {
+          white-space: pre-wrap;
+        }
+
         .doorstop-findings {
           display: grid;
           gap: 4px;
