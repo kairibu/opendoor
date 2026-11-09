@@ -93,6 +93,29 @@ the reopened tab lands on the item detail pane. The label is built entirely
 from the row's detached public metadata snapshot; it reads no transcript or
 private conversation data.
 
+### Lifecycle buttons
+
+Beside the reopen link, a labelled row renders two small `<button>` elements
+over the host's optional session-lifecycle surface
+(`PluginDiscoveryContext.sessions`, added in 1.202610.9; absent on older hosts,
+where the row keeps the reopen link alone): a **pin** toggle on every labelled
+row, plus **archive** on active rows or **restore** on archived rows — never
+both. The gate is pure at render time (`session.archived` is on the row
+snapshot); every lifecycle call happens in the click handler, never in the
+label's `items()` render callback.
+
+The pin toggle reads the live `pinned` state (`sessions.get` — the row
+snapshot carries none) and then calls `pin` or `unpin`. Archive refuses while
+the review is still running: `runtime === "busy"` is read from the catalog's
+session snapshot (`catalog.sessions.get`), the only surface that carries it,
+since the lifecycle state exposes just `pinned`/`archived`. It also refuses a
+row still waiting for session creation (`session.pending`) and treats an
+unreadable catalog snapshot as "cannot prove idle", archiving nothing. Clicks
+prevent the
+default, stop propagation, and never navigate; the promises are fire-and-forget
+with swallowed failures, so a refused or failed lifecycle call can never break
+the reopen link — the host's own row update is the success signal.
+
 ### Capability floor and degradation
 
 The opendoor **server** entry declares no capabilities (`requires`) and no

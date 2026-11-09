@@ -45,7 +45,11 @@ and the Pi extension (`/opendoor-review`).
   (mod+shift+d), the **label** `doorstop-status` (requirement-health counts,
   feature spec §7.4), and the **session-row label** `doorstop.review` (reopens the
   Requirements tab from a row carrying public `opendoor` metadata, archived rows
-  included — feature spec, **Session metadata and session-list row labels**).
+  included — feature spec, **Session metadata and session-list row labels**;
+  labelled rows also carry small lifecycle buttons — a pin toggle on every one,
+  archive while the review is no longer busy, restore on archived rows — over
+  the host's optional session-lifecycle surface, so a pre-1.202610.9 host renders
+  the reopen link alone).
 - **Server entry** (`src/server-plugin.ts`, apiVersion 5, default export
   `PiWebServerPlugin`) contributes a workspace provider for projects whose root
   has a `.doorstop.yml` (cheap `fs.access` probe; everything else stays with the
