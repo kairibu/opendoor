@@ -1,30 +1,24 @@
 # opendoor — a Doorstop requirements-management plugin for PI WEB
 
-`opendoor` is a **paired** PI WEB plugin that surfaces
+`opendoor` is a PI WEB plugin that surfaces
 [Doorstop](https://github.com/doorstop-dev/doorstop) requirements stored in the
-workspace next to the code they trace to: a **Requirements** workspace tab with
+workspace in a **Requirements** workspace tab with
 the document tree, per-item state (reviewed/unreviewed changes, suspect links),
-validation findings and one-click `doorstop` CLI actions, plus agent prompts
-that insert requirement context into the session. When paired, the server entry
-runs the CLI headlessly and the output lands in the panel's **status bar**; when
-unpaired, every action falls back to the workspace terminal. The paired backend
-also recovers an item file's reviewed version from git for the **Changes since
-review** diff, and Review can opt in to a review commit (`commitAfterReview`).
+validation findings and `doorstop` actions, plus agent prompts
+that insert requirement context into the session. 
+The paired backend also recovers an item file's reviewed version from git for 
+the **Changes since review** diff, and Review can opt in to a review commit 
+(`commitAfterReview`).
 
 Full feature spec: [`docs/feature-doorstop-plugin.md`](docs/feature-doorstop-plugin.md)
 (§5 architecture, §6 requirements state model, §7–§8 UI/actions).
 
 ## Status
 
-Requires **pi-web 1.202611.1 or newer** (browser and server plugin API v5). The
-floor is the host's `markdown-rendering@1` capability, declared by the browser
-plugin to render item text as Markdown: the public resolver has no
-optional-resolve, so the requirement is hard and the plugin does not start on
-1.202610.5–1.202611.0 (decision D1 in `src/browser/doorstop-markdown.ts`; what
-the renderer draws in **Markdown rendering**, upgrade order in **Upgrade notes**).
-The server entry declares no capability and loads across the whole range. One
-package (`opendoor-plugin`) ships the PI WEB plugin (both entries below) and the
-Pi extension (`/opendoor-review`).
+Requires **pi-web 1.202611.1 or newer** (browser and server plugin API v5). 
+
+One package (`opendoor-plugin`) ships the PI WEB plugin (both entries below) 
+and the Pi extension (`/opendoor-review`).
 
 - **Browser entry** (`src/browser/pi-web-plugin.ts`, apiVersion 5, name
   `Opendoor`) delegates to `createOpendoorBrowserContributions`
@@ -230,30 +224,6 @@ hidden in the Findings view) and `status-bar` (see below).
   plus, opt-in, the narrated review commit (`commitAfterReview`) — so all effects
   stay auditable in git.
 
-## Markdown rendering (plan §2.1/D1, plan-attribute-markdown §2/D2)
-
-Doorstop item bodies (`item.text`) are Markdown, rendered in the detail pane
-through pi-web's own `pi-web/markdown-rendering@1` capability rather than an
-in-plugin parser: a synchronous Lit `TemplateResult`, parsing deferred until the
-node is visible, under the host's **document policy** (raw source HTML escaped,
-images omitted, links limited to `http:`/`https:`/`mailto:`). Allowed prose
-attributes render the same way: an extended attribute whose name is in the curated
-allowlist (`DOORSTOP_MARKDOWN_ATTRIBUTES`, initially only `rationale`,
-case-insensitive) and whose value is a string is rendered through the same request
-using the trimmed text; a string that is empty or whitespace-only after trimming
-gets the muted `empty` marker instead — neither Markdown nor escaped text. Every
-other extended attribute, and every non-string value, stays escaped text.
-Everything else in the pane stays plugin-rendered plain text — flags, chips, link
-rows, references, findings, the diff, the item header (`item.header`, the leading
-`# Heading` the model lifted out of `text`) and the item list's second row
-(`item-list.ts` `itemTextRow`, a filter affordance, not a document view).
-
-No stylesheet registration is needed — the host's rendering boundary renders into
-the consumer's shadow root, so the panel's `.doorstop-text-markdown` prose rules
-apply; what an unregistered root misses is host styling (other plugins'
-stylesheets, host theme CSS such as `.table-scroll` rules for the renderer's
-tables), hence the panel's own `.table-scroll` and prose rules. The capability's
-declaration, and the hard host floor it imposes, is in **Upgrade notes**.
 
 ## Commands
 
@@ -307,34 +277,3 @@ Pi-resource change — no provider restart). The extension needs PI WEB's
 session-dispatch bridge (1.202610.x); on an older host it reports "requires PI
 WEB's session dispatch bridge" and starts nothing.
 
-## Upgrade notes (pi-web 1.202611.1 floor)
-
-**The floor is pi-web 1.202611.1.** The browser plugin hard-requires the host's
-`markdown-rendering@1` capability, introduced in that release, and the public
-capability resolver has no optional-resolve — on an older host the plugin does not
-start (the server entry alone would load, but the package declares the floor in
-`peerDependencies`).
-
-Upgrading an install coming from an older pi-web, in this order:
-
-1. Refresh the pi-web checkout, then restart the **web/API process before**
-   `pi-web-sessiond.service` when crossing pre-**1.202610.9** (session pins moved
-   to daemon-owned storage; an older web/API process must not keep writing pins
-   after the migration).
-2. Restart the session daemon and reload the page (see **Installing the plugin
-   locally**); daemon restarts interrupt active sessions and terminals.
-3. **1.202611.1 hostAccess** (`5a8181c`): a persistent notice asks administrators
-   to choose the access policy; until then behaviour is unchanged. **Reverse
-   proxies must preserve the public `Host` (including nonstandard ports) and the
-   browser `Origin` unchanged**; a policy change needs a web/API (+ dev UI server)
-   restart, the session daemon staying untouched.
-
-Community plugin listings require the `pi-web.dev-plugin` npm keyword
-(`e42938f`), which `package.json` carries — keep it.
-
-### `markdown-rendering@1` is a hard requirement
-
-The declaration is forced by the contracts: the public `PluginCapabilityResolver`
-offers only a total `resolve()` (no optional/try resolve, undeclared capabilities
-rejected before `start`), so the capability sits in `requires` and the browser
-floor is hard (see **Markdown rendering** for what the renderer draws).
