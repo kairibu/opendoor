@@ -1,140 +1,76 @@
 # opendoor — a Doorstop requirements-management plugin for PI WEB
 
 `opendoor` is a **paired** PI WEB plugin that surfaces
-[Doorstop](https://github.com/doorstop-dev/doorstop) requirements stored in
-the workspace next to the code they trace to: a **Requirements** workspace tab
-with the document tree, per-item state (reviewed/unreviewed changes, suspect
-links), validation findings, and one-click `doorstop` CLI actions (validate,
-publish, add/link/unlink, clear suspect links, review), plus agent prompts
-that insert requirement context into the session. When paired, the plugin's
-server entry runs the CLI headlessly and the captured output is displayed in
-the panel itself (a **status bar** at the bottom); when unpaired, every action
-falls back to the workspace terminal. The paired backend also recovers the
-reviewed version of an item file from git history, so the item detail pane
-can show a **Changes since review** diff — and Review can optionally record
-a pathspec-limited review commit (`commitAfterReview`).
+[Doorstop](https://github.com/doorstop-dev/doorstop) requirements stored in the
+workspace next to the code they trace to: a **Requirements** workspace tab with
+the document tree, per-item state (reviewed/unreviewed changes, suspect links),
+validation findings and one-click `doorstop` CLI actions, plus agent prompts
+that insert requirement context into the session. When paired, the server entry
+runs the CLI headlessly and the output lands in the panel's **status bar**; when
+unpaired, every action falls back to the workspace terminal. The paired backend
+also recovers an item file's reviewed version from git for the **Changes since
+review** diff, and Review can opt in to a review commit (`commitAfterReview`).
 
 Full feature spec: [`docs/feature-doorstop-plugin.md`](docs/feature-doorstop-plugin.md)
 (§5 architecture, §6 requirements state model, §7–§8 UI/actions).
 
 ## Status
 
-Requires **pi-web 1.202611.1 or newer** (browser plugin API v5 / server
-plugin API v5 — the pi-web host accepts v4/v3 legacy entries with
-deprecation diagnostics, but opendoor itself migrated; see **Rollout**
-below for the upgrade order and the sessiond-restart notes).
-The browser plugin declares the host's `markdown-rendering@1` capability,
-introduced in **1.202611.1**, to render item text as Markdown (plan
-`plans/plan-piweb-1-202611-1.md` §2.1; the reasoning is decision D1 in
-`src/browser/doorstop-markdown.ts`). pi-web's capability resolver has no
-optional-resolve, so the requirement is hard and the floor is honest: on
-1.202610.5–1.202611.0 the plugin does not start. The server entry declares
-no capability and still loads across the whole supported range.
-Tested through **pi-web 1.202611.1**, which is **additive** for this plugin:
-the 1.202610.9 → 1.202611.1 releases only add new plugin surfaces
-(`transcriptRenderers`, `markdownExtensions`/`markdown-rendering`, session
-lifecycle, `sessions?` on the discovery context) and touch none of the
-contracts opendoor consumes. The package is one npm
-package (`opendoor-plugin`) that ships a PI WEB plugin AND a Pi extension:
-the plugin's browser/server halves below, plus the review-dispatch extension
-that starts labeled review conversations (`/opendoor-review`, see **Review
-dispatch (Pi extension)** below). The plugin is
-fully wired and green:
+Requires **pi-web 1.202611.1 or newer** (browser and server plugin API v5). The
+floor is the host's `markdown-rendering@1` capability, declared by the browser
+plugin to render item text as Markdown: the public resolver has no
+optional-resolve, so the requirement is hard and the plugin does not start on
+1.202610.5–1.202611.0 (decision D1 in `src/browser/doorstop-markdown.ts`; upgrade
+order in **Upgrade notes**). The server entry declares no capability and loads
+across the whole range. One package (`opendoor-plugin`) ships the PI WEB plugin
+(both entries below) and the Pi extension (`/opendoor-review`).
 
-- **Browser entry** (`src/browser/pi-web-plugin.ts`, apiVersion 5, name `Opendoor`)
-  delegates to `createOpendoorBrowserContributions` in
-  `src/browser/doorstop-contributions.ts`, which contributes:
-
-  - **panel** `workspace.doorstop` (title **Requirements**, order 5 — deliberately
-    below the bundled Files panel's order 10, which answers every chat file link
-    unconditionally in the host's first-accepting-panel dispatch; this is what
-    makes the `fileOpenQuery` claim — chat links to doorstop item files open the
-    item's detail view in this panel instead of Files — reachable, at the cost
-    of the Requirements tab preceding Files) — the Lit
-    body element `<pi-web-opendoor-panel-body>`, driven by the per-workspace
-    controller registry (`src/browser/doorstop-panel.ts`): five vertical sections —
-    `project-actions` (title, Items/Findings toggle, Refresh / Run validation
-    / Publish HTML), `item-list` (filters row + item rows with state chips),
-    `item-details` (host-rendered **Markdown item text**, links in/out,
-    references, extended attributes,
-    collapsible **Changes since review** diff), `item-action-palette`
-    (Review / Clear suspect links / Edit / Link / Unlink / Ask-agent menu,
-    sized to the host prompt footer), and `status-bar` (status badge,
-    duration, Dismiss button, and the auto-expanding stdout/stderr of the
-    latest CLI run, plus the review-commit outcome line when the review
-    requested a commit);
-  - **actions** `view.doorstop` (mod+7) and `workspace.refresh-doorstop`
-    (mod+shift+d);
-  - **label** `doorstop-status` — the informational requirement-health counts
-    (async-cache idiom, feature spec §7.4);
-  - **session-row label** `doorstop.review` — a compact indicator on session
-    rows carrying public `opendoor` metadata; clicking it reopens the
-    Requirements tab on the row's machine/workspace (works for unselected and
-    archived rows, no live Pi connection needed). See **Session metadata and
-    session-list row labels** below.
-
-- **Server entry** (`src/server-plugin.ts`, apiVersion 5, default export `PiWebServerPlugin`)
-  contributes a workspace provider that claims only projects whose root
-  contains a `.doorstop.yml` (cheap `fs.access` probe — everything else stays
-  with the bundled Git provider) and serves a six-operation backend:
-  `doorstop.run` runs one Doorstop CLI invocation — a review request carrying
-  the opt-in `commit: true` flag is followed by a pathspec-limited git commit
-  of the item file (`doorstop: review <uid>`) — the read-only
-  `doorstop.item-baseline` recovers the reviewed version of an item file from
-  git history, and the four git actions `doorstop.git-status`,
-  `doorstop.git-stage`, `doorstop.git-unstage`, and `doorstop.git-commit`
-  power the panel's git strip and stage/unstage/commit controls (see **Git
-  actions** below). `src/doorstop-backend.ts` validates each request, builds argv
-  server-side (the browser never sends shell strings), and runs through the
-  host's `execFile()` helper with `cwd` = the workspace path, timeouts
-  clamped to 8.5 s (the review+git pipeline shares one deadline budget under
-  the host's 10 s callback bound), and per-workspace run serialization. The
-  server entry permanently declares no `requires` and no `start()`: the
-  capability-driven `doorstop.ask-agent` dispatch it once carried was
-  unreachable by construction on a workspace-provider-contributing entry
-  (PI WEB rejects the provider-dependency capability cycle) and has been
-  retired. The review dispatch now runs in the Pi extension below.
+- **Browser entry** (`src/browser/pi-web-plugin.ts`, apiVersion 5, name
+  `Opendoor`) delegates to `createOpendoorBrowserContributions`
+  (`src/browser/doorstop-contributions.ts`): the **panel** `workspace.doorstop`
+  (title **Requirements**, order 5 — below the Files panel's order 10 so doorstop
+  item links reach its `fileOpenQuery` first; controller registry in
+  `src/browser/doorstop-panel.ts`, sections in **Using the panel**),
+  the **actions** `view.doorstop` (mod+7) and `workspace.refresh-doorstop`
+  (mod+shift+d), the **label** `doorstop-status` (requirement-health counts,
+  feature spec §7.4), and the **session-row label** `doorstop.review` (reopens the
+  Requirements tab from a row carrying public `opendoor` metadata, archived rows
+  included — feature spec, **Session metadata and session-list row labels**).
+- **Server entry** (`src/server-plugin.ts`, apiVersion 5, default export
+  `PiWebServerPlugin`) contributes a workspace provider for projects whose root
+  has a `.doorstop.yml` (cheap `fs.access` probe; everything else stays with the
+  bundled Git provider) and serves six operations: `doorstop.run` (one CLI
+  invocation; a review carrying the opt-in `commit: true` flag is followed by a
+  pathspec-limited `doorstop: review <uid>` commit), the read-only
+  `doorstop.item-baseline` (the reviewed version, from git history), and
+  `doorstop.git-status` / `-stage` / `-unstage` / `-commit` (see **Git
+  actions**). `src/doorstop-backend.ts` validates each request, builds argv
+  server-side (never a browser shell string) and runs it via `execFile()`; see
+  its header for timeouts and per-workspace serialization. The entry declares no
+  `requires` and no `start()`: the retired `doorstop.ask-agent` dispatch could
+  not live there (provider-cycle rule) — see `src/server-plugin.ts`.
 - **Pi extension** (`src/pi-extension/opendoor-review.ts`, bundled to
-  `dist/pi-extension/index.js` and declared by `pi.extensions`) registers
-  `/opendoor-review <UID> [instruction…]`. It publishes the shipped public
-  `opendoor` session metadata (`{ schema: 1, op: "review", uids }`) and asks
-  PI WEB's own per-session dispatch bridge to start an independent
-  conversation in the same registered project — the same spawn semantics and
-  delegation restrictions as `spawn_session`, with model/thinking inherited
-  from the initiating conversation. Every outcome (started / refused / no
-  bridge) is reported as a message in the initiating conversation. This is
-  the pathway the panel's **Start review session** entry drives (see **Review
-  dispatch (Pi extension)** below).
+  `dist/pi-extension/index.js`, declared by `pi.extensions`) registers
+  `/opendoor-review <UID> [instruction…]`: it publishes the public `opendoor`
+  metadata (`{ schema: 1, op: "review", uids }`) and asks PI WEB's per-session
+  dispatch bridge to start an independent conversation in the same project (the
+  `spawn_session` rules, model/thinking inherited), reporting every outcome in
+  the initiating conversation — the pathway **Start review session** drives.
 
-Dispatch (per action, in `src/browser/doorstop-panel-element.ts`): when the workspace
-is opendoor-owned with an active backend, the action sends a structured
-request via `context.peer.request("doorstop.run", …)` (the review-commit
-flag rides along when the setting is enabled; the "Changes since review"
-section fetches via `context.peer.request("doorstop.item-baseline", …)`)
-and the captured output appears in the panel's status bar (auto-expanded);
-the panel auto-rescans on completion. When the backend is absent (unpaired
-install, or a workspace the provider does not own), the action falls back to
-`terminal.runCommand()` with the same shell command, so output stays visible
-and auditable in the terminal.
-
-The shared types + function-signature contracts live in
-`src/doorstop-contract.ts`; the two backend operation contracts
-(`doorstop.run` and `doorstop.item-baseline`) shared by both halves, plus
-the four git-action contracts (`doorstop.git-status`, `doorstop.git-stage`,
-`doorstop.git-unstage`, `doorstop.git-commit`), live in
-`src/doorstop-backend-contract.ts`. Later modules import these and must not
-redefine them.
+Dispatch (`src/browser/doorstop-panel-element.ts`) uses
+`context.peer.request("doorstop.run", …)` (the review-commit flag rides along
+when enabled; **Changes since review** uses `doorstop.item-baseline`) with the
+output in the auto-expanded status bar, or falls back to `terminal.runCommand()`
+with the same shell command when unpaired. Shared types and operation contracts
+live in `src/doorstop-contract.ts` and `src/doorstop-backend-contract.ts`.
 
 ## Workspace settings (`.pi-web/opendoor.json`)
 
-Optional per-workspace configuration, read by the plugin on every load
-(missing file → defaults; malformed or invalid values → warning diagnostics
-in the panel + defaults). Workspace-scoped settings cannot use pi-web's
-`plugins.<id>.settings` config (that is host-side and only reaches server
-entries), so this file plays the same role `.pi-web/tasks.json` plays for the
-bundled workspace-tasks plugin. The *server* entry's host-scoped knobs
-(CLI binary path, exec timeout) are configured through
-`plugins.opendoor.settings` instead — see **Host settings** below:
+Optional per-workspace configuration, read on every plugin load (missing file →
+defaults; invalid values → warning diagnostics + defaults). pi-web's
+`plugins.<id>.settings` is host-side and reaches only server entries, so this
+file plays the role `.pi-web/tasks.json` plays for the bundled workspace-tasks
+plugin; server-entry knobs are in **Host settings** below:
 
 ```json
 {
@@ -146,228 +82,174 @@ bundled workspace-tasks plugin. The *server* entry's host-scoped knobs
 }
 ```
 
-- `publish.target` — path passed to `doorstop publish all`. Must be a safe
+- `publish.target` — path passed to `doorstop publish all`; must be a safe
   workspace-relative path (no `..`, no absolute, no drive prefix, no leading
-  `-`). It is shell-quoted at the terminal-command boundary when it contains
-  characters outside the inert `\w./-` alphabet; on the backend path the
-  target is passed as an argv element, never through a shell.
+  `-`). Shell-quoted at the terminal-command boundary when it contains characters
+  outside the inert `\w./-` alphabet; on the backend path it is an argv element,
+  never a shell string.
 - `discovery.excludedDirectories` — additional directory names the
   `.doorstop.yml` walk never enters (merged with the built-in
   `.git`/`node_modules` skips, max 16 names).
-- `showAdditionalAttribute` — array of attribute NAMES rendered in every
-  item-list row as `key: value` (values jsonish-quoted, joined with ` · `, in
-  the configured order). Entries may be any extended attribute key; an
-  attribute an item does not have is skipped for that row, and no unconfigured
-  attribute ever appears. The modeled `text` is special-cased: instead of a
-  `text: "…"` pair in the attribute column, the item body renders raw and
-  unquoted on its own indented second line below the row, clamped to two lines
-  with an ellipsis (the full body lives in the detail pane); it is skipped when
-  the item body is empty. Default `[]` leaves today's rows unchanged. Invalid
-  entries are dropped with a warning each, duplicates are deduplicated, the
-  list is capped at 16 names, and unknown keys are accepted (they simply match
-  nothing).
-- `commitAfterReview` — opt-in boolean (default `false`): when enabled on a
-  paired workspace, the **Review** action's `doorstop review <uid>` is
-  followed by a pathspec-limited git commit of the item file with the
-  conforming message `doorstop: review <uid>` (git `add` then
-  `commit -m … -- <path>` — other staged/unstaged work is left untouched).
-  Committing user content is strictly opt-in, and the status bar
-  narrates every commit outcome (`commit: <sha>` / `clean` (already
-  committed) / `skipped` (not a git repository | item file not found |
-  review failed | deadline) / `failed` — `<stderr>`). Under the default,
-  Review behaves exactly as before.
+- `showAdditionalAttribute` — attribute NAMES rendered in every item-list row as
+  `key: value` (values jsonish-quoted, joined with ` · `, in configured order);
+  any extended attribute key works, an attribute an item lacks is skipped, and no
+  unconfigured attribute ever appears. The modeled `text` is special-cased: the
+  body renders raw and unquoted on an indented second line below the row, clamped
+  to two lines with an ellipsis (the full body lives in the detail pane), skipped
+  when empty. Default `[]` leaves today's rows unchanged. Invalid entries are
+  dropped with a warning each, duplicates deduplicated, capped at 16 names;
+  unknown keys simply match nothing.
+- `commitAfterReview` — opt-in boolean (default `false`): on a paired workspace
+  the **Review** action's `doorstop review <uid>` is followed by a
+  pathspec-limited commit of the item file with the conforming message
+  `doorstop: review <uid>` (git `add` then `commit -m … -- <path>`; other
+  staged/unstaged work is untouched). Committing user content is strictly opt-in;
+  the status bar narrates every outcome (`commit: <sha>` / `clean` (already
+  committed) / `skipped` (not a git repository | item file not found | review
+  failed | deadline) / `failed` — `<stderr>`); Review is otherwise unchanged.
 
 ## Host settings (`plugins.opendoor.settings`)
 
-Optional, server-side only (requires the paired install and a sessiond
-restart to take effect). Parsed leniently; wrong types fall back to defaults:
+Optional, server-side only (needs the paired install and a sessiond restart);
+wrong types fall back to defaults:
 
 ```json
 { "doorstopPath": "/opt/venv/bin/doorstop", "gitPath": "git", "timeoutMs": 8000 }
 ```
 
-- `doorstopPath` — the Doorstop CLI binary. Defaults to `"doorstop"` resolved
-  on the **sessiond host PATH** (the daemon environment, not your login shell
-  — set this when the CLI lives in a venv or is not on the service PATH).
-- `gitPath` — the git binary used by the review→commit pipeline, the
-  `doorstop.item-baseline` fetch, and the four git actions (status strip,
-  Stage all, per-item Unstage, Git commit). Defaults to `"git"` resolved on the
-  **sessiond host PATH** — set it when git is not on the service PATH (the
-  same escape hatch as `doorstopPath`).
-- `timeoutMs` — per-run exec timeout in ms. May SHORTEN the 8 500 ms default
-  but never exceed it (the host bounds every provider callback at 10 s, so a
-  longer doorstop run would be killed by pi-web, not by the plugin). It also
-  bounds every git exec of the review→commit pipeline, the baseline fetch,
-  and the git actions, which share one deadline budget per callback.
+- `doorstopPath` — the Doorstop CLI binary, default `"doorstop"`, resolved on the
+  **sessiond host PATH** (the daemon environment, not your login shell — set it
+  when the CLI lives in a venv or is off the service PATH).
+- `gitPath` — the git binary for the review→commit pipeline, the
+  `doorstop.item-baseline` fetch and the four git actions. Default `"git"` on the
+  **sessiond host PATH** — the same escape hatch as `doorstopPath`.
+- `timeoutMs` — per-run exec timeout in ms. May SHORTEN the 8 500 ms default but
+  never exceed it (the host bounds every provider callback at 10 s, so a longer run
+  would be killed by pi-web, not by the plugin). It also bounds every git exec of
+  the review→commit pipeline and the git actions: one deadline budget per callback.
 
 ## Using the panel
 
-The right-hand panel body is divided into five vertical sections, top to
-bottom:
+Five vertical sections, top to bottom: `project-actions` (project heading — root
+path, basename shown, full path on hover — the Items/Findings toggle, Refresh, Run
+validation, Publish HTML, and on paired installs the Git strip, Stage all and
+Commit), `item-list` (filters row above rows showing level, UID, excerpt,
+`showAdditionalAttribute` values and state chips), `item-details` (Markdown item
+text, links in/out, references, extended attributes, the Changes diff),
+`item-action-palette` (Review, Clear suspect links, Link, Ask agent — spanning the
+panel at chat-prompt-footer height, with the muted "Select an item…" placeholder,
+hidden in the Findings view) and `status-bar` (see below).
 
-1. **`project-actions`** — the project heading (the workspace's root path,
-   basename shown, full path on hover), the **Items / Findings** toggle, the
-   project-scoped buttons **Refresh**, **Run validation**, and **Publish
-   HTML**, and — on paired installs — the **Git status** strip, the **Stage
-   all** button, and the **Git commit** control (message input + button); see
-   **Git actions** below.
-2. **`item-list`** — a filters row (document chips, state filter, search)
-   above the item rows; each row shows its level, UID, excerpt, any attributes
-   configured through `showAdditionalAttribute`, and its state chips.
-3. **`item-details`** — the selected item's full detail pane (unchanged).
-4. **`item-action-palette`** — the item actions (**Review**, **Clear suspect
-   links**, **Link** + target UID input, **Ask agent** menu), moved out of
-   the detail pane so the row spans the panel at the same height as the
-   center-panel chat prompt footer. A muted "Select an item…"
-   placeholder keeps the palette at constant height while nothing is
-   selected; the palette is hidden in the Findings view.
-5. **`status-bar`** — the run status row (badge, duration, **Dismiss**),
-   sized like the center-panel status bar, plus the captured output.
-
-- **Items / Findings toggle** in the project-actions row. Findings lists all
-  plugin-computed findings and diagnostics (error > warning > info); a
-  finding's UID navigates back to the item. Findings are informational — run
-  the **Run validation** button for the authoritative `doorstop` output
-  (paired: rendered in the panel's status bar; unpaired: in the workspace
-  terminal).
-- **Status bar**: after a paired action completes, the bottom bar shows the
-  run's status (ok / failed / killed / error) and duration, and the panel
-  re-scans automatically. The captured stdout/stderr *auto-expands* whenever
-  a run produces a message to show (any output, an error message, or a
-  review-commit line) — no interaction needed; a run with nothing to display
-  stays collapsed to its status row. **Dismiss** clears the run and collapses
-  the bar; the next run with output re-expands it. Runs killed at the exec
-  timeout preserve and show partial output; prefer the workspace terminal for
-  long publishes. When a review ran with `commitAfterReview` enabled, the bar
-  adds a `commit: …` narration line (`commit: <short-sha>` /
-  `clean (already committed)` / `skipped (not a git repository | item file
-  not found | review failed | deadline)` / `failed — <stderr excerpt>`); a
-  failed or skipped commit never changes the run's ok/failed badge.
-- **State chips** per item (feature spec §6): inactive, non-normative,
-  reviewed / unreviewed changes, suspect links, no child links, no links,
-  unknown link, missing reference.
-- **Changes since review** (item detail pane, paired installs only): for an
-  item with unreviewed changes and a stored `reviewed` fingerprint, a
-  collapsed section shows what changed since the last review. Expanding it
-  lazily fetches the reviewed version of the item file from git history via
-  the `doorstop.item-baseline` backend operation, stamp-matches it against
-  the stored fingerprint, and renders a text line diff plus chips for
-  `ref`/`references`/link-UID/extended-attribute changes. When no baseline
-  can be recovered it says so honestly ("no git history", "could not locate
-  the reviewed version — history may have been rewritten"). The
-  `doorstop: review <uid>` commit message is the historical anchor that the
-  deferred browser-side git parsing of feature spec §12 could not give — the
-  recovery runs server-side, where git lives.
-- **Item actions** (item-action-palette): Review (`doorstop review UID` — with
-  `commitAfterReview` enabled and paired, followed by the pathspec-limited
-  review commit), Clear suspect links (`doorstop clear UID [parents…]`),
-  Edit (`doorstop edit UID`), Link/Unlink via inline UID input (validated
-  against the Doorstop UID grammar; shell metacharacters rejected), and — on
-  paired installs — Stage / Unstage for the selected item's own file
-  (`doorstop.git-stage` / `doorstop.git-unstage` with just that item's
-  path; see **Git actions** below). Each is independently disabled: Stage
-  when the file has no unstaged (`Y`) changes, Unstage when it has nothing
-  staged (`X`), and both while a run is in flight.
-- **Git actions** (paired installs only; every git control is hidden
-  without the paired backend — terminal-fallback users commit manually as
-  today):
-  - **Git status strip** — a compact readout above the item list:
-    `⎇ <branch> · <n> staged · <n> dirty · ↑<ahead> ↓<behind>` (zero/absent
-    parts omitted; `no git` outside a repository; a retry link on fetch
-    errors). The strip refreshes on panel load, after every run (a stage,
-    unstage, or commit invalidates the cache), and whenever you click it.
-    Outside a git repository the strip shows `no git` and the stage/unstage/
-    commit controls are no-ops that report `skipped`.
-  - **Stage all** — stages every Doorstop-managed file (the root
-    `.doorstop.yml`, each document's config file, each item file) via the
-    `doorstop.git-stage` backend operation. Staging is idempotent: a second
-    click over an already-staged set reports `clean — nothing to stage`
-    instead of a git error (staged deletions in particular are skipped
-    rather than fatal). Disabled while a run is in progress or when the
-    loaded index has no documents. Note: staging is only as fresh as the
-    loaded index — files created on disk after the last **Refresh** are
-    missed until you refresh and stage again.
-  - **Unstage (per item)** — while an item's file has staged (index)
-    changes, its list row shows a **minus** in place of the usual plus, and
-    the item palette enables an **Unstage** button, both served by the
-    `doorstop.git-unstage` operation (`git reset -q -- :(literal)<path>`
-    server-side). The row's pointer shortcut prefers the minus when a file
-    is both staged and further modified (`MM`), so "I staged by mistake"
-    always surfaces a minus; the palette shows Stage and Unstage as two
-    independently-disabled buttons in that case. Unstaging restores the
-    index entry but never touches the working tree: a staged addition
-    returns to `??` untracked, a staged deletion returns to an unstaged
-    deletion. It is idempotent — a second Unstage over an already-clean path
-    reports `clean — nothing to unstage`. Unmerged paths (`UU`, `AA`, `DD`,
-    `DU`, `AU`, `UD`, `UA`) are excluded — a `git reset` on an unmerged path
-    would silently resolve the conflict in the index. On unpaired installs no
-    git control is rendered at all; while a run is in flight no minus appears
-    and the palette buttons are disabled (the per-row affordance is also
-    suppressed when the status file list is truncated, so stale path data is
-    never acted on).
-  - **Git commit** — a single-line message input plus a **Commit** button,
-    served by the `doorstop.git-commit` operation. The commit records **the
-    staged index** (`git commit -m <message>` with no pathspec and no
-    add) — exactly like the git CLI. Consequences, all intended: unstaged
-    WIP is never swept into a commit; files you staged yourself (via the
-    git CLI or any other tool) are committed too; the strip's `staged`
-    count tells you what a commit will record before you click. Empty or
-    whitespace-only messages are rejected client-side (git with an empty
-    `-m` would open an editor and hang the exec). Committing with nothing
-    staged reports `clean — nothing staged`. Outcomes are narrated in the
-    status bar (`staged <n> paths` / `committed <sha>` / `clean — nothing
-    to stage` / `clean — nothing staged` / `skipped` / `failed — <stderr
-    excerpt>`); a failing pre-commit hook surfaces its stderr in the
-    expanded status bar body.
-- **Ask the agent** menu: inserts ready-made prompts (explain, fix suspect
-  links, draft child requirement, review readiness) into the session prompt
-  editor using the item's paths and state (feature spec §7.3). **Start
-  review session** composes `/opendoor-review <UID>` plus the item context
-  into that same editor and needs no paired backend: sending it lets the
-  opendoor Pi extension start an independent review conversation whose list
-  row carries a **`firstUid +n` label** that reopens the Requirements tab on
-  the row's workspace — including for unselected and archived rows and with
-  no live Pi connection — landing on the item detail pane. After the insert
-  the panel's status bar shows a quiet `ok` **review dispatch** run row.
-  Without the extension installed the inserted text is still a
-  self-sufficient review instruction, so the review happens in the current
-  conversation; a refused dispatch is reported in the chat by the extension.
-  See **Session metadata and session-list row labels** in the feature spec.
-- Fingerprints and the requirement state are recomputed in the browser from
-  the YAML files; everything mutating goes through the visible `doorstop`
-  CLI — paired, headlessly via the server entry (output captured in the
-  panel), or in a workspace terminal when unpaired — plus, opt-in, the
-  narrated pathspec-limited review commit (`commitAfterReview`) — so all
-  effects stay auditable in git.
+- **Items / Findings toggle**: Findings lists plugin-computed findings and
+  diagnostics (error > warning > info), and a finding's UID navigates back to the
+  item. They are informational — **Run validation** gives the authoritative
+  `doorstop` output (paired: status bar; unpaired: terminal).
+- **Status bar** (sized like the center-panel one): after a paired action it shows
+  status (ok / failed / killed / error) and duration, and the panel re-scans
+  automatically. Captured stdout/stderr *auto-expands* whenever there is something
+  to show (output, an error, a review-commit line); a run with nothing to display
+  stays collapsed. **Dismiss** clears the run and collapses the bar; the next run
+  with output re-expands it. Killed runs keep partial output (prefer the terminal
+  for long publishes). With `commitAfterReview` on, the bar adds the `commit: …`
+  line from **Workspace settings**; a failed or skipped commit changes nothing.
+- **State chips** per item (feature spec §6): inactive, non-normative, reviewed /
+  unreviewed changes, suspect links, no child links, no links, unknown link,
+  missing reference.
+- **Changes since review** (item detail pane, paired installs only): an item with
+  unreviewed changes and a stored `reviewed` fingerprint gets a collapsed section;
+  expanding it fetches the reviewed item file from git history via
+  `doorstop.item-baseline`, stamp-matches it against the fingerprint and renders a
+  line diff plus chips for `ref`/`references`/link-UID/extended-attribute changes.
+  With no recoverable baseline it says so ("no git history", "could not locate the
+  reviewed version — history may have been rewritten"). The `doorstop: review
+  <uid>` message is the historical anchor feature spec §12's deferred browser-side
+  git parsing could not give; recovery runs server-side.
+- **Item actions** (item-action-palette): Review (`doorstop review UID`, plus the
+  review commit when `commitAfterReview` is on), Clear suspect links (`doorstop
+  clear UID [parents…]`), Edit (`doorstop edit UID`), Link/Unlink via inline UID
+  input (Doorstop UID grammar enforced; shell metacharacters rejected), and on
+  paired installs Stage / Unstage for the item's own file (`doorstop.git-stage` /
+  `doorstop.git-unstage`; see **Git actions**). Each disables independently: Stage
+  without unstaged (`Y`) changes, Unstage with nothing staged (`X`), both mid-run.
+- **Git actions** (paired only; otherwise every git control is hidden and you
+  commit manually):
+  - **Git status strip** — compact readout above the item list:
+    `⎇ <branch> · <n> staged · <n> dirty · ↑<ahead> ↓<behind>` (zero/absent parts
+    omitted, `no git` outside a repository, a retry link on fetch errors).
+    Refreshes on panel load, after every run (a stage, unstage or commit
+    invalidates the cache) and on click; outside a repository the other git
+    controls report `skipped`.
+  - **Stage all** — stages every Doorstop-managed file (root `.doorstop.yml`, each
+    document config, each item file) via `doorstop.git-stage`. Idempotent: a
+    second click over an already-staged set reports `clean — nothing to stage`
+    instead of a git error (staged deletions are skipped, not fatal). Disabled
+    during a run or with no documents in the loaded index, and only as fresh as
+    that index — files created after the last **Refresh** are missed until you
+    refresh and stage again.
+  - **Unstage (per item)** — a staged item file swaps its row's plus for a
+    **minus** and enables **Unstage** in the palette, both via
+    `doorstop.git-unstage` (`git reset -q -- :(literal)<path>` server-side). A file
+    both staged and further modified (`MM`) still shows the minus; the palette then
+    offers Stage and Unstage as two independently-disabled buttons. Unstaging
+    restores the index entry but never touches the working tree (a staged addition
+    returns to `??`, a staged deletion to an unstaged deletion); it is idempotent
+    (`clean — nothing to unstage`) and excludes unmerged paths (`UU`, `AA`, `DD`,
+    `DU`, `AU`, `UD`, `UA`), where `git reset` would silently resolve the conflict.
+    During a run no minus appears and the palette buttons are disabled; the per-row
+    affordance is also suppressed when the status file list is truncated, so stale
+    path data is never acted on.
+  - **Git commit** — a message input plus **Commit**, served by
+    `doorstop.git-commit`. It records **the staged index** (`git commit -m
+    <message>`, no pathspec, no add), exactly like the git CLI: unstaged WIP is
+    never swept in, files you staged yourself are included, and the strip's
+    `staged` count shows what a commit will record. Empty or whitespace-only
+    messages are rejected client-side (git would open an editor and hang the exec);
+    nothing staged reports `clean — nothing staged`. Outcomes are narrated in the
+    status bar (`staged <n> paths` / `committed <sha>` / `clean — nothing to stage`
+    / `clean — nothing staged` / `skipped` / `failed — <stderr excerpt>`), including
+    a failing pre-commit hook's stderr.
+- **Ask the agent** menu: inserts ready-made prompts (explain, fix suspect links,
+  draft child requirement, review readiness) into the session prompt editor from
+  the item's paths and state (feature spec §7.3). **Start review session**
+  composes `/opendoor-review <UID>` plus the item context there and needs no
+  paired backend: the extension starts an independent review conversation whose
+  row carries a **`firstUid +n` label** reopening the Requirements tab on that
+  workspace (unselected and archived rows included, no live Pi connection needed),
+  landing on the item detail pane. After the insert the status bar shows a quiet
+  `ok` **review dispatch** run row. Without the extension the inserted text is
+  still a self-sufficient review instruction, so the review happens in the current
+  conversation; a refused dispatch is reported in the chat by the extension (see
+  **Session metadata and session-list row labels** in the feature spec).
+- Fingerprints and requirement state are recomputed in the browser from the YAML
+  files; everything mutating goes through the visible `doorstop` CLI — paired,
+  headlessly via the server entry, or in a workspace terminal when unpaired —
+  plus, opt-in, the narrated review commit (`commitAfterReview`).
 
 ## Commands
 
 ```sh
-npm install        # install dependencies
-npm test           # vitest (unit tests under src/**/*.test.ts)
+npm install            # install dependencies
+npm test               # vitest (unit tests under src/**/*.test.ts)
 npm run test:coverage  # v8 coverage report
-npm run typecheck  # tsc --noEmit (strict)
-npm run build      # esbuild: dist/browser/pi-web-plugin.js + dist/server-plugin.js
-                   # + dist/pi-extension/index.js, then the dist-root
-                   # package.json plugin manifest (see the build script header)
-npm run dev        # watch mode build
+npm run typecheck      # tsc --noEmit (strict)
+npm run build          # esbuild → dist/browser, dist/server, dist/pi-extension
+                       # + the dist-root manifest (see the build script header)
+npm run dev            # watch build
 ```
 
 ## Installing the plugin locally (id `opendoor`)
 
 The package carries two independently enabled halves: the **PI WEB plugin**
-(browser + server entries) and the **Pi extension** (`/opendoor-review`).
-The repository-root `package.json` is the npm-package-root manifest, so both
-halves come from ONE install through **Settings → Pi packages** (npm name,
-git/URL, or a local package source). The `ln -s dist` route below remains
-available for plugin-only development.
+(browser + server entries) and the **Pi extension** (`/opendoor-review`). The
+repository-root `package.json` is the npm-package-root manifest, so both halves
+come from ONE install through **Settings → Pi packages** (npm name, git/URL or a
+local source); the `ln -s dist` route below remains for plugin-only development.
 
 ### PI WEB plugin (browser + server entries)
 
 Install the package once — **Settings → Pi packages** with source
 `opendoor-plugin` (or this repository's path / git URL) — then enable
-**Opendoor** under **Settings → PI WEB plugins**. For a plugin-only local
-build the symlink route still works:
+**Opendoor** under **Settings → PI WEB plugins**. Plugin-only local build:
 
 ```sh
 npm run build
@@ -375,138 +257,73 @@ ln -s "$(pwd)/dist" ~/.pi-web/plugins/opendoor
 ```
 
 Then **restart the session daemon** (server entries load at sessiond startup
-only; the browser bundle hot-reloads on page reload) and reload the PI WEB
-page:
+only; the browser bundle hot-reloads on page reload) and reload the page:
 
 ```sh
 systemctl --user restart pi-web-sessiond.service
 curl -s http://127.0.0.1:8504/pi-web-plugins/manifest.json
 ```
 
-The manifest should list an `opendoor` plugin entry **with a
-`backendRevision`** (signing the paired server module). If `backendRevision`
-is missing, the server module failed to load — check the sessiond log; the
-plugin still works fully via the terminal fallback.
+The manifest should list an `opendoor` entry **with a `backendRevision`** (signing
+the paired server module); if it is missing, the server module failed to load
+(check the sessiond log) and the plugin works fully via the terminal fallback.
 
 ### Review dispatch (Pi extension)
 
-Installing the package is what loads the extension; enabling the PI WEB
-plugin is a separate decision. After installing or updating the package on a
-machine, run `/reload` in each idle conversation so the `/opendoor-review`
-command is registered there (an ordinary Pi-resource change — no provider
-restart involved). The extension needs PI WEB **1.202610.x** for the
-session-dispatch bridge; on an older host it reports "requires PI WEB's
-session dispatch bridge" in the conversation and starts nothing. The panel's
-**Start review session** entry needs no paired backend — it only composes the
-command into the prompt editor.
+Installing the package loads the extension; enabling the PI WEB plugin is a
+separate decision. After installing or updating the package, run `/reload` in
+each idle conversation so `/opendoor-review` is registered there (an ordinary
+Pi-resource change — no provider restart). The extension needs PI WEB's
+session-dispatch bridge (1.202610.x); on an older host it reports "requires PI
+WEB's session dispatch bridge" and starts nothing.
 
-## Rollout (pi-web 1.202609.1)
+## Upgrade notes (pi-web 1.202611.1 floor)
 
-pi-web 1.202609.1 is a **hard break** for plugins — there is no
-compatibility shim in either direction: a v4/v3 host rejects v2/v1 plugin
-modules, and a v2/v1 host rejects the migrated v4/v3 modules. Upgrade the
-opendoor package and pi-web **together**, then restart
-`pi-web-sessiond.service` and reload the PI WEB page. During the transition
-the opendoor panel is **entirely absent** (both plugin entries rejected), not
-degraded. Federated gateways/targets must be upgraded in lockstep.
+**The floor is pi-web 1.202611.1.** The browser plugin hard-requires the host's
+`markdown-rendering@1` capability, introduced in that release, and the public
+capability resolver has no optional-resolve — on an older host the plugin does not
+start (the server entry alone would load, but the package declares the floor in
+`peerDependencies`).
 
-### pi-web 1.202610.3 (and later 1.202610.x)
+Upgrading an install coming from an older pi-web, in this order:
 
-Unlike 1.202609.1, release **1.202610.3** is **additive** for opendoor: the
-untouched v4/v3 plugin keeps loading on a v1.202610.3 host, with a
-once-per-plugin deprecation diagnostic (no removal date). No source changes
-were needed — the only mindful adaptation was a no-op `navigate` stub in the
-test fixtures (`src/test-fixtures.ts`, `src/browser/pi-web-plugin.test.ts`),
-because 1.202610.x made `navigate` a required member of
-`PluginRuntimeContext` / `WorkspacePanelContext`.
+1. Refresh the pi-web checkout, then restart the **web/API process before**
+   `pi-web-sessiond.service` when crossing pre-**1.202610.9** (session pins moved
+   to daemon-owned storage; an older web/API process must not keep writing pins
+   after the migration).
+2. Restart the session daemon and reload the page (see **Installing the plugin
+   locally**); daemon restarts interrupt active sessions and terminals.
+3. **1.202611.1 hostAccess** (`5a8181c`): a persistent notice asks administrators
+   to choose the access policy; until then behaviour is unchanged. **Reverse
+   proxies must preserve the public `Host` (including nonstandard ports) and the
+   browser `Origin` unchanged**; a policy change needs a web/API (+ dev UI server)
+   restart, the session daemon staying untouched.
 
-Host upgrade order for 1.202610.x: refresh the pi-web checkout, then
-**manually restart `pi-web-sessiond.service`** — a UI/API autoreload alone
-is **not sufficient** (the release touched the session-serving paths
-heavily). The restart interrupts active sessions and terminals; reload the
-PI WEB page afterwards and confirm the manifest shows the opendoor entry
-with a `backendRevision`.
+Community plugin listings require the `pi-web.dev-plugin` npm keyword
+(`e42938f`), which `package.json` carries — keep it.
 
-#### Review dispatch and session-row labels (1.202610.x floor)
+### Item text and prose attributes are host-rendered Markdown (plan §2.1/D1, plan-attribute-markdown §2/D2)
 
-The **Start review session** dispatch and the session-list row labels require
-a **1.202610.x** session daemon: that release introduced the public session
-metadata, the session-list label contribution, and the per-session dispatch
-bridge the extension emits on. The opendoor **server** entry declares no
-capabilities and loads across the whole supported range. `opendoor-plugin`
-**0.4.0** is the first release carrying the extension. Restart
-`pi-web-sessiond.service` once to load the server-side change, then run
-`/reload` in each idle conversation to load the extension's
-`/opendoor-review` command; the browser side only needs a page reload.
+Doorstop item bodies (`item.text`) are Markdown, rendered in the detail pane
+through pi-web's own `pi-web/markdown-rendering@1` capability rather than an
+in-plugin parser: a synchronous Lit `TemplateResult`, parsing deferred until the
+node is visible, under the host's **document policy** (raw source HTML escaped,
+images omitted, links limited to `http:`/`https:`/`mailto:`). Allowed prose
+attributes render the same way: an extended attribute whose name is in the curated
+allowlist (`DOORSTOP_MARKDOWN_ATTRIBUTES`, initially only `rationale`,
+case-insensitive) and whose value is a string is rendered through the same request
+using the trimmed text; an empty or whitespace-only value gets the muted `empty`
+marker. Every other extended attribute, and every non-string value, stays escaped
+text. Everything else in the pane stays plugin-rendered plain text — flags, chips,
+link rows, references, findings, the diff, the item header (`item.header`, the
+leading `# Heading` the model lifted out of `text`) and the item list's second row
+(`item-list.ts` `itemTextRow`, a filter affordance, not a document view).
 
-### pi-web 1.202611.1 (and 1.202611.0 / 1.202610.9)
-
-**Additive for opendoor except for one new host capability it now requires
-(item text is Markdown — see the next sub-section).** The plugin API stays on
-version 5 (server plugin API unchanged since 1.202610.8); the remaining
-surfaces of these releases are ones opendoor still does not consume
-(`transcriptRenderers`, `markdownExtensions` (only
-`markdown-rendering` is used), browser/server session-lifecycle commands,
-`PluginSessionSnapshot` timestamps/pin state, `fileIconThemes`). The opendoor
-`peerDependencies` floor is now **1.202611.1** — the release that introduces
-`markdown-rendering@1`, which the browser plugin declares (the previous notes
-here said 1.202610.5, the first release accepting browser API v5 modules;
-that is now historical).
-
-#### Item text and prose attributes are host-rendered Markdown (plan §2.1/D1, plan-attribute-markdown §2/D2)
-
-Doorstop item bodies (`item.text`) are Markdown, and the detail pane renders
-them through pi-web's own `pi-web/markdown-rendering@1` capability instead of
-an in-plugin parser: the host returns a Lit `TemplateResult` synchronously,
-defers parsing until the node is visible, and applies its **document policy**
-(raw source HTML escaped, images omitted, links limited to `http:`/`https:`/
-`mailto:`). Allowed prose attributes render the same way: an extended
-attribute whose name is in the curated allowlist (`DOORSTOP_MARKDOWN_ATTRIBUTES`,
-initially only `rationale`, matched case-insensitively) and whose value is a
-string is rendered through the same request, using the trimmed text. A string
-that is empty or whitespace-only after trimming gets the muted `empty` marker
-instead — neither Markdown nor escaped text. Every other extended attribute —
-and every non-string value — stays escaped text. Nothing else in the pane goes
-through the renderer — flags, chips, link rows, references, findings, the diff
-and the item header (`item.header`, the leading `# Heading` the model already
-lifted out of `text`) all stay plugin-rendered plain text. The item list's
-second row (`item-list.ts` `itemTextRow`) also stays plain text: it is a
-filter affordance, not a document view.
-
-Because the public `PluginCapabilityResolver` only offers a total
-`resolve()` (no optional/try resolve, and undeclared capabilities are
-rejected before `start`), the requirement is declared in `requires`, which
-hard-raises the browser plugin's host floor to **1.202611.1**. The mount also
-needs no stylesheet registration for this: the host's rendering boundary
-deliberately renders into the consumer's shadow root (its rendered content —
-including the sanitized presentation HTML other plugins contribute for their
-syntax — lands inline in the panel's own tree), so the panel's
-`.doorstop-text-markdown` prose rules style the rendered document. What the
-unregistered root does *not* get is the host's styling: other plugins'
-stylesheet contributions and host theme CSS (for example the host's own
-`.table-scroll` rules for the table wrappers the renderer emits) do not apply
-automatically — which is why the panel ships its own `.table-scroll` and prose
-rules instead of relying on host typography. A future follow-up may add
-`stylesheet-integration` if the panel ever wants host typography verbatim.
-
-Host upgrade order across this range:
-
-1. Refresh the pi-web checkout; then **restart the web/API process before
-   `pi-web-sessiond.service`** if the previous host used session pins pre-
-   1.202610.9 (pins moved to daemon-owned storage; an older web/API process
-   must not keep writing pins after the migration). Session-daemon restarts
-   interrupt active sessions and terminals; reload the PI WEB page after.
-2. 1.202611.1 introduces the `hostAccess` policy (`5a8181c`): a
-   **persistent notice asks administrators to choose** the access policy;
-   until then behavior is unchanged. **Reverse proxies must preserve the
-   public `Host` (including nonstandard ports) and the browser `Origin`
-   unchanged**, and a web/API (+ dev UI server, if running) restart is
-   needed after changing the policy — the session daemon stays untouched
-   for policy changes.
-3. After all restarts, confirm the manifest still shows the opendoor entry
-   with a `backendRevision`, then `/reload` idle conversations as before if
-   the extension command list went stale anywhere.
-
-Discoverability note (`e42938f`): community plugin listings now require the
-`pi-web.dev-plugin` npm keyword; opendoor's `package.json` carries it —
-keep it on the keywords list.
+The declaration is forced by the contracts: the public `PluginCapabilityResolver`
+offers only a total `resolve()` (no optional/try resolve, undeclared capabilities
+rejected before `start`), so the capability sits in `requires` and the browser
+floor is hard. No stylesheet registration is needed — the host's rendering boundary
+renders into the consumer's shadow root, so the panel's `.doorstop-text-markdown`
+prose rules apply; what an unregistered root misses is host styling (other plugins'
+stylesheets, host theme CSS such as `.table-scroll` rules for the renderer's
+tables), hence the panel's own `.table-scroll` and prose rules.
