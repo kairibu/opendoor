@@ -20,16 +20,18 @@ Requires **pi-web 1.202611.1 or newer** (browser and server plugin API v5). The
 floor is the host's `markdown-rendering@1` capability, declared by the browser
 plugin to render item text as Markdown: the public resolver has no
 optional-resolve, so the requirement is hard and the plugin does not start on
-1.202610.5–1.202611.0 (decision D1 in `src/browser/doorstop-markdown.ts`; upgrade
-order in **Upgrade notes**). The server entry declares no capability and loads
-across the whole range. One package (`opendoor-plugin`) ships the PI WEB plugin
-(both entries below) and the Pi extension (`/opendoor-review`).
+1.202610.5–1.202611.0 (decision D1 in `src/browser/doorstop-markdown.ts`; what
+the renderer draws in **Markdown rendering**, upgrade order in **Upgrade notes**).
+The server entry declares no capability and loads across the whole range. One
+package (`opendoor-plugin`) ships the PI WEB plugin (both entries below) and the
+Pi extension (`/opendoor-review`).
 
 - **Browser entry** (`src/browser/pi-web-plugin.ts`, apiVersion 5, name
   `Opendoor`) delegates to `createOpendoorBrowserContributions`
   (`src/browser/doorstop-contributions.ts`): the **panel** `workspace.doorstop`
   (title **Requirements**, order 5 — below the Files panel's order 10 so doorstop
-  item links reach its `fileOpenQuery` first; controller registry in
+  item links reach its `fileOpenQuery` first, at the cost of the Requirements tab
+  preceding Files in the tab order; controller registry in
   `src/browser/doorstop-panel.ts`, sections in **Using the panel**),
   the **actions** `view.doorstop` (mod+7) and `workspace.refresh-doorstop`
   (mod+shift+d), the **label** `doorstop-status` (requirement-health counts,
@@ -67,7 +69,7 @@ live in `src/doorstop-contract.ts` and `src/doorstop-backend-contract.ts`.
 ## Workspace settings (`.pi-web/opendoor.json`)
 
 Optional per-workspace configuration, read on every plugin load (missing file →
-defaults; invalid values → warning diagnostics + defaults). pi-web's
+defaults; malformed or invalid values → warning diagnostics + defaults). pi-web's
 `plugins.<id>.settings` is host-side and reaches only server entries, so this
 file plays the role `.pi-web/tasks.json` plays for the bundled workspace-tasks
 plugin; server-entry knobs are in **Host settings** below:
@@ -126,7 +128,8 @@ wrong types fall back to defaults:
 - `timeoutMs` — per-run exec timeout in ms. May SHORTEN the 8 500 ms default but
   never exceed it (the host bounds every provider callback at 10 s, so a longer run
   would be killed by pi-web, not by the plugin). It also bounds every git exec of
-  the review→commit pipeline and the git actions: one deadline budget per callback.
+  the review→commit pipeline, the `doorstop.item-baseline` fetch and the git
+  actions: one deadline budget per callback.
 
 ## Using the panel
 
@@ -151,7 +154,8 @@ hidden in the Findings view) and `status-bar` (see below).
   stays collapsed. **Dismiss** clears the run and collapses the bar; the next run
   with output re-expands it. Killed runs keep partial output (prefer the terminal
   for long publishes). With `commitAfterReview` on, the bar adds the `commit: …`
-  line from **Workspace settings**; a failed or skipped commit changes nothing.
+  line from **Workspace settings**; a failed or skipped commit never changes the
+  run's ok/failed badge.
 - **State chips** per item (feature spec §6): inactive, non-normative, reviewed /
   unreviewed changes, suspect links, no child links, no links, unknown link,
   missing reference.
@@ -223,7 +227,33 @@ hidden in the Findings view) and `status-bar` (see below).
 - Fingerprints and requirement state are recomputed in the browser from the YAML
   files; everything mutating goes through the visible `doorstop` CLI — paired,
   headlessly via the server entry, or in a workspace terminal when unpaired —
-  plus, opt-in, the narrated review commit (`commitAfterReview`).
+  plus, opt-in, the narrated review commit (`commitAfterReview`) — so all effects
+  stay auditable in git.
+
+## Markdown rendering (plan §2.1/D1, plan-attribute-markdown §2/D2)
+
+Doorstop item bodies (`item.text`) are Markdown, rendered in the detail pane
+through pi-web's own `pi-web/markdown-rendering@1` capability rather than an
+in-plugin parser: a synchronous Lit `TemplateResult`, parsing deferred until the
+node is visible, under the host's **document policy** (raw source HTML escaped,
+images omitted, links limited to `http:`/`https:`/`mailto:`). Allowed prose
+attributes render the same way: an extended attribute whose name is in the curated
+allowlist (`DOORSTOP_MARKDOWN_ATTRIBUTES`, initially only `rationale`,
+case-insensitive) and whose value is a string is rendered through the same request
+using the trimmed text; a string that is empty or whitespace-only after trimming
+gets the muted `empty` marker instead — neither Markdown nor escaped text. Every
+other extended attribute, and every non-string value, stays escaped text.
+Everything else in the pane stays plugin-rendered plain text — flags, chips, link
+rows, references, findings, the diff, the item header (`item.header`, the leading
+`# Heading` the model lifted out of `text`) and the item list's second row
+(`item-list.ts` `itemTextRow`, a filter affordance, not a document view).
+
+No stylesheet registration is needed — the host's rendering boundary renders into
+the consumer's shadow root, so the panel's `.doorstop-text-markdown` prose rules
+apply; what an unregistered root misses is host styling (other plugins'
+stylesheets, host theme CSS such as `.table-scroll` rules for the renderer's
+tables), hence the panel's own `.table-scroll` and prose rules. The capability's
+declaration, and the hard host floor it imposes, is in **Upgrade notes**.
 
 ## Commands
 
@@ -302,28 +332,9 @@ Upgrading an install coming from an older pi-web, in this order:
 Community plugin listings require the `pi-web.dev-plugin` npm keyword
 (`e42938f`), which `package.json` carries — keep it.
 
-### Item text and prose attributes are host-rendered Markdown (plan §2.1/D1, plan-attribute-markdown §2/D2)
-
-Doorstop item bodies (`item.text`) are Markdown, rendered in the detail pane
-through pi-web's own `pi-web/markdown-rendering@1` capability rather than an
-in-plugin parser: a synchronous Lit `TemplateResult`, parsing deferred until the
-node is visible, under the host's **document policy** (raw source HTML escaped,
-images omitted, links limited to `http:`/`https:`/`mailto:`). Allowed prose
-attributes render the same way: an extended attribute whose name is in the curated
-allowlist (`DOORSTOP_MARKDOWN_ATTRIBUTES`, initially only `rationale`,
-case-insensitive) and whose value is a string is rendered through the same request
-using the trimmed text; an empty or whitespace-only value gets the muted `empty`
-marker. Every other extended attribute, and every non-string value, stays escaped
-text. Everything else in the pane stays plugin-rendered plain text — flags, chips,
-link rows, references, findings, the diff, the item header (`item.header`, the
-leading `# Heading` the model lifted out of `text`) and the item list's second row
-(`item-list.ts` `itemTextRow`, a filter affordance, not a document view).
+### `markdown-rendering@1` is a hard requirement
 
 The declaration is forced by the contracts: the public `PluginCapabilityResolver`
 offers only a total `resolve()` (no optional/try resolve, undeclared capabilities
 rejected before `start`), so the capability sits in `requires` and the browser
-floor is hard. No stylesheet registration is needed — the host's rendering boundary
-renders into the consumer's shadow root, so the panel's `.doorstop-text-markdown`
-prose rules apply; what an unregistered root misses is host styling (other plugins'
-stylesheets, host theme CSS such as `.table-scroll` rules for the renderer's
-tables), hence the panel's own `.table-scroll` and prose rules.
+floor is hard (see **Markdown rendering** for what the renderer draws).
